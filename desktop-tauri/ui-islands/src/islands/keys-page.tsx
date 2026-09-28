@@ -852,6 +852,7 @@ function KeysPage() {
       <TableFooter
         leading={(
           <span>
+            OpenAI 端点：<code>{`${window.location.origin}/v1`}</code>（客户端填这个当 base_url）；
             客户端请求需带 <code>{'Authorization: Bearer <key>'}</code> 或 <code>{'x-api-key: <key>'}</code>；
             修改后立即生效，本程序自身会自动使用第一把启用的 Key。每把 Key 可单独限制
             <b>可用提供商</b>与<b>可用模型</b>（行内「可用范围」）：留空 = 不限制，两个都设时

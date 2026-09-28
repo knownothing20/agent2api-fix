@@ -170,7 +170,9 @@ export const CATEGORIES = [
   { id: 'security', label: '安全', icon: 'shield' },
   { id: 'data', label: '数据', icon: 'database' },
   { id: 'feedback', label: '反馈与需求', icon: 'feedback' },
-  { id: 'about', label: '更新', icon: 'download' },
+  // 左栏显示「版本」：这一页回答的是「现在跑的是哪一版、上游有没有新版」，
+  // 而「更新」这个动作在网页端并不存在（要换镜像得重新拉），叫「版本」更如实。
+  { id: 'about', label: '版本', icon: 'download' },
 ] as const
 
 /**

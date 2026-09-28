@@ -636,7 +636,7 @@ function UpdatePanel() {
   return (
     <section className='panel' onClick={handleExternalClick}>
       <div className='panel-head'>
-        <h2>软件更新</h2>
+        <h2>版本</h2>
         <span
           className='tip-q'
           data-tip='本页只显示仓库地址、版本与最近更新时间。「检查更新」读的是参考仓库（上游，公开仓库）；本项目仓库是私有仓库，匿名读不到它的发布信息，所以版本与时间都以参考仓库为准。'
