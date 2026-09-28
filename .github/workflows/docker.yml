@@ -1,48 +1,40 @@
 name: docker
 
-# 构建网关镜像（amd64 + arm64）并推送到 Docker Hub。
+# 我们自己的镜像流水线（与 deveco-fix 同一套做法）：
+#   push main / 打 v* tag / 手动 → 构建并推 ghcr.io/knownothing20/agent2api-fix
 #
-# ── 触发方式 ──────────────────────────────────────────────────
-#   · 推送 v* tag（如 v2.7.1）：产出 aimodcc/agent2api:<版本号> 与 :latest
-#   · 手动 workflow_dispatch：产出 :dev（移动测试 tag，不碰正式 tag）
-#   推 v* tag 时与 build.yml 同时触发 —— 一次打 tag，安装包与镜像一起出来
+# ── 与上游本文件的差异（有意为之）────────────────────────────
+#   · 目标仓库：上游推 Docker Hub 的 aimodcc/agent2api（用作者的 secrets）；
+#     我们推自己的 GHCR，凭据用内置 GITHUB_TOKEN，不需要任何 secret。
+#   · 触发：上游只在打 tag 时构建；我们额外在 push main 时也构建 ——
+#     「改完就有一条可部署的镜像」，与 deveco-fix 的手感一致。
+#   · 架构：只出 linux/amd64（124 是 x86_64）。要 arm64 就把 platforms 改回
+#     linux/amd64,linux/arm64 —— Dockerfile 的 builder 固定跑 $BUILDPLATFORM，
+#     arm64 走交叉编译，不需要 QEMU。
 #
-# ── 为什么 runner 上不用装 QEMU ───────────────────────────────
-# Dockerfile 的 builder 固定跑在 $BUILDPLATFORM：runner 是 amd64，arm64
-# 走 aarch64 工具链交叉编译。本地与 CI 同一套交叉编译路径，无需
-# setup-qemu-action，也没有 QEMU 模拟下 Rust 编译慢几十倍的问题。
+# ── 首次构建会很慢（正常）────────────────────────────────────
+#   Dockerfile 用「空桩依赖层」先编完整棵 Rust 依赖树再编源码；这里用
+#   type=gha 缓存挂到 Actions cache，第二轮起只重编源码层。
 #
-# ── 缓存 ─────────────────────────────────────────────────────
-# type=gha 把 BuildKit 缓存挂到 Actions cache：Dockerfile 的「桩依赖层」
-# 首次编完整棵依赖树后落缓存，之后每次构建直接命中，只剩源码层重编。
-#
-# ── action 版本 ──────────────────────────────────────────────
-# 与 build.yml 同一标准：直接钉最新大版本。截至本次编写：
-# setup-buildx v4 / login v4 / metadata v6 / build-push v7，
-# login v4 起已默认 Node 24 运行时，无 Node 20 弃用问题。
-#
-# ── GHCR 双推（可选，暂未启用）────────────────────────────────
-# 想多推一份 ghcr.io/aimod-cc/agent2api 时：
-#   1. 顶层 permissions 加 packages: write
-#   2. login-action 再加一段 ghcr.io（username: ${{ github.actor }}，
-#      password: ${{ github.token }}，无需额外 secret）
-#   3. metadata-action 的 images 多列一行即可
-#   注意：GHCR 新包默认私有，首次推送后需到包设置手动改 Public。
-#
-# ── secrets ──────────────────────────────────────────────────
-#   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN（Read & Write 权限的 Access Token）
+# ── 镜像 label（部署核对的依据）──────────────────────────────
+#   metadata-action 会打上 org.opencontainers.image.revision（= 提交 sha）：
+#     docker inspect agent2api --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+#   与 gh api repos/knownothing20/agent2api-fix/commits/main --jq .sha 比对。
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
 permissions:
   contents: read
+  packages: write
 
 env:
-  IMAGE: aimodcc/agent2api
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   image:
@@ -53,30 +45,35 @@ jobs:
       - name: 设置 buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: 登录 Docker Hub
+      - name: 登录 GHCR
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # tag 推送：v2.7.1 → 2.7.1 + latest；手动触发：只出 dev
+      # push main / v* tag → latest + 版本号 + sha；手动触发 → dev
       - name: 生成镜像 tag
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=ref,event=tag
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' }}
+            type=sha
 
       - name: 构建并推送
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true

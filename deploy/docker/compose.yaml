@@ -1,0 +1,38 @@
+# 我们自己的 agent2api 部署文件（与 deveco-fix 的 deploy/docker 同一套习惯）。
+#
+# 用法（在 124 上）：
+#   cd /vol1/1000/docker/agent2api
+#   cp deploy 里的 .env.example 为 .env 并填好 → docker compose pull && docker compose up -d
+#
+# 与上游根目录 docker-compose.yml 的差异：
+#   · 镜像指向我们自己的 GHCR 产物，而不是 Docker Hub 的 aimodcc/agent2api
+#   · 数据用**命名卷**（上游示例用 ./data 绑定挂载）
+#   · 加了容器加固（只读根文件系统、丢弃全部 capability、内存与进程数上限）
+#   · 监听地址、管理员凭据、人机验证开关全部走 .env
+
+services:
+  agent2api:
+    image: "${AGENT2API_IMAGE:?Set AGENT2API_IMAGE in .env}"
+    container_name: agent2api
+    restart: unless-stopped
+    ports:
+      - "${AGENT2API_BIND_ADDRESS:-127.0.0.1}:3065:3065"
+    environment:
+      AGENT2API_ADMIN_USER: ${AGENT2API_ADMIN_USER:?Set AGENT2API_ADMIN_USER in .env}
+      AGENT2API_ADMIN_PASSWORD: ${AGENT2API_ADMIN_PASSWORD:?Set AGENT2API_ADMIN_PASSWORD in .env}
+      AGENT2API_CAPTCHA_ENABLED: "${AGENT2API_CAPTCHA_ENABLED:-0}"
+      AGENT2API_PROXY_HOME: "/data"
+    volumes:
+      - agent2api-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    pids_limit: 512
+
+volumes:
+  agent2api-data:
