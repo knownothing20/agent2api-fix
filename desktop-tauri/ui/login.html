@@ -72,9 +72,15 @@
       var button = $('submit');
       var isSetup = false;
 
-      // 已登录（access 会话有效）→ 直接进面板；401 → 留在本页
+      // 已登录（access 会话有效）→ 直接进面板。
+      // access 只活 2 小时、且**只存内存**（网关一重启就全没了），所以「/api/session
+      // 无效」并不等于「要重新登录」——先拿长效 refresh cookie 静默续一次，续上了
+      // 也直接进面板；只有 refresh 也失效（过期 / 重放检测）才真的留在本页。
       fetch('/api/session').then(function (resp) {
-        if (resp.ok) window.location.href = '/';
+        if (resp.ok) { window.location.href = '/'; return; }
+        return fetch('/api/panel/refresh', { method: 'POST' }).then(function (refreshed) {
+          if (refreshed.ok) window.location.href = '/';
+        });
       }).catch(function () { /* 未登录，留在本页 */ });
 
       // ── ALTCHA 官方 widget（proof-of-work，协议见 server::altcha）──

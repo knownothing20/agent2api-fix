@@ -202,13 +202,31 @@ pub fn shim_js() -> &'static str {
 
   // access 短效令牌过期后的静默续期：refresh cookie（path 限 /api/panel）
   // 会由浏览器自动带上；成功 = 新双令牌已落 cookie，原请求可重试。
-  async function tryRefresh() {
-    try {
-      var resp = await fetch('/api/panel/refresh', { method: 'POST' });
-      return resp.ok;
-    } catch (e) {
-      return false;
-    }
+  //
+  // ⚠️ **必须同时只发一次**（2026-09-28 实测事故）：面板一打开会并发好几个接口，
+  // access 一过期（它只活 2 小时，且只存内存 —— 网关一重启就全没了）它们会**同时**
+  // 收到 401、**同时**拿同一个 refresh cookie 去换。服务端有「重放检测」：拿一条
+  // 已轮换的旧令牌来换 = 疑似泄露，**整条会话链作废**。实测就是这样：并发两个
+  // refresh，第一个 200、第二个 401，紧接着登录时那把 access cookie 也变成 401 ——
+  // 一次页面加载就把用户踢回登录页，表现为「总是要我重新登录」。
+  //
+  // 用一个共享的 in-flight promise 串起来：同一时刻只有一次真实请求，后来者等同一
+  // 个结果。刷新成功后 cookie 已更新，后续（晚到的）401 再走一轮时会带**新**令牌，
+  // 不会撞上重放检测。
+  var refreshInFlight = null;
+  function tryRefresh() {
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = (async function () {
+      try {
+        var resp = await fetch('/api/panel/refresh', { method: 'POST' });
+        return resp.ok;
+      } catch (e) {
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+    return refreshInFlight;
   }
 
   // ── 事件模拟 ──────────────────────────────────────────────
