@@ -43,6 +43,24 @@ pub const REFRESH_COOKIE: &str = "agent2api-panel-rt";
 const ACCESS_TTL: Duration = Duration::from_secs(2 * 3600);
 /// refresh token 有效期（长效）
 const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// 「刚轮换过的旧令牌」在多长时间内再被出示，按**客户端竞态**处理而不是重放。
+///
+/// ── 为什么需要它（2026-09-28 实测）────────────────────────────
+/// access token 只活 2 小时且**只存内存**（网关一重启就全没），而面板一打开会并发
+/// 好几个接口：它们同时收到 401、同时拿**同一个** refresh cookie 去续期。服务端原本
+/// 把第二个当成重放，**整条会话链作废** —— 实测并发两个 refresh，第一个 200、第二个
+/// 401，紧接着登录时那把 access cookie 也变 401。表现就是「每过 2 小时、或每次重启
+/// 网关，都要重新登录」。
+///
+/// 前端已经加了单飞（`web_shim.rs` 的 `tryRefresh` 用共享 in-flight promise），但那
+/// **只能管住一个标签页**；两个标签页同时开着时仍会撞上重放检测。所以这里补一道窗口。
+///
+/// ── 取舍（改动安全语义，别当成纯优化）────────────────────────
+/// 窗口内再出示刚轮换过的旧令牌，拿到的是一对**新**令牌，链继续活着。代价是
+/// 「偷到旧令牌的人」在这 30 秒内也能换到新令牌；窗口之外仍按原样判泄露并整链作废。
+/// 对「局域网 + 单管理员」的面板形态可以接受 —— 要收紧就把这个值调小或改成 0
+/// （0 = 恢复原来的严格语义）。
+const REFRESH_REUSE_GRACE_MS: i64 = 30_000;
 /// 登录失败锁定：同一来源连续失败 5 次，锁 5 分钟（按 IP 不是全局 ——
 /// 全局锁会把「攻击者锁死管理员」变成一种攻击，Tinyauth 那个 CVE 的教训）
 const LOCKOUT_THRESHOLD: u32 = 5;
@@ -290,6 +308,13 @@ struct RefreshRecord {
     expires_at: i64,
     /// 已被轮换（旧令牌不能再换；再次出现 = 泄露，整链作废）
     rotated: bool,
+    /// 轮换时刻（毫秒；未轮换过是 0）。
+    ///
+    /// 只用来区分「客户端竞态」与「真的重放」：见 [`REFRESH_REUSE_GRACE_MS`]。
+    /// `#[serde(default)]` 是必须的 —— 库里的旧记录没有这个字段，不给默认值会
+    /// 让反序列化整条失败，`load_refresh_tokens` 于是一无所获，**所有人被登出**。
+    #[serde(default)]
+    rotated_at: i64,
 }
 
 static REFRESH_TOKENS: OnceLock<Mutex<Vec<RefreshRecord>>> = OnceLock::new();
@@ -367,6 +392,7 @@ impl IssuedSession {
                     session,
                     expires_at: now_ms() + REFRESH_TTL.as_millis() as i64,
                     rotated: false,
+                    rotated_at: 0,
                 });
                 persist_refresh_tokens(&mut table);
             }
@@ -377,6 +403,7 @@ impl IssuedSession {
                     session,
                     expires_at: now_ms() + REFRESH_TTL.as_millis() as i64,
                     rotated: false,
+                    rotated_at: 0,
                 });
                 persist_refresh_tokens(&mut table);
             }
@@ -434,8 +461,27 @@ pub fn rotate_session(refresh_cookie: Option<&str>) -> Option<IssuedSession> {
         return None;
     };
     if table[index].rotated {
-        // 重放：整条会话链作废（refresh 链 + 该链签发过的所有 access）
         let session = table[index].session.clone();
+        let rotated_at = table[index].rotated_at;
+        // ── 宽限窗口：刚轮换过的旧令牌又来了 = 客户端竞态，不是泄露 ──────
+        // 典型场景：两个标签页各自续期（前端的单飞只在一个页面内生效），
+        // 或者页面里的并发请求晚到一步。这时**不动会话链**，改去轮换链上那条
+        // 当前有效的令牌，把一对新令牌发给这个慢了一拍的客户端。
+        // 判定还要求链上**确实**有当前有效令牌 —— 没有就说明这不是竞态，
+        // 而是「拿一把已经死掉的旧令牌来换」，照旧按泄露处理。
+        if rotated_at > 0 && now.saturating_sub(rotated_at) <= REFRESH_REUSE_GRACE_MS {
+            let active = table.iter().position(|record| {
+                record.session == session && !record.rotated && record.expires_at > now
+            });
+            if let Some(active) = active {
+                table[active].rotated = true;
+                table[active].rotated_at = now;
+                persist_refresh_tokens(&mut table);
+                drop(table);
+                return Some(IssuedSession::issue(session));
+            }
+        }
+        // 重放：整条会话链作废（refresh 链 + 该链签发过的所有 access）
         table.retain(|record| record.session != session);
         persist_refresh_tokens(&mut table);
         revoke_access_of_session(&session);
@@ -443,6 +489,7 @@ pub fn rotate_session(refresh_cookie: Option<&str>) -> Option<IssuedSession> {
     }
     let session = table[index].session.clone();
     table[index].rotated = true;
+    table[index].rotated_at = now;
     drop(table);
     Some(IssuedSession::issue(session))
 }
@@ -592,3 +639,91 @@ pub fn set_v1_fail_closed(on: bool) {
 // 注意：`panelAdmin` / `panelTokens` 两个 kv 键已登记进
 // `db::schema::RESERVED_KV_KEYS`（配置写侧据它排除）—— 新增键时必须两处
 // 同步，否则用户改一次配置就会把管理员与令牌静默删掉。
+
+#[cfg(test)]
+mod grace_window_tests {
+    //! 宽限窗口的验收：**同一把旧令牌**在窗口内再来一次不能把会话链拔掉，
+    //! 窗口外仍按泄露处理。
+    //!
+    //! 这两个分支的差别就是「用户留在面板里」与「用户被踢回登录页」——
+    //! 2026-09-28 的事故正是窗口内那条路不存在（并发续期把整条链作废）。
+
+    use super::*;
+
+    /// 每个用例独占全局表：先清空，避免互相干扰。
+    fn reset() {
+        match refresh_tokens().lock() {
+            Ok(mut table) => table.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        match access_tokens().lock() {
+            Ok(mut table) => table.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
+    fn record_count() -> usize {
+        match refresh_tokens().lock() {
+            Ok(table) => table.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
+    }
+
+    /// 把已轮换记录的轮换时刻拨到 `age_ms` 毫秒之前。
+    fn age_rotated_records(age_ms: i64) {
+        if let Ok(mut table) = refresh_tokens().lock() {
+            for record in table.iter_mut() {
+                if record.rotated {
+                    record.rotated_at = now_ms() - age_ms;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_presentation_inside_the_grace_window_keeps_the_chain() {
+        reset();
+        let first = IssuedSession::new_session();
+        rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
+
+        // 同一把旧令牌再来一次 —— 多标签页 / 并发续期的样子
+        let again = rotate_session(Some(&first.refresh_cookie));
+        assert!(
+            again.is_some(),
+            "窗口内的第二次出示必须放行，否则用户会被踢回登录页（本次事故的成因）"
+        );
+
+        // 链还活着：刚拿到的那把还能继续轮换
+        let third = rotate_session(Some(&again.expect("上一条断言已确认它是 Some").refresh_cookie));
+        assert!(third.is_some(), "宽限窗口不该把链弄坏");
+        assert!(record_count() >= 1, "链上的记录应当还在");
+    }
+
+    #[test]
+    fn a_second_presentation_outside_the_grace_window_revokes_the_chain() {
+        reset();
+        let first = IssuedSession::new_session();
+        rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
+        age_rotated_records(REFRESH_REUSE_GRACE_MS + 1);
+
+        let replay = rotate_session(Some(&first.refresh_cookie));
+        assert!(replay.is_none(), "窗口之外的重放必须被拒");
+        assert_eq!(0, record_count(), "重放要整条链作废（这是原有的安全语义）");
+    }
+
+    #[test]
+    fn a_chain_without_a_live_token_is_not_rescued_by_the_grace_window() {
+        reset();
+        let first = IssuedSession::new_session();
+        rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
+        // 链上没有任何「当前有效」的令牌：这不是竞态，是拿一把死令牌来换
+        if let Ok(mut table) = refresh_tokens().lock() {
+            for record in table.iter_mut() {
+                record.rotated = true;
+            }
+        }
+
+        let again = rotate_session(Some(&first.refresh_cookie));
+        assert!(again.is_none(), "链上没有活令牌时，宽限窗口不该兜底");
+    }
+}
