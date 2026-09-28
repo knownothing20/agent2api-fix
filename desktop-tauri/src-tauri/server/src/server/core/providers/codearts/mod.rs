@@ -98,7 +98,7 @@ impl ProviderAdapter for CodeArtsAdapter {
         _client_headers: &'a HeaderMap,
         proxy: Option<crate::server::core::proxies::ResolvedProxy>,
         stream: bool,
-        _telemetry: &'a std::sync::Arc<RequestTelemetry>,
+        telemetry: &'a std::sync::Arc<RequestTelemetry>,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<ForwardOutcome, GatewayError>> + Send + 'a>> {
         Box::pin(async move {
             // ① 凭据（含临期主动续期与写回）；代理沿用编排层为本账号解析出的那份
@@ -133,9 +133,52 @@ impl ProviderAdapter for CodeArtsAdapter {
             let gate_override = store
                 .codearts_account_record(account_id)
                 .and_then(|record| record.get("maxConcurrent").and_then(Value::as_u64));
-            let permit = SESSION_GATE
-                .get_or_init(|| session::SessionGate::new(session::DEFAULT_SESSION_LIMIT))
-                .acquire(models::DEFAULT_BASE_URL, &gate_identity, gate_override)?;
+            let gate = SESSION_GATE
+                .get_or_init(|| session::SessionGate::new(session::DEFAULT_SESSION_LIMIT));
+            // ── 满员时**等一个槽位**，而不是立刻报错 ────────────────────
+            // 上游对每个账号只有 3 路并发（付费 5 路），本地闸就是照它设的。
+            // 单账号 + 多个客户端的用法下，「满员立刻 409」会让第 4 个客户端白等
+            // 一次重试 —— 而前面那个会话往往几秒后就结束了。等一会儿再进，客户端
+            // 只是慢一点、不会失败（时长与轮询间隔见 `session::SESSION_WAIT_*`）。
+            //
+            // 等待期间的几个约束：
+            //   · **只等「本地满员」这一种错**（按 code 判，不看状态码）：别的错误
+            //     等多久都不会变，原样返回；
+            //   · **客户端点了终止就不等了**（`telemetry.is_cancelled()`）—— 否则
+            //     一个已经作废的请求会白占 30 秒；
+            //   · 阶段置成「排队中」并**只记一次**（`note_queued`）：让请求日志回答
+            //     「这次为什么慢」，而每 50ms 记一次会把尝试明细刷爆；
+            //   · 等不到（超时）就把**原来的 409** 返回，文案不变 —— 客户端看到的
+            //     仍是「并发已达上限」，与不等时逐字一致。
+            let deadline = std::time::Instant::now() + session::SESSION_WAIT_TIMEOUT;
+            let mut queued = false;
+            let permit = loop {
+                match gate.acquire(models::DEFAULT_BASE_URL, &gate_identity, gate_override) {
+                    Ok(permit) => break permit,
+                    Err(error) => {
+                        let full = error.code.as_deref() == Some("session_concurrency_limit");
+                        if !full
+                            || telemetry.is_cancelled()
+                            || std::time::Instant::now() >= deadline
+                        {
+                            return Err(error);
+                        }
+                        if !queued {
+                            queued = true;
+                            telemetry.note_queued(
+                                "CodeArts 本地会话槽已满（该账号的并发上限），等一个空位再发",
+                                None,
+                                session::SESSION_WAIT_POLL.as_millis() as u64,
+                                1,
+                                (session::SESSION_WAIT_TIMEOUT.as_millis()
+                                    / session::SESSION_WAIT_POLL.as_millis().max(1))
+                                    as usize,
+                            );
+                        }
+                        tokio::time::sleep(session::SESSION_WAIT_POLL).await;
+                    }
+                }
+            };
 
             // ④ 占一个上游会话槽（心跳 busy + 后台续期）
             let mut options = session::SessionOptions::new(
