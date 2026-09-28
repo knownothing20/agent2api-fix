@@ -21,7 +21,46 @@
 
 .nav-item.active #nav-count-update { background: var(--surface); }
 
-/* ─── 仓库信息 / 最近更新 ─── */
+/* ─── 仓库地址 / 版本 / 最近更新（本页全部内容）─── */
+.update-facts {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-inset);
+}
+
+.update-fact {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.update-fact .k { color: var(--text-2); }
+
+.update-fact .v {
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.update-fact a {
+  color: var(--primary-fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.update-fact a:hover { text-decoration: underline; }
+
+/* 窄窗口（手机浏览器）下标签与值改上下排，避免值被挤成竖排 */
+@media (max-width: 560px) {
+  .update-fact { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* ─── 旧的「关于作者」区块（本页已不再渲染，样式留着给其它页面复用）─── */
 .update-author {
   display: flex;
   align-items: center;

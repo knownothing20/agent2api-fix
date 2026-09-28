@@ -1,12 +1,11 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
-import { Badge, Button, Progress } from '@ui'
+import { Badge, Button } from '@ui'
 import {
-  errorMessage, handleExternalClick, markdownHtml, safeExternal, shared, toast,
+  errorMessage, handleExternalClick, shared, toast,
   type DownloadTask, type UpdateInfo,
 } from './update-shared'
 import { showUpdateModal } from './update-modal'
-import { UpdateSettingsDialog } from './update-settings'
 
 /**
  * Agent2API · 设置页「软件更新」面板（React 岛）。
@@ -616,72 +615,23 @@ function downloadButton(snap: Snapshot): { label: string; disabled: boolean } | 
   return { label, disabled: snap.actionBusy }
 }
 
-/** 更新日志（最新一版）：正文与「在 GitHub 查看」都在一张静态卡片里，不再折叠 */
-function changelogCard(snap: Snapshot): React.ReactNode {
-  const info = snap.info
-  const notes = String(info?.notes || '').trim()
-  if (!notes) {
-    return (
-      <div className='update-log-hint'>
-        {info ? '这个版本没有填写发布说明。' : '点击「检查更新」后，这里会显示最新版本的更新说明。'}
-      </div>
-    )
-  }
-  const html = markdownHtml(notes)
-  const pageUrl = safeExternal(info?.pageUrl)
-  const published = formatDateTime(info?.publishedAt)
-  return (
-    <div className='rel-note'>
-      <div className='rel-note-head'>
-        <span className='rel-tag'>{String(info?.latestVersion || '最新版本')}</span>
-        {/* 旧的 .badge.tag.warn → Badge 的 tag 形态 + warning 语义色 */}
-        {info?.prerelease === true ? <Badge shape='tag' variant='warning'>预发布</Badge> : null}
-        {published ? <span className='rel-date'>{published}</span> : null}
-      </div>
-      <div className='rel-note-body'>
-        {/* 正文是 wbMarkdown 渲染出来的 HTML（保持调用，不重写）：只能走
-            dangerouslySetInnerHTML。外围标记仍由 React 渲染，版本号 / 日期 / 链接都是
-            文本节点，于是旧实现那几处 esc() 在这里天然不需要。 */}
-        {html ? <div className='md-body' dangerouslySetInnerHTML={{ __html: html }} /> : (
-          <div className='md-body'>
-            <p className='md-body-empty'>这个版本没有填写发布说明。</p>
-          </div>
-        )}
-        {pageUrl ? (
-          <div className='rel-foot'>
-            <a href={pageUrl} data-external={pageUrl} target='_blank' rel='noopener'>
-              在 GitHub 查看完整说明
-            </a>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  )
-}
 
 /** 面板本体。root 建在 `.settings-pane[data-cat="about"]` 上，渲染出来的根元素就是原来
  *  那个 `.panel` —— 类名与骨架一一对应，只是控件换成了组件库 */
 function UpdatePanel() {
   const snap = React.useSyncExternalStore(subscribe, getSnapshot)
-  const button = downloadButton(snap)
-  // 「更新设置」弹窗的开关：弹窗是本组件条件渲染的（Dialog 自带 Portal 挂 body），
-  // 读数在弹窗自己那里现拉（见 update-settings.tsx 的说明），不进模块快照
-  const [settingsOpen, setSettingsOpen] = React.useState(false)
 
   // 面板常驻（root 随应用生命周期），正常不会卸载；万一将来被卸载（骨架变化 / 页面
   // 重载），把进度轮询收掉 —— 悬挂的定时器会一直按 1 秒打后端
   React.useEffect(() => () => { stopPolling() }, [])
 
-  // 参考仓库地址固定取常量（= 上游），不用后端 repository：后端那个值决定
-  // 「检查更新」去读谁，两者本可以是同一个，但本项目把检查指向上游公开仓库，
-  // 界面上要显示的却始终是上游，所以直接取常量更不容易被配置带偏
+  // 两个仓库地址都固定取常量（理由见文件头 PROJECT_REPO 的说明）
+  const projectUrl = `https://github.com/${PROJECT_REPO}`
   const referenceUrl = `https://github.com/${REFERENCE_REPO}`
   const updatedLabel = formatDateTime(snap.info?.publishedAt)
   const latestLabel = snap.info?.latestVersion
     ? `${snap.info.latestVersion}${snap.info.prerelease ? '（预发布）' : ''}`
     : '—'
-  const tag = String(snap.info?.latestVersion || '').trim()
-  const logMeta = tag ? `${tag}${snap.checkedAt ? ` · 检查于 ${formatClock(snap.checkedAt)}` : ''}` : ''
 
   return (
     <section className='panel' onClick={handleExternalClick}>
@@ -689,7 +639,7 @@ function UpdatePanel() {
         <h2>软件更新</h2>
         <span
           className='tip-q'
-          data-tip='更新包从 GitHub 发布页下载，下载完成后可直接启动安装程序并自动重启本程序。安装包会先校验来源域名与文件完整性。检查更新与下载安装包的出网线路、GitHub 令牌都在「更新设置」里：线路默认直连（直连失败时自动借 Clash Verge 的混合端口重试一次），选定指定出口后只走该出口；填写 GitHub 令牌可把检查限额从 60 次/小时提高到 5000 次/小时。'
+          data-tip='本页只显示仓库地址、版本与最近更新时间。「检查更新」读的是参考仓库（上游，公开仓库）；本项目仓库是私有仓库，匿名读不到它的发布信息，所以版本与时间都以参考仓库为准。'
         ></span>
         {/* id 保留：app.js 的 renderTopbarStatus 按 id 镜像徽章文案与语义色（配色经
             data-tone 传；设置页顶栏那枚镜像目前还不读它，保持一致没坏处） */}
@@ -697,44 +647,45 @@ function UpdatePanel() {
           {snap.badgeText}
         </Badge>
         <div className='head-actions'>
-          {/* 「更新设置」：出网线路 + GitHub 令牌都在弹窗里（update-settings.tsx），
-              放「检查更新」左边 —— 先配好线路与令牌再检查，动线才顺 */}
-          <Button
-            id='btn-update-settings'
-            variant='outline'
-            title='出网线路与 GitHub 令牌设置'
-            onClick={() => setSettingsOpen(true)}
-          >
-            更新设置
-          </Button>
-          {/* 旧 class="primary" → variant="default"；无 class → variant="outline" */}
+          {/* 只留「检查更新」：本项目以 Docker 部署，桌面安装包那套（下载 / 安装 /
+              出网线路与令牌设置）在这里没有意义，一并去掉 */}
           <Button id='btn-update-check' variant='outline' disabled={snap.checking} onClick={() => void check()}>
             {snap.checking ? '检查中…' : '检查更新'}
           </Button>
-          {button ? (
-            <Button
-              id='btn-update-download'
-              variant='default'
-              disabled={button.disabled}
-              onClick={() => void downloadOrCancel()}
-            >
-              {button.label}
-            </Button>
-          ) : null}
         </div>
       </div>
       <div className='panel-body'>
-        {/* 当前版本 → 最新版本两个读数同一行，窗口放不下时靠 .update-version 的 wrap 换行 */}
-        <div className='update-version'>
-          <span className='version-pill'>
+        {/* 三样信息：仓库地址（本项目 / 参考）、版本（当前 / 参考仓库最新）、最近更新。
+            读数固定五行，不折叠也不做卡片嵌套 —— 一眼看完就是本页的全部内容 */}
+        <div className='update-facts' id='update-facts'>
+          <div className='update-fact'>
+            <span className='k'>本项目仓库</span>
+            <span className='v'>
+              <a id='update-author-link' href={projectUrl} data-external={projectUrl} target='_blank' rel='noopener'>
+                {PROJECT_REPO}
+              </a>
+            </span>
+          </div>
+          <div className='update-fact'>
+            <span className='k'>参考仓库</span>
+            <span className='v'>
+              <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
+                {REFERENCE_REPO}
+              </a>
+            </span>
+          </div>
+          <div className='update-fact'>
             <span className='k'>当前版本</span>
             <span className='v' id='update-current'>{snap.info?.currentVersion || '—'}</span>
-          </span>
-          <span className='version-arrow'>→</span>
-          <span className='version-pill new'>
-            <span className='k'>最新版本</span>
+          </div>
+          <div className='update-fact'>
+            <span className='k'>参考仓库最新版本</span>
             <span className='v' id='update-latest'>{latestLabel}</span>
-          </span>
+          </div>
+          <div className='update-fact'>
+            <span className='k'>最近更新</span>
+            <span className='v' id='update-updated-at'>{updatedLabel || '—'}</span>
+          </div>
         </div>
 
         {/* 错误态用行内色（旧实现同样是 style.color）：.detail 是页面排版类，
@@ -742,73 +693,7 @@ function UpdatePanel() {
         <div className='detail' id='update-state' style={snap.stateError ? { color: 'var(--danger)' } : undefined}>
           {snap.stateText}
         </div>
-
-        {/* 进度条：旧实现只在 0 < percent < 100 时露出，这里同样条件渲染 */}
-        {snap.phase === 'downloading' && snap.percent > 0 && snap.percent < 100
-          ? <Progress value={snap.percent} />
-          : null}
-
-        {/* 仓库信息：本项目仓库（我们自己的 fork，常量）、参考仓库（上游 = 版本检查
-            与更新日志的来源，后端 repository）与最近更新时刻（= 参考仓库最新发布的
-            发布时间；本项目仓库是私有的，匿名读不到它的 Release，所以这里只能取
-            参考仓库的时间）。没检查过时显示占位而不是编一个时间 */}
-        <div className='update-author' id='update-author'>
-          <div className='update-author-text'>
-            <strong>本项目仓库</strong>
-            <span>
-              <a id='update-author-link' href={`https://github.com/${PROJECT_REPO}`} data-external={`https://github.com/${PROJECT_REPO}`} target='_blank' rel='noopener'>
-                {PROJECT_REPO}
-              </a>
-              ，基于上游{' '}
-              <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
-                {REFERENCE_REPO}
-              </a>{' '}
-              维护。免费使用、不带广告，也不会收集你的账号数据。
-            </span>
-            <div className='update-author-meta'>
-              最近更新：<b id='update-updated-at'>{updatedLabel || '—'}</b>
-              <span className='update-author-checked'>（来自参考仓库）</span>
-              {snap.checkedAt ? <span className='update-author-checked'>· 检查于 {formatClock(snap.checkedAt)}</span> : null}
-            </div>
-          </div>
-          <div className='update-author-actions'>
-            <Button
-              id='btn-update-favorite'
-              type='button'
-              size='sm'
-              variant='outline'
-              data-external={`https://github.com/${PROJECT_REPO}`}
-              title='在浏览器中打开本项目仓库'
-            >
-              打开本仓库
-            </Button>
-            <Button
-              id='btn-update-reference'
-              type='button'
-              size='sm'
-              variant='outline'
-              data-external={referenceUrl}
-              title='在浏览器中打开参考仓库（上游）'
-            >
-              参考仓库
-            </Button>
-          </div>
-        </div>
-
-        {/* 更新日志：只展示最新一次发布的说明，数据来自「检查更新」的结果
-            （与上方「最新版本」同源） */}
-        <div className='update-log' id='update-notes'>
-          <div className='update-log-head'>
-            <span className='update-log-title'>更新日志</span>
-            <span className='update-log-meta' id='update-log-meta'>{logMeta}</span>
-          </div>
-          <div className='update-log-body' id='update-log-body'>{changelogCard(snap)}</div>
-        </div>
       </div>
-
-      {/* 「更新设置」弹窗：条件渲染（Dialog 自带 Portal 挂 body，放在 section 里
-          只是声明位置，不影响视觉层级）；关闭即卸载，状态在弹窗内部自生自灭 */}
-      {settingsOpen ? <UpdateSettingsDialog open onClose={() => setSettingsOpen(false)} /> : null}
     </section>
   )
 }
