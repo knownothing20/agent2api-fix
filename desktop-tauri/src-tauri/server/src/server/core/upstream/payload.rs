@@ -101,6 +101,13 @@ pub(super) struct ProviderContext<'a> {
     /// 语义不会中途漂移。传引用是因为它由 `upstream::forward` 的栈帧持有，
     /// 生命周期覆盖整条转发链。
     pub key_scope: Option<&'a crate::server::core::key_scope::KeyScope>,
+    /// 本次请求的**会话号**（客户端入站头 `x-session-id` 归一化后的值；没有则
+    /// `None`）。取一次、随请求走完全程。
+    ///
+    /// 用途只有一个：会话粘性（见 `upstream::affinity`）。首次选路用它命中
+    /// 「这条会话固定用哪个账号」，换号之后用它改写映射。**不做任何转发决策的
+    /// 输入**——它既不进请求头也不进请求体，纯粹是网关内部的调度线索。
+    pub conversation_key: Option<String>,
 }
 
 /// 某一家 provider 实际要发送的请求体（**每次转发前**决定，不做跨家复用），

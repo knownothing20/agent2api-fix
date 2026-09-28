@@ -267,6 +267,129 @@ fn at_concurrency_limit(account: &Value, id: &str, counts: &HashMap<String, usiz
     limit > 0 && counts.get(id).copied().unwrap_or(0) >= limit as usize
 }
 
+/// 该账号此刻是否**可用**：启用 + 对该模型未限流冷却 + 未达并发上限。
+///
+/// 与 `pick_account_by_priority` 的过滤条件逐条同源（就是那两个谓词的合取），
+/// 抽出来是给「会话粘性」用的：粘性命中之后**必须再确认一次**这个账号此刻
+/// 还能不能用 —— 粘性是偏好而不是硬绑定，宁可换号也不要为了粘住一个满员的
+/// 账号让请求排队（见 `upstream::affinity` 的模块头）。
+pub fn account_is_available(
+    account: &Value,
+    keys: &CooldownKeys<'_>,
+    counts: &HashMap<String, usize>,
+    now: i64,
+) -> bool {
+    let Some(id) = account_id(account) else {
+        return false;
+    };
+    account_usability(account, keys, now).usable && !at_concurrency_limit(account, id, counts)
+}
+
+/// 一个账号的「额度读数」，供会话调度排序用。
+///
+/// 两个字段都可能取不到：`expires_at` 依赖上游给出套餐重置日，`available`
+/// 依赖余额查询成功过。取不到时**排在能取到的之后**，而不是当成 0 ——
+/// 「没读到」与「读到了 0」在排序里也必须是两件事，与余额面板的口径一致。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CreditRank {
+    /// 到期/重置日（上游 `subscription.resetDate` 的 `YYYY-MM-DD`）
+    pub expires_at: Option<(i32, u32, u32)>,
+    /// 剩余积分
+    pub available: Option<f64>,
+}
+
+impl CreditRank {
+    /// 从「重置日文本 + 剩余积分」构造。认不出的日期按「没有到期日」处理。
+    pub fn from_parts(reset_date: Option<&str>, available: Option<f64>) -> Self {
+        Self {
+            expires_at: reset_date.and_then(parse_iso_date),
+            available,
+        }
+    }
+}
+
+/// 只认 `YYYY-MM-DD`（上游给的就是这个形态）。认不出返回 None。
+fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = text.trim().split('-');
+    let year = parts.next()?.parse::<i32>().ok()?;
+    let month = parts.next()?.parse::<u32>().ok()?;
+    let day = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+/// 会话调度的排序键（**升序取第一个** = 最该用的那个）：
+///
+///   1. **到期早的优先**（`expires_at` 升序；取不到到期日的排最后）；
+///   2. 到期日相同 → **积分多的优先**（取负值参与升序；取不到积分的排最后）；
+///   3. 再相同 → **在途少的优先**（把新会话摊到空闲的账号上）；
+///   4. 再相同 → 原来的优先级 / 加入时间（与 `compare_by_priority` 同口径）。
+///
+/// 全部判据都是确定性的：同一批账号、同一时刻，选出来的永远是同一个。
+fn conversation_sort_key(
+    account: &Value,
+    counts: &HashMap<String, usize>,
+    credit: &dyn Fn(&str) -> CreditRank,
+) -> ((u8, i32, u32, u32), (u8, i64), usize, (i64, i64)) {
+    let id = account_id(account).unwrap_or("");
+    let rank = credit(id);
+    let expiry = match rank.expires_at {
+        Some((year, month, day)) => (0u8, year, month, day),
+        None => (1u8, 0, 0, 0),
+    };
+    let credits = match rank.available {
+        // 积分多的优先 ⇒ 取负值参与升序；先夹到 i64 安全区间再取整
+        Some(value) if value.is_finite() => {
+            (0u8, -(value.round().clamp(-9.0e15, 9.0e15) as i64))
+        }
+        _ => (1u8, 0),
+    };
+    let busy = counts.get(id).copied().unwrap_or(0);
+    let priority = (
+        normalize_priority(
+            account.get("priority"),
+            crate::server::core::account_store::priority::DEFAULT_PRIORITY,
+        ),
+        js_number(account.get("addedAt").unwrap_or(&Value::Null)).unwrap_or(0.0) as i64,
+    );
+    (expiry, credits, busy, priority)
+}
+
+/// 按**会话调度**口径挑账号：到期早 → 积分多 → 在途少 → 优先级。
+///
+/// 与 [`pick_account_by_priority`] 的关系：过滤条件完全相同（启用 / 该模型未
+/// 限流 / 未达并发上限 / 不在 `exclude_ids` 里），只把「排序键」换掉。
+/// 两个函数并存是刻意的 —— 首次选路走本函数（会话要摊开、要粘住），
+/// 失败后的顺延仍走原来的优先级口径（那是「换一个试试」，不是「挑最该用的」）。
+///
+/// `credit` 是账号 id → 额度读数的取值器（由 `core::usage_query` 的定时快照
+/// 提供）。查不到时返回默认值，于是两级额度判据同时打平、自然落到
+/// 「在途少 → 优先级」，退化行为是可预期的。
+pub fn pick_account_for_conversation(
+    accounts: &[Value],
+    keys: &CooldownKeys<'_>,
+    counts: &HashMap<String, usize>,
+    exclude_ids: &[String],
+    now: i64,
+    credit: &dyn Fn(&str) -> CreditRank,
+) -> Option<Value> {
+    accounts
+        .iter()
+        .filter(|account| {
+            let Some(id) = account_id(account) else {
+                return false;
+            };
+            if exclude_ids.iter().any(|excluded| excluded == id) {
+                return false;
+            }
+            account_usability(account, keys, now).usable && !at_concurrency_limit(account, id, counts)
+        })
+        .min_by_key(|account| conversation_sort_key(account, counts, credit))
+        .cloned()
+}
+
 /// 按**指定模型**派生队首：候选先收窄到「清单里有这个模型的家」，再走
 /// [`pick_account_by_priority`] 的常规判据（启用 + 该模型未限流 + 优先级序）。
 ///
@@ -449,5 +572,144 @@ fn js_number(value: &Value) -> Option<f64> {
         Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
         Value::Null => Some(0.0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod conversation_scheduling_tests {
+    //! 会话调度排序键的验收：**到期早 → 积分多 → 在途少 → 优先级**。
+    //!
+    //! 每一条都钉一个「为什么它该赢」：只断言结果不断言理由的话，
+    //! 把某一级判据写反（比如积分按升序）也照样能过。
+
+    use super::*;
+
+    fn account(id: &str, priority: i64) -> Value {
+        json!({ "id": id, "name": id, "priority": priority, "enabled": true })
+    }
+
+    /// 固定读数表：`(账号 id, 到期日, 剩余积分)`。
+    fn credit_of(table: &[(&str, Option<&str>, Option<f64>)]) -> impl Fn(&str) -> CreditRank + '_ {
+        move |id: &str| {
+            table
+                .iter()
+                .find(|(account_id, _, _)| *account_id == id)
+                .map(|(_, reset, available)| CreditRank::from_parts(*reset, *available))
+                .unwrap_or_default()
+        }
+    }
+
+    fn pick(
+        accounts: &[Value],
+        counts: &HashMap<String, usize>,
+        credit: &dyn Fn(&str) -> CreditRank,
+    ) -> Option<String> {
+        let keys = CooldownKeys::new("gpt-4o");
+        pick_account_for_conversation(accounts, &keys, counts, &[], 0, credit)
+            .and_then(|account| account_id(&account).map(str::to_string))
+    }
+
+    #[test]
+    fn the_earlier_reset_date_wins() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[
+            ("a", Some("2026-12-01"), Some(1000.0)),
+            ("b", Some("2026-10-29"), Some(1000.0)),
+        ]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "b 先到期，哪怕它优先级更靠后也该先用它"
+        );
+    }
+
+    #[test]
+    fn the_bigger_credit_wins_when_the_dates_tie() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[
+            ("a", Some("2026-10-29"), Some(500.0)),
+            ("b", Some("2026-10-29"), Some(11000.0)),
+        ]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "到期日相同 ⇒ 积分多的先消耗"
+        );
+    }
+
+    #[test]
+    fn the_idler_account_wins_when_the_credits_tie() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[]);
+        let mut counts = HashMap::new();
+        counts.insert("a".to_string(), 2usize);
+        counts.insert("b".to_string(), 0usize);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &counts, &credit),
+            "额度读数打平 ⇒ 挑在途少的，把新会话摊开"
+        );
+    }
+
+    #[test]
+    fn priority_is_the_last_tie_breaker() {
+        let accounts = vec![account("a", 101), account("b", 100)];
+        let credit = credit_of(&[]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "全打平时回到原来的优先级口径"
+        );
+    }
+
+    #[test]
+    fn an_account_without_credit_readings_sorts_last() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[("b", Some("2026-10-29"), Some(1.0))]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "「读到了额度」排在「没读到」之前（哪怕 a 的优先级更高）"
+        );
+    }
+
+    #[test]
+    fn a_disabled_account_is_never_picked() {
+        let mut accounts = vec![account("a", 100), account("b", 101)];
+        accounts[1]["enabled"] = Value::Bool(false);
+        let credit = credit_of(&[
+            ("a", Some("2026-12-01"), Some(1.0)),
+            ("b", Some("2026-10-29"), Some(99999.0)),
+        ]);
+        assert_eq!(
+            Some("a".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "禁用优先于一切排序判据"
+        );
+    }
+
+    #[test]
+    fn a_saturated_account_is_skipped() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[]);
+        let mut counts = HashMap::new();
+        counts.insert("a".to_string(), 3usize);
+        let mut with_limit = accounts.clone();
+        with_limit[0]["maxConcurrent"] = Value::from(3);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&with_limit, &counts, &credit),
+            "a 已达 maxConcurrent=3 ⇒ 转给 b"
+        );
+    }
+
+    #[test]
+    fn the_reset_date_parser_only_takes_iso_dates() {
+        assert_eq!(Some((2026, 10, 29)), parse_iso_date("2026-10-29"));
+        assert_eq!(Some((2026, 10, 29)), parse_iso_date(" 2026-10-29 "));
+        assert_eq!(None, parse_iso_date("2026/10/29"));
+        assert_eq!(None, parse_iso_date("2026-13-01"), "月份越界不认");
+        assert_eq!(None, parse_iso_date("2026-10-29T00:00:00Z"), "上游给的是纯日期，多一段就不认");
+        assert_eq!(None, parse_iso_date(""));
     }
 }

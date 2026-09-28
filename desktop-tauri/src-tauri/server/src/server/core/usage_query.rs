@@ -1,10 +1,12 @@
 //! 查询结果和每个账号的请求排期持久化，首屏读取快照不会触发上游请求。
 
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
 use crate::server::config;
+use crate::server::core::routing;
 use crate::server::core::task_state;
 
 use crate::server::core::account_store::AccountStore;
@@ -277,6 +279,12 @@ pub fn store_snapshot(report: Value) -> (usize, usize) {
     if let Ok(mut slot) = snapshot_slot().lock() {
         *slot = Some(snapshot.clone());
     }
+    // 派生的额度索引跟着重建一次：选路排序读它（见 `credit_rank`），
+    // 逐请求现解析整份快照太贵
+    let index = credit_index_of(&snapshot);
+    if let Ok(mut guard) = credit_slot().lock() {
+        *guard = index;
+    }
     if let Err(error) = task_state::store_value(SNAPSHOT_KEY, snapshot) {
         logging::verbose("[Usage]", &format!("余额快照保存失败（下次启动看不到本次结果）：{error}"));
     }
@@ -299,4 +307,60 @@ pub fn snapshot() -> Value {
         *slot = Some(restored.clone());
     }
     restored
+}
+
+// ─── 额度读数索引（选路排序用）────────────────────────────────
+
+/// 账号 id → 额度读数。由定时快照派生，**只留两个数**而不是整份 usage 文档
+/// —— 选路是逐请求的热路径，不该每次都克隆一份 JSON。
+static CREDIT_INDEX: OnceLock<Mutex<HashMap<String, routing::CreditRank>>> = OnceLock::new();
+
+fn credit_slot() -> &'static Mutex<HashMap<String, routing::CreditRank>> {
+    CREDIT_INDEX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 从一份快照里抽出额度读数表（`subscription.resetDate` + `available`）。
+///
+/// 查失败的行（`usage` 为 null）**照样进表**，值是两个 None —— 与「快照保留
+/// 失败行」同一口径：它在排序里表示「这个账号的额度读不到」，排在读得到的之后。
+fn credit_index_of(snapshot: &Value) -> HashMap<String, routing::CreditRank> {
+    let mut index = HashMap::new();
+    let rows = snapshot.get("results").and_then(Value::as_array);
+    for row in rows.into_iter().flatten() {
+        let Some(id) = row.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let usage = row.get("usage").filter(|usage| !usage.is_null());
+        let reset_date = usage
+            .and_then(|usage| usage.get("subscription"))
+            .and_then(|subscription| subscription.get("resetDate"))
+            .and_then(Value::as_str);
+        let available = usage
+            .and_then(|usage| usage.get("available"))
+            .and_then(Value::as_f64);
+        index.insert(id.to_string(), routing::CreditRank::from_parts(reset_date, available));
+    }
+    index
+}
+
+/// 该账号的额度读数（会话调度排序用）。查不到给默认值（两个字段都是 None）。
+///
+/// 重启后索引是空的，而快照要等第一次读才从库里恢复 —— 这里补一次「按需重建」，
+/// 免得「重启到下一次定时查询之间」额度判据静默失效。
+pub fn credit_rank(account_id: &str) -> routing::CreditRank {
+    if let Ok(guard) = credit_slot().lock() {
+        if let Some(rank) = guard.get(account_id) {
+            return rank.clone();
+        }
+        if !guard.is_empty() {
+            // 索引已经有了、只是没有这个账号（未启用 / 查失败）：不必重建
+            return routing::CreditRank::default();
+        }
+    }
+    let rebuilt = credit_index_of(&snapshot());
+    let rank = rebuilt.get(account_id).cloned().unwrap_or_default();
+    if let Ok(mut guard) = credit_slot().lock() {
+        *guard = rebuilt;
+    }
+    rank
 }

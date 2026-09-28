@@ -44,6 +44,7 @@
 //! SSE 流的中断（客户端断开、上游断开）是**正常路径**，一律用 Result/Option。
 
 pub mod aggregate;
+mod affinity;
 pub mod cancellation;
 pub mod connections;
 pub mod request;
@@ -322,6 +323,10 @@ impl UpstreamService {
         // 会因为「同时持有 request 的可变借用（上面改过 body）」而借不过 ——
         // 移出后所有权清晰，也不必再多一次克隆。
         let key_scope = request.allowed_providers;
+        // 会话号（`x-session-id`）取一次、随请求走完全程：首次选路用它命中粘性，
+        // 换号之后用它改写「这条会话现在在谁身上」。取不到就是 None —— 粘性与
+        // 额度/空闲调度是两件独立的事，没有会话号照样按调度口径选。
+        let conversation_key = affinity::conversation_key(&request.client_headers);
         let context = payload::ProviderContext {
             body: &upstream_body,
             stream: request.stream,
@@ -330,6 +335,7 @@ impl UpstreamService {
             sanitize_fingerprints,
             prompt,
             key_scope: key_scope.as_ref(),
+            conversation_key,
         };
         provider_loop::forward_with_providers(self, context, &mut slot, &mut connections).await
     }

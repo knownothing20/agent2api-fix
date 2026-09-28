@@ -261,6 +261,20 @@ fn retry_log_line(reason: &str, delay_ms: u64, used: usize, total: usize) -> Str
     format!("⚠️ {reason}；{} 秒后重试（第 {used}/{total} 次）", delay_ms / 1000)
 }
 
+/// 换号之后改写会话粘性：**这条会话的新家就是新账号**。
+///
+/// 与 `rotate::select_target_account` 里「选中即记下」同一口径 —— 顺延换号
+/// 也是「选中」的一种。不写的话，下一次请求会优先回到刚刚失败的那个账号上，
+/// 于是「同一条会话固定在同一个账号」这条承诺只在顺利时成立。
+fn repin_conversation(ctx: &ProviderContext<'_>, next: &Value) {
+    let Some(key) = ctx.conversation_key.as_deref() else {
+        return;
+    };
+    if let Some(account_id) = crate::server::core::routing::account_id(next) {
+        super::affinity::pin(key, account_id);
+    }
+}
+
 /// 转发入口：在候选家的全部账号里按全局优先级逐个尝试。
 ///
 /// `slot` 是在途槽位凭证（`&mut` 是因为它只在**成功转为流式**时才被取走，
@@ -456,8 +470,16 @@ async fn attempt_queue(
         if ctx.telemetry.is_cancelled() {
             return Err(cancellation::cancelled_error());
         }
-        let target =
-            rotate::select_target_account(service, provider_ids, &cooldown_keys, &tried_ids).await?;
+        // 会话号一并交给选路：带会话号时它会先查「这条会话固定用谁」，
+        // 命中且可用就直接复用（见 `rotate::select_target_account` 的说明）
+        let target = rotate::select_target_account(
+            service,
+            provider_ids,
+            &cooldown_keys,
+            &tried_ids,
+            ctx.conversation_key.as_deref(),
+        )
+        .await?;
         // 连接计数改绑到这一轮选中的账号：失败重试换账号时计数跟着走，
         // 于是「一个请求任意时刻只占一个账号」这条口径不需要每个分支各维护一次
         // （429 降级、401 刷新后换号、会话式失败顺延三条路径都经过这里）。
@@ -528,6 +550,8 @@ async fn attempt_queue(
                             if !take_switch(&mut switches_left, switch_total) {
                                 return Err(error);
                             }
+                            // 这条会话跟着换到新账号（见 `repin_conversation`）
+                            repin_conversation(ctx, &next);
                             logging::console_line(
                                 "[Upstream]",
                                 &format!(
@@ -603,6 +627,8 @@ async fn attempt_queue(
                             if !take_switch(&mut switches_left, switch_total) {
                                 return Err(error);
                             }
+                            // 这条会话跟着换到新账号（见 `repin_conversation`）
+                            repin_conversation(ctx, &next);
                             // 顺延这件事本身由请求日志的尝试链回答（本轮明细已经
                             // 定稿为失败、下一轮会追加新明细），这里只留终端一行
                             logging::console_line(
@@ -1134,6 +1160,8 @@ async fn attempt_queue(
                             if !take_switch(&mut switches_left, switch_total) {
                                 return Err(failure.error);
                             }
+                            // 这条会话跟着换到新账号（见 `repin_conversation`）
+                            repin_conversation(ctx, &next);
                             let next_home = {
                                 let next_provider = rotate::provider_of(&next);
                                 if next_provider == provider_id {

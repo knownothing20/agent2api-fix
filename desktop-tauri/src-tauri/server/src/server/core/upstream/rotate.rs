@@ -99,11 +99,24 @@ pub(super) async fn session_for(
 /// `keys` 是请求名到各家上游真名的解析器：限额冷却按**真名**判定（理由见
 /// `routing::CooldownKeys`）—— 传请求名会让别名请求的冷却查不到、已限额的
 /// 账号被反复选中。第三级「恢复最早的那个」同样按真名读 `resetAt`。
+///
+/// ── 会话调度（第一级之前先走这一档）──────────────────────────
+/// `conversation_key` 非空时（客户端带了 `x-session-id`），选路先看**会话粘性**：
+///   1. 这条会话已有固定账号、且它此刻可用（启用 / 未限流 / 未满并发 / 本轮
+///      未试过）→ 直接用它，不再排序；
+///   2. 否则按**会话调度口径**挑：到期早 → 积分多 → 在途少 → 优先级
+///      （见 `routing::pick_account_for_conversation`），选中后把这条会话
+///      记到这个账号上。
+///
+/// 于是「同一条会话的每一轮都落在同一个账号」成立，而新会话会被摊到空闲、
+/// 额度先用完/先到期的账号上。没有会话号时行为与本改造前一致（只换了排序键，
+/// 仍是确定性的优先级主备）。
 pub(super) async fn select_target_account(
     service: &UpstreamService,
     providers: &[&str],
     keys: &routing::CooldownKeys<'_>,
     tried_ids: &[String],
+    conversation_key: Option<&str>,
 ) -> Result<RouteTarget, GatewayError> {
     let accounts = accounts_in_providers(service, providers);
     // 这些家都没有账号记录 → 用第一家的默认登录态（环境变量旁路等）
@@ -123,8 +136,34 @@ pub(super) async fn select_target_account(
     let counts = connection_counts(service);
     let mut excluded: Vec<String> = tried_ids.to_vec();
     let now = logging::now_ms();
+
+    // ── ① 会话粘性：这条会话已有固定账号，且它此刻还能用 ──────────
+    // 「还能用」必须现场再判一次：粘性是偏好而不是硬绑定，账号被禁用 / 对该
+    // 模型限流 / 已满并发时照常另选一个（理由见 `upstream::affinity` 模块头）。
+    if let Some(key) = conversation_key {
+        if let Some(pinned_id) = super::affinity::pinned(key) {
+            if !excluded.contains(&pinned_id) {
+                let chosen = accounts
+                    .iter()
+                    .find(|account| routing::account_id(account) == Some(pinned_id.as_str()))
+                    .filter(|account| routing::account_is_available(account, keys, &counts, now))
+                    .cloned();
+                if let Some(account) = chosen {
+                    if let Some(entry) = service.store.get_session_by_id(&pinned_id) {
+                        return Ok(with_proxy_notice(account, entry.proxy, entry.proxy_error, pinned_id));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── ② 否则按会话调度口径挑：到期早 → 积分多 → 在途少 → 优先级 ──
+    // 额度读数来自定时余额快照（`core::usage_query`），查不到就是两级判据同时
+    // 打平、自然落到「在途少 → 优先级」，退化行为可预期。
+    let credit = |account_id: &str| crate::server::core::usage_query::credit_rank(account_id);
     loop {
-        let picked = routing::pick_account_by_priority(&accounts, keys, &counts, &excluded, now);
+        let picked =
+            routing::pick_account_for_conversation(&accounts, keys, &counts, &excluded, now, &credit);
         let Some(picked) = picked else {
             break;
         };
@@ -132,6 +171,10 @@ pub(super) async fn select_target_account(
             break;
         };
         if let Some(entry) = service.store.get_session_by_id(&id) {
+            // 选中即记下：这条会话以后就优先用这个账号（见本函数头）
+            if let Some(key) = conversation_key {
+                super::affinity::pin(key, &id);
+            }
             return Ok(with_proxy_notice(picked, entry.proxy, entry.proxy_error, id));
         }
         excluded.push(id);
