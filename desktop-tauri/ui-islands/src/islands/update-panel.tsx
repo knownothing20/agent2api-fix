@@ -56,6 +56,15 @@ import { UpdateSettingsDialog } from './update-settings'
 /** 进度轮询间隔：下载 25MB 左右，1 秒足够顺滑又不会太密（照旧实现） */
 const POLL_MS = 1000
 
+/**
+ * 参考仓库（上游）：本项目是从它 fork 出来的。
+ *
+ * 「更新检查」与下载都以**本项目仓库**为准（后端返回的 repository，可用
+ * `WORKBUDDY_UPDATE_REPO` 覆盖），本常量只在界面上把上游地址列出来供查阅，
+ * 不参与任何检查或下载 —— 改它不会改变更新行为。
+ */
+const REFERENCE_REPO = 'aimod-cc/agent2api'
+
 /** 徽章语义色记号（app.js 的 renderTopbarStatus 优先读 data-tone，见其 mirror 注释） */
 type BadgeTone = '' | 'ok' | 'warn' | 'bad'
 
@@ -655,7 +664,8 @@ function UpdatePanel() {
   React.useEffect(() => () => { stopPolling() }, [])
 
   const repo = snap.repository ? `https://github.com/${snap.repository}` : ''
-  const owner = snap.repository ? `https://github.com/${snap.repository.split('/')[0]}` : ''
+  const referenceUrl = `https://github.com/${REFERENCE_REPO}`
+  const updatedLabel = formatDateTime(snap.info?.publishedAt)
   const latestLabel = snap.info?.latestVersion
     ? `${snap.info.latestVersion}${snap.info.prerelease ? '（预发布）' : ''}`
     : '—'
@@ -727,20 +737,28 @@ function UpdatePanel() {
           ? <Progress value={snap.percent} />
           : null}
 
-        {/* 关于作者 + 收藏项目：作者主页与仓库地址都从接口返回的 repository 现拼
-            （fork 后自动指向 fork 者），拿到数据前整行不渲染 */}
-        {owner && repo ? (
+        {/* 仓库信息：本项目仓库（更新检查与下载都以它为准，fork 后自动指向 fork 者）、
+            参考仓库（本项目从它 fork 而来，仅作地址展示）与最近更新时刻。
+            最近更新取「检查更新」结果里的 publishedAt（= 本项目最新发布的发布时间），
+            没检查过时显示占位而不是编一个时间 */}
+        {repo ? (
           <div className='update-author' id='update-author'>
             <div className='update-author-text'>
-              <strong>关于作者</strong>
+              <strong>本项目仓库</strong>
               <span>
-                本工具由{' '}
-                <a id='update-author-link' href={owner} data-external={owner} target='_blank' rel='noopener'>
-                  {snap.repository.split('/')[0]}
+                <a id='update-author-link' href={repo} data-external={repo} target='_blank' rel='noopener'>
+                  {snap.repository}
+                </a>
+                ，基于上游{' '}
+                <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
+                  {REFERENCE_REPO}
                 </a>{' '}
-                个人开发并开源维护，免费使用、不带广告，也不会收集你的账号数据。如果它帮到了你，欢迎到项目仓库点个
-                Star 支持一下。
+                维护（参考仓库）。免费使用、不带广告，也不会收集你的账号数据。
               </span>
+              <div className='update-author-meta'>
+                最近更新：<b id='update-updated-at'>{updatedLabel || '—'}</b>
+                {snap.checkedAt ? <span className='update-author-checked'>（检查于 {formatClock(snap.checkedAt)}）</span> : null}
+              </div>
             </div>
             <div className='update-author-actions'>
               <Button
@@ -749,9 +767,19 @@ function UpdatePanel() {
                 size='sm'
                 variant='outline'
                 data-external={repo}
-                title='在浏览器中打开项目仓库，点 Star 支持作者'
+                title='在浏览器中打开本项目仓库'
               >
-                收藏项目
+                打开本仓库
+              </Button>
+              <Button
+                id='btn-update-reference'
+                type='button'
+                size='sm'
+                variant='outline'
+                data-external={referenceUrl}
+                title='在浏览器中打开参考仓库（上游）'
+              >
+                参考仓库
               </Button>
             </div>
           </div>

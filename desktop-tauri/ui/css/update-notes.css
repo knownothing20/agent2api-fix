@@ -21,7 +21,7 @@
 
 .nav-item.active #nav-count-update { background: var(--surface); }
 
-/* ─── 关于作者 / 收藏项目 ─── */
+/* ─── 仓库信息 / 最近更新 ─── */
 .update-author {
   display: flex;
   align-items: center;
@@ -50,6 +50,13 @@
 }
 
 .update-author-text a:hover { text-decoration: underline; }
+
+/* 「最近更新」单独一行：与上面的说明文字同宽，靠上边距拉开一点 */
+.update-author-meta { margin-top: 3px; color: var(--text-2); }
+
+.update-author-meta b { color: var(--text); font-weight: 650; }
+
+.update-author-checked { margin-left: 4px; opacity: .8; }
 
 .update-author-actions { display: flex; gap: 7px; margin-left: auto; }
 
