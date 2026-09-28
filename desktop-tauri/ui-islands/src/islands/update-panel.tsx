@@ -57,12 +57,21 @@ import { UpdateSettingsDialog } from './update-settings'
 const POLL_MS = 1000
 
 /**
- * 参考仓库（上游）：本项目是从它 fork 出来的。
+ * 两个仓库地址（都是展示用常量，不参与任何检查或下载）。
  *
- * 「更新检查」与下载都以**本项目仓库**为准（后端返回的 repository，可用
- * `WORKBUDDY_UPDATE_REPO` 覆盖），本常量只在界面上把上游地址列出来供查阅，
- * 不参与任何检查或下载 —— 改它不会改变更新行为。
+ * ── 为什么本项目仓库是常量而不是后端返回的 repository ──────────
+ * 后端返回的 `repository` 是**更新检查实际去读的那个仓库**，由
+ * `WORKBUDDY_UPDATE_REPO` 决定。本项目（私有 fork）把它指向**上游**：
+ * 上游是公开仓库，匿名即可读 Release，检查更新因此零凭据可用；
+ * 而我们自己的仓库是私有的，匿名读一律 404，指过去只会让「最新版本」
+ * 变成空。所以：
+ *   · 本项目仓库 = 这里写死的 fork 地址（我们自己的那份代码）
+ *   · 参考仓库   = 后端 repository（= 上游，版本信息与更新日志的来源）
+ * 两者不是同一个值，别合并 —— 合并后要么版本信息空掉，要么显示错仓库。
  */
+const PROJECT_REPO = 'knownothing20/agent2api-fix'
+
+/** 参考仓库（上游）：版本检查与更新日志的来源 */
 const REFERENCE_REPO = 'aimod-cc/agent2api'
 
 /** 徽章语义色记号（app.js 的 renderTopbarStatus 优先读 data-tone，见其 mirror 注释） */
@@ -663,7 +672,9 @@ function UpdatePanel() {
   // 重载），把进度轮询收掉 —— 悬挂的定时器会一直按 1 秒打后端
   React.useEffect(() => () => { stopPolling() }, [])
 
-  const repo = snap.repository ? `https://github.com/${snap.repository}` : ''
+  // 参考仓库地址固定取常量（= 上游），不用后端 repository：后端那个值决定
+  // 「检查更新」去读谁，两者本可以是同一个，但本项目把检查指向上游公开仓库，
+  // 界面上要显示的却始终是上游，所以直接取常量更不容易被配置带偏
   const referenceUrl = `https://github.com/${REFERENCE_REPO}`
   const updatedLabel = formatDateTime(snap.info?.publishedAt)
   const latestLabel = snap.info?.latestVersion
@@ -737,53 +748,52 @@ function UpdatePanel() {
           ? <Progress value={snap.percent} />
           : null}
 
-        {/* 仓库信息：本项目仓库（更新检查与下载都以它为准，fork 后自动指向 fork 者）、
-            参考仓库（本项目从它 fork 而来，仅作地址展示）与最近更新时刻。
-            最近更新取「检查更新」结果里的 publishedAt（= 本项目最新发布的发布时间），
-            没检查过时显示占位而不是编一个时间 */}
-        {repo ? (
-          <div className='update-author' id='update-author'>
-            <div className='update-author-text'>
-              <strong>本项目仓库</strong>
-              <span>
-                <a id='update-author-link' href={repo} data-external={repo} target='_blank' rel='noopener'>
-                  {snap.repository}
-                </a>
-                ，基于上游{' '}
-                <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
-                  {REFERENCE_REPO}
-                </a>{' '}
-                维护（参考仓库）。免费使用、不带广告，也不会收集你的账号数据。
-              </span>
-              <div className='update-author-meta'>
-                最近更新：<b id='update-updated-at'>{updatedLabel || '—'}</b>
-                {snap.checkedAt ? <span className='update-author-checked'>（检查于 {formatClock(snap.checkedAt)}）</span> : null}
-              </div>
-            </div>
-            <div className='update-author-actions'>
-              <Button
-                id='btn-update-favorite'
-                type='button'
-                size='sm'
-                variant='outline'
-                data-external={repo}
-                title='在浏览器中打开本项目仓库'
-              >
-                打开本仓库
-              </Button>
-              <Button
-                id='btn-update-reference'
-                type='button'
-                size='sm'
-                variant='outline'
-                data-external={referenceUrl}
-                title='在浏览器中打开参考仓库（上游）'
-              >
-                参考仓库
-              </Button>
+        {/* 仓库信息：本项目仓库（我们自己的 fork，常量）、参考仓库（上游 = 版本检查
+            与更新日志的来源，后端 repository）与最近更新时刻（= 参考仓库最新发布的
+            发布时间；本项目仓库是私有的，匿名读不到它的 Release，所以这里只能取
+            参考仓库的时间）。没检查过时显示占位而不是编一个时间 */}
+        <div className='update-author' id='update-author'>
+          <div className='update-author-text'>
+            <strong>本项目仓库</strong>
+            <span>
+              <a id='update-author-link' href={`https://github.com/${PROJECT_REPO}`} data-external={`https://github.com/${PROJECT_REPO}`} target='_blank' rel='noopener'>
+                {PROJECT_REPO}
+              </a>
+              ，基于上游{' '}
+              <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
+                {REFERENCE_REPO}
+              </a>{' '}
+              维护。免费使用、不带广告，也不会收集你的账号数据。
+            </span>
+            <div className='update-author-meta'>
+              最近更新：<b id='update-updated-at'>{updatedLabel || '—'}</b>
+              <span className='update-author-checked'>（来自参考仓库）</span>
+              {snap.checkedAt ? <span className='update-author-checked'>· 检查于 {formatClock(snap.checkedAt)}</span> : null}
             </div>
           </div>
-        ) : null}
+          <div className='update-author-actions'>
+            <Button
+              id='btn-update-favorite'
+              type='button'
+              size='sm'
+              variant='outline'
+              data-external={`https://github.com/${PROJECT_REPO}`}
+              title='在浏览器中打开本项目仓库'
+            >
+              打开本仓库
+            </Button>
+            <Button
+              id='btn-update-reference'
+              type='button'
+              size='sm'
+              variant='outline'
+              data-external={referenceUrl}
+              title='在浏览器中打开参考仓库（上游）'
+            >
+              参考仓库
+            </Button>
+          </div>
+        </div>
 
         {/* 更新日志：只展示最新一次发布的说明，数据来自「检查更新」的结果
             （与上方「最新版本」同源） */}
