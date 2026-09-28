@@ -367,6 +367,9 @@ fn conversation_sort_key(
 /// `credit` 是账号 id → 额度读数的取值器（由 `core::usage_query` 的定时快照
 /// 提供）。查不到时返回默认值，于是两级额度判据同时打平、自然落到
 /// 「在途少 → 优先级」，退化行为是可预期的。
+///
+/// ⚠️ 两级额度判据**只在候选同属一家时**参与排序：`available` 的单位各家不同、
+/// 到期日目前只有码道有，跨家比较没有意义（详见函数体内那一段说明）。
 pub fn pick_account_for_conversation(
     accounts: &[Value],
     keys: &CooldownKeys<'_>,
@@ -375,7 +378,7 @@ pub fn pick_account_for_conversation(
     now: i64,
     credit: &dyn Fn(&str) -> CreditRank,
 ) -> Option<Value> {
-    accounts
+    let eligible: Vec<&Value> = accounts
         .iter()
         .filter(|account| {
             let Some(id) = account_id(account) else {
@@ -386,8 +389,34 @@ pub fn pick_account_for_conversation(
             }
             account_usability(account, keys, now).usable && !at_concurrency_limit(account, id, counts)
         })
+        .collect();
+    if eligible.is_empty() {
+        return None;
+    }
+    // ── 额度两级只在**同一家内部**参与排序 ────────────────────────
+    // `available` 这个字段名多家共用，但**单位与口径各不相同**（码道是积分、
+    // cline 是 credits、autoclaw 是钱包余额…），而「到期日」目前只有码道产出。
+    // 跨家比较会同时坏两件事：拿不同单位的数字比大小；以及「有到期日的那家」
+    // 仅凭有值就排到「没到期日的那家」前面，把原来的优先级顺序压过去。
+    // 所以候选跨家时把这两级让开（返回默认值 ⇒ 两级打平），退回「空闲 → 优先级」。
+    let first_provider = provider_key_of(eligible[0]);
+    let comparable = eligible
+        .iter()
+        .all(|account| provider_key_of(account) == first_provider);
+    let no_credit = |_: &str| CreditRank::default();
+    let credit: &dyn Fn(&str) -> CreditRank = if comparable { credit } else { &no_credit };
+    eligible
+        .into_iter()
         .min_by_key(|account| conversation_sort_key(account, counts, credit))
         .cloned()
+}
+
+/// 账号所属的 provider id（缺字段按默认 provider 归属，与 store 的兜底口径一致）。
+fn provider_key_of(account: &Value) -> &str {
+    account
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID)
 }
 
 /// 按**指定模型**派生队首：候选先收窄到「清单里有这个模型的家」，再走
@@ -585,7 +614,11 @@ mod conversation_scheduling_tests {
     use super::*;
 
     fn account(id: &str, priority: i64) -> Value {
-        json!({ "id": id, "name": id, "priority": priority, "enabled": true })
+        account_of(id, priority, "codearts")
+    }
+
+    fn account_of(id: &str, priority: i64, provider: &str) -> Value {
+        json!({ "id": id, "name": id, "priority": priority, "enabled": true, "provider": provider })
     }
 
     /// 固定读数表：`(账号 id, 到期日, 剩余积分)`。
@@ -700,6 +733,39 @@ mod conversation_scheduling_tests {
             Some("b".to_string()),
             pick(&with_limit, &counts, &credit),
             "a 已达 maxConcurrent=3 ⇒ 转给 b"
+        );
+    }
+
+    #[test]
+    fn the_credit_levels_are_skipped_when_the_candidates_span_providers() {
+        // 跨家时「到期日 / 剩余积分」不可比（字段名共用但单位不同；到期日目前
+        // 只有码道产出）。若照旧参与排序，码道会仅凭「有到期日」压过优先级。
+        let accounts = vec![
+            account_of("a", 101, "codearts"),
+            account_of("b", 100, "workbuddy"),
+        ];
+        let credit = credit_of(&[("a", Some("2026-10-29"), Some(11000.0))]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "跨家 ⇒ 退回原来的优先级口径（b 的优先级更小）"
+        );
+    }
+
+    #[test]
+    fn the_credit_levels_still_apply_within_one_provider() {
+        let accounts = vec![
+            account_of("a", 100, "codearts"),
+            account_of("b", 101, "codearts"),
+        ];
+        let credit = credit_of(&[
+            ("a", Some("2026-12-01"), Some(1000.0)),
+            ("b", Some("2026-10-29"), Some(1000.0)),
+        ]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick(&accounts, &HashMap::new(), &credit),
+            "同一家内仍按「到期早」优先"
         );
     }
 
