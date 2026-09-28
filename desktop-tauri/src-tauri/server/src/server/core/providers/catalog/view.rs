@@ -173,8 +173,14 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 .find(|entry| entry.matches(provider, &id))
                 .map(|entry| capability::overridden_keys(&entry.values))
                 .unwrap_or_default();
+            // `benefit` = 走**福利池**的模型：不扣积分，只受福利日额度限制。
+            // 为什么要把这个标记带给界面：这一列的「倍率」显示 `—` 时（上游没给
+            // `credits`），用户分不清「没读到」与「不花钱」—— 而福利源恰恰就是
+            // 「不扣积分但没倍率」的那一类。别家的清单条目没有这个键 ⇒ false。
+            let benefit = item.get("benefit").and_then(Value::as_bool).unwrap_or(false);
             models.push(json!({
                 "id": id, "name": item.get("name"), "credits": item.get("credits"),
+                "benefit": benefit,
                 "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
                 "provider": provider, "providerLabel": super::super::label_of(provider),
                 "source": source, "enabled": enabled, "aliases": aliases,

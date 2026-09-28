@@ -84,6 +84,14 @@ export type SharedWindow = {
     setModelCapabilities(
       provider: string, id: string, patch: Record<string, number | boolean | null>,
     ): Promise<ManageView | null | undefined>
+    /**
+     * 模型启停（内置家）：关掉 = 不广告（`/v1/models` 里看不到）+ 请求它 404 +
+     * 不参与路由，但管理页里这一行仍在（开关关着）。粒度是 (provider, id)，
+     * 落进 `modelRules.disabled`，**跨目录拉取保留**。
+     */
+    setModelState(
+      payload: { provider: string; id: string; enabled: boolean },
+    ): Promise<ManageView | null | undefined>
   }
   wbApp?: {
     toast?: (message: string, kind?: 'err' | 'ok') => void
@@ -617,6 +625,24 @@ export async function writeRemoveModel(provider: string, id: string): Promise<un
   const api = shared().workbuddyDesktop
   if (!api) throw new Error('后端桥不可用')
   return api.removeCustomModel(provider, id)
+}
+
+/**
+ * 模型启停（**只走内置家**）：关掉 = 不广告（`/v1/models` 里看不到）+ 请求它
+ * 返回 404 + 不参与转发路由，但管理页里这一行仍在（开关关着）—— 于是
+ * 「不想用的模型」是**收起来**而不是**删掉**，下次拉取还在、随时能再打开。
+ *
+ * 为什么自定义家不走这里：那些行是用户自己登记的，启停写在自定义家自己的记录里
+ * （`models[].enabled`，走 `wbModelsCustom.setBinding`），`modelRules` 的启停
+ * 对自定义 id 不生效（见后端 `set_state` 的说明）。界面上这一列的开关因此
+ * **只给内置家渲染**（见 models-page 的操作列）。
+ */
+export async function writeModelState(
+  provider: string, id: string, enabled: boolean,
+): Promise<unknown> {
+  const api = shared().workbuddyDesktop
+  if (!api) throw new Error('后端桥不可用')
+  return api.setModelState({ provider, id, enabled })
 }
 
 /**

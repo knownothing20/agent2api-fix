@@ -108,7 +108,7 @@ import {
   refreshModels, registerColumnSettings, removeCustomProvider, render, resolveProvider, restoreSavedFilters,
   rowEnabled, rowKeyOf, runRowAction, same, selectProvider, setSearch, setStateFilter, setTableEl,
   shared, subscribe, syncHead, toast, upstreamOptions, viewData, visibleColumns, writeAddModel,
-  writeBinding, writeRemoveMapping, writeRemoveModel,
+  writeBinding, writeModelState, writeRemoveMapping, writeRemoveModel,
   type Align, type Binding, type ColumnView, type CustomModelContext, type MappingContext,
 } from './models-panel-state'
 
@@ -439,6 +439,12 @@ function ModelsPage() {
         return (
           <td className={cellClass('cell-rate', column.align)}>
             <span className='rate'>{model.credits ? formatCredits(model.credits) : '—'}</span>
+            {/* 福利池模型：那一列往往是 `—`（上游不给倍率），光看列分不清「没读到」
+                与「不花钱」—— 这个标把后者标出来（走福利池、不扣积分）。 */}
+            {model.benefit ? (
+              <span className='binding-default'
+                title='走福利池：不扣积分，只受福利日额度限制'>福利</span>
+            ) : null}
           </td>
         )
       case 'source':
@@ -453,6 +459,25 @@ function ModelsPage() {
         return (
           <td className={cellClass('cell-act r', column.align)}>
             <div className='row-actions'>
+              {/* 模型启停（只给内置家）：关掉 = 不广告（/v1/models 看不到）+ 请求它 404
+                  + 不参与路由，但这一行仍在管理页可见（开关关着）—— 「不想用」是收起来，
+                  不是删掉，下次拉取还在、随时能再打开。
+                  自定义家的启停走它自己的编辑弹窗（见 models-custom-source），
+                  所以这里不给它们渲染开关（渲染了也调不动 modelRules）。 */}
+              {custom ? null : (
+                <Switch size='sm' checked={rowEnabled(model)} disabled={busyRow}
+                  title={rowEnabled(model)
+                    ? '已启用，点击禁用（不再对外提供）'
+                    : '已禁用，点击启用'}
+                  aria-label={`${rowEnabled(model) ? '禁用' : '启用'}模型 ${model.id}`}
+                  onCheckedChange={next => {
+                    void runRowAction(
+                      rowKeyOf(model),
+                      () => writeModelState(model.provider || '', model.id, next),
+                      next ? '模型已启用' : '模型已禁用（不再对外提供）',
+                    )
+                  }} />
+              )}
               {model.source === 'manual' || custom ? (
                 <Button variant='ghost' size='sm' className='text-destructive' disabled={busyRow}
                   onClick={() => void confirmRemoveModel()}>移除</Button>
