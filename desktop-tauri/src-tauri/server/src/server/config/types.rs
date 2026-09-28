@@ -116,6 +116,19 @@ pub const KEY_PROMPT_MODE: &str = "promptMode";
 /// `passthrough` 不读文件。
 pub const KEY_PROMPT_FILE: &str = "promptFile";
 
+/// 多账号调度档位的键（config.json 键，设置页「通用 → 多账号调度」）。
+///
+/// ── 为什么只有「第二级」可调 ─────────────────────────────────
+/// **会话粘性永远生效**（客户端带 `x-session-id` 就固定账号），这一档只决定
+/// 粘性命中之后怎么排。取值见 `core::routing::ConversationOrder`：
+///   · `stickyOnly`  —— 只保粘性，之后按优先级（等于改造前的选路）
+///   · `creditFirst` —— 粘性 + 积分优先（到期早 → 积分多 → 在途少 → 优先级）
+///   · `idleFirst`   —— 粘性 + 空闲优先（在途少 → 到期早 → 积分多 → 优先级）
+///
+/// **默认 `creditFirst`**：老配置里没有这个键时，行为与「加开关之前」逐字相同
+/// —— 引入设置项不该悄悄改变既有部署的行为。
+pub const KEY_SCHEDULING_MODE: &str = "schedulingMode";
+
 /// 系统提示词设置（设置页「通用 → 系统提示词」）。
 ///
 /// 与 `RetrySettings` 同一取舍：几个值总是一起用（转发层逐请求取一次、

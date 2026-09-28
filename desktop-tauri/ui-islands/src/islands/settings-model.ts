@@ -74,6 +74,8 @@ export type SettingsBridge = {
   getStorage(): Promise<unknown>
   getCaptchaSetting(): Promise<{ captchaEnabled?: boolean } | null | undefined>
   saveCaptchaSetting(on: boolean): Promise<{ captchaEnabled?: boolean } | null | undefined>
+  getSchedulingSetting(): Promise<{ schedulingMode?: string } | null | undefined>
+  saveSchedulingSetting(mode: string): Promise<{ schedulingMode?: string } | null | undefined>
   panelLogout(): Promise<unknown>
   /** 打开外链的唯一出口（只放行 http(s)）：桌面走系统浏览器，网页端 shim 是 window.open */
   openReleasePage?(url: string): Promise<unknown>
@@ -418,6 +420,31 @@ export const PROMPT_MODES: PromptModeOption[] = [
   { value: 'append', optionLabel: '追加网关提示词', toastLabel: '追加网关提示词' },
 ]
 
+export type SchedulingModeOption = { value: string; optionLabel: string; toastLabel: string }
+
+/**
+ * 多账号调度档位。**会话粘性不在这里** —— 它固定生效（客户端带 `x-session-id`
+ * 时同一条会话的每一轮都落在同一个账号），这一档只决定粘性命中**之后**怎么排。
+ * 取值与后端 `core::routing::ConversationOrder` 的 `as_str` 逐字对应。
+ */
+export const SCHEDULING_MODES: SchedulingModeOption[] = [
+  {
+    value: 'creditFirst',
+    optionLabel: '积分优先：到期早的先消耗（默认）',
+    toastLabel: '积分优先',
+  },
+  {
+    value: 'idleFirst',
+    optionLabel: '空闲优先：在途请求少的先用',
+    toastLabel: '空闲优先',
+  },
+  {
+    value: 'stickyOnly',
+    optionLabel: '只保会话粘性：之后按账号优先级',
+    toastLabel: '只保会话粘性',
+  },
+]
+
 /* ─── 校验与归一化 ─────────────────────────── */
 
 export type ParseResult = { ok: true; value: number } | { ok: false; message: string }
@@ -536,6 +563,7 @@ export const NOTES = {
   storageSize: '库主文件的大小（不含运行期间的 WAL 临时文件，退出时已自动并回）。',
   storage: '数据统一保存在配置目录下的 agent2api.db；如需更换位置，请设置环境变量 AGENT2API_PROXY_HOME 后重启程序。',
   captcha: '开启后，登录页在浏览器后台自动完成验证（对真人无感），而脚本每次尝试都要先算一道题 —— 暴力破解与抢注的成本显著上升。仅影响面板的登录 / 注册，与 API 客户端的 API Key 无关。',
+  schedulingMode: '会话粘性始终生效：客户端带 x-session-id 时，同一条会话的每一轮都落在同一个账号上（不会中途换号）。这里只决定粘性命中之后怎么挑账号 —— 「积分优先」按账号的重置日与剩余额度排（重置日早的先消耗），「空闲优先」按当前在途请求数排（谁空着谁先用），「只保会话粘性」则回到账号优先级。保存后对下一次选路立即生效，不用重启。',
   panelLogin: '当前浏览器以管理员身份登录着本面板。「退出登录」会撤销这台设备的登录会话（30 天内的自动续期一并失效），需要重新输入账号密码；其他已登录的设备不受影响。',
   exportDanger: '导出文件内含 accessToken / refreshToken / apiKey 等凭证与自定义提供商定义，可直接用于登录。请妥善保管，不要外传或上传到公共位置。',
 } as const

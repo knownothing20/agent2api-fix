@@ -27,6 +27,7 @@ import {
   LANGUAGES,
   NOTES,
   PROMPT_MODES,
+  SCHEDULING_MODES,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
   RETRY_FIELDS,
@@ -81,6 +82,7 @@ import {
   saveRetentionField,
   saveRetryField,
   saveSanitize,
+  saveSchedulingMode,
   saveTimeoutField,
   saveToggle,
   selectCategory,
@@ -741,8 +743,45 @@ function RetryPane({ snap }: { snap: SettingsSnapshot }) {
 /* ─── 网关分类 ─────────────────────────────── */
 
 function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
+  // 档位的展示文案：认不出的值原样回显（与 prompt 的 modeLabel 同一写法）
+  const schedulingLabel =
+    SCHEDULING_MODES.find(item => item.value === snap.scheduling.mode)?.optionLabel
+    ?? snap.scheduling.mode
   return (
     <>
+      {/* 多账号调度：会话粘性固定生效（不在这一档里），这里只调粘性之后的第二级 */}
+      <section className='panel'>
+        <PanelHead title='多账号调度' tip={NOTES.schedulingMode} />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label htmlFor='settings-scheduling-mode'>调度档位</label>
+              <span className='prompt-input'>
+                <Select
+                  value={snap.scheduling.mode}
+                  onValueChange={next => void saveSchedulingMode(String(next))}
+                >
+                  <SelectTrigger
+                    id='settings-scheduling-mode'
+                    className='w-[240px]'
+                    disabled={!snap.scheduling.available || snap.busy === 'scheduling'}
+                    aria-label='多账号调度档位'
+                  >
+                    <SelectValue>{schedulingLabel}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SCHEDULING_MODES.map(item => (
+                      <SelectItem key={item.value} value={item.value}>{item.optionLabel}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+            </div>
+          </div>
+          <div className='hint'>{NOTES.schedulingMode}</div>
+        </div>
+      </section>
+
       <section className='panel'>
         <PanelHead
           title='排队等待'

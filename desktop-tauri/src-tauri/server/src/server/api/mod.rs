@@ -65,6 +65,7 @@ pub mod protocol;
 pub mod proxies;
 pub mod queue_api;
 pub mod retry_api;
+pub mod scheduling;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod session;

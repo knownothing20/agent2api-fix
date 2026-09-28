@@ -220,6 +220,13 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/retry",
             get(api::retry_api::get_retry).put(api::retry_api::put_retry),
         )
+        // 多账号调度档位：GET 读、PUT 更新。会话粘性固定生效，这里只决定粘性
+        // 命中之后的第二级排序（积分优先 / 空闲优先 / 只按优先级）。
+        // 与 /api/retry 同一模式：保存后对下一次选路立即生效。
+        .route(
+            "/api/scheduling",
+            get(api::scheduling::get_scheduling).put(api::scheduling::put_scheduling),
+        )
         // 上游请求超时（四项）：GET 读、PUT（允许部分字段）更新。
         // 与 /api/retry 同一模式、同一理由独立成端点：保存后对下一个请求
         // 立即生效（连接超时经由出网客户端，其余三项在各阶段自己的计时器上）。

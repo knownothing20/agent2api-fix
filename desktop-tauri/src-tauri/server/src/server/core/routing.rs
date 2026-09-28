@@ -308,6 +308,44 @@ impl CreditRank {
     }
 }
 
+/// 多账号调度的档位（设置页「通用 → 多账号调度」）。
+///
+/// **会话粘性不受这一档控制** —— 它是固定生效的（客户端带 `x-session-id` 就固定
+/// 账号）；这一档只决定粘性命中**之后**怎么排。默认 [`ConversationOrder::CreditFirst`]，
+/// 也就是引入这个设置项之前一直生效的那套，老配置不写这个键时行为逐字不变。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConversationOrder {
+    /// 只保会话粘性：粘性 → 优先级（等于改造前的选路，只是同一会话固定账号）
+    StickyOnly,
+    /// 粘性 → 到期早 → 积分多 → 在途少 → 优先级（默认）
+    #[default]
+    CreditFirst,
+    /// 粘性 → 在途少 → 到期早 → 积分多 → 优先级
+    IdleFirst,
+}
+
+impl ConversationOrder {
+    /// 配置里存的那个字符串（键 [`crate::server::config::KEY_SCHEDULING_MODE`]）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StickyOnly => "stickyOnly",
+            Self::CreditFirst => "creditFirst",
+            Self::IdleFirst => "idleFirst",
+        }
+    }
+
+    /// 解析配置值；认不出返回 None（调用方回落默认，**不报错** —— 手改坏的
+    /// 一个值不该让整份配置失效，与 `no_retry_codes_field` 的取向一致）。
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "stickyOnly" => Some(Self::StickyOnly),
+            "creditFirst" => Some(Self::CreditFirst),
+            "idleFirst" => Some(Self::IdleFirst),
+            _ => None,
+        }
+    }
+}
+
 /// 只认 `YYYY-MM-DD`（上游给的就是这个形态）。认不出返回 None。
 fn parse_iso_date(text: &str) -> Option<(i32, u32, u32)> {
     let mut parts = text.trim().split('-');
@@ -332,29 +370,35 @@ fn conversation_sort_key(
     account: &Value,
     counts: &HashMap<String, usize>,
     credit: &dyn Fn(&str) -> CreditRank,
-) -> ((u8, i32, u32, u32), (u8, i64), usize, (i64, i64)) {
+    order: ConversationOrder,
+) -> (i64, i64, i64, i64, i64) {
     let id = account_id(account).unwrap_or("");
     let rank = credit(id);
+    // 每一级都编码成「数值越小越该用」，各档位只是**摆放顺序**不同：
+    //   · 到期日 `YYYYMMDD` 越大越晚 ⇒ 直接用；取不到 = i64::MAX（排最后）
+    //   · 积分多的优先 ⇒ 取负值；取不到 = i64::MAX（排最后）
+    //   · 在途数少的优先 ⇒ 直接用
+    //   · 优先级 / 加入时间：原口径（数值小的先用）
     let expiry = match rank.expires_at {
-        Some((year, month, day)) => (0u8, year, month, day),
-        None => (1u8, 0, 0, 0),
+        Some((year, month, day)) => year as i64 * 10_000 + month as i64 * 100 + day as i64,
+        None => i64::MAX,
     };
     let credits = match rank.available {
-        // 积分多的优先 ⇒ 取负值参与升序；先夹到 i64 安全区间再取整
-        Some(value) if value.is_finite() => {
-            (0u8, -(value.round().clamp(-9.0e15, 9.0e15) as i64))
-        }
-        _ => (1u8, 0),
+        Some(value) if value.is_finite() => -(value.round().clamp(-9.0e15, 9.0e15) as i64),
+        _ => i64::MAX,
     };
-    let busy = counts.get(id).copied().unwrap_or(0);
-    let priority = (
-        normalize_priority(
-            account.get("priority"),
-            crate::server::core::account_store::priority::DEFAULT_PRIORITY,
-        ),
-        js_number(account.get("addedAt").unwrap_or(&Value::Null)).unwrap_or(0.0) as i64,
+    let busy = counts.get(id).copied().unwrap_or(0) as i64;
+    let priority = normalize_priority(
+        account.get("priority"),
+        crate::server::core::account_store::priority::DEFAULT_PRIORITY,
     );
-    (expiry, credits, busy, priority)
+    let added = js_number(account.get("addedAt").unwrap_or(&Value::Null)).unwrap_or(0.0) as i64;
+    match order {
+        // 只保粘性：第二级起就是原来的优先级口径（连「空闲」也不参与）
+        ConversationOrder::StickyOnly => (priority, added, 0, 0, 0),
+        ConversationOrder::CreditFirst => (expiry, credits, busy, priority, added),
+        ConversationOrder::IdleFirst => (busy, expiry, credits, priority, added),
+    }
 }
 
 /// 按**会话调度**口径挑账号：到期早 → 积分多 → 在途少 → 优先级。
@@ -377,6 +421,7 @@ pub fn pick_account_for_conversation(
     exclude_ids: &[String],
     now: i64,
     credit: &dyn Fn(&str) -> CreditRank,
+    order: ConversationOrder,
 ) -> Option<Value> {
     let eligible: Vec<&Value> = accounts
         .iter()
@@ -407,7 +452,7 @@ pub fn pick_account_for_conversation(
     let credit: &dyn Fn(&str) -> CreditRank = if comparable { credit } else { &no_credit };
     eligible
         .into_iter()
-        .min_by_key(|account| conversation_sort_key(account, counts, credit))
+        .min_by_key(|account| conversation_sort_key(account, counts, credit, order))
         .cloned()
 }
 
@@ -632,13 +677,23 @@ mod conversation_scheduling_tests {
         }
     }
 
+    /// 默认档位（`creditFirst`）下的挑选结果。
     fn pick(
         accounts: &[Value],
         counts: &HashMap<String, usize>,
         credit: &dyn Fn(&str) -> CreditRank,
     ) -> Option<String> {
+        pick_with(accounts, counts, credit, ConversationOrder::CreditFirst)
+    }
+
+    fn pick_with(
+        accounts: &[Value],
+        counts: &HashMap<String, usize>,
+        credit: &dyn Fn(&str) -> CreditRank,
+        order: ConversationOrder,
+    ) -> Option<String> {
         let keys = CooldownKeys::new("gpt-4o");
-        pick_account_for_conversation(accounts, &keys, counts, &[], 0, credit)
+        pick_account_for_conversation(accounts, &keys, counts, &[], 0, credit, order)
             .and_then(|account| account_id(&account).map(str::to_string))
     }
 
@@ -766,6 +821,41 @@ mod conversation_scheduling_tests {
             Some("b".to_string()),
             pick(&accounts, &HashMap::new(), &credit),
             "同一家内仍按「到期早」优先"
+        );
+    }
+
+    #[test]
+    fn idle_first_puts_the_in_flight_count_before_the_credits() {
+        let accounts = vec![account("a", 100), account("b", 101)];
+        // a 到期更早、b 额度更多 —— 两档在这两个判据上给出相反答案，好区分
+        let credit = credit_of(&[
+            ("a", Some("2026-10-29"), Some(1000.0)),
+            ("b", Some("2026-12-01"), Some(99999.0)),
+        ]);
+        let mut counts = HashMap::new();
+        counts.insert("a".to_string(), 2usize);
+        assert_eq!(
+            Some("b".to_string()),
+            pick_with(&accounts, &counts, &credit, ConversationOrder::IdleFirst),
+            "idleFirst：b 空闲，哪怕 a 的额度更该先用"
+        );
+        assert_eq!(
+            Some("a".to_string()),
+            pick_with(&accounts, &counts, &credit, ConversationOrder::CreditFirst),
+            "creditFirst：a 到期更早，哪怕它更忙"
+        );
+    }
+
+    #[test]
+    fn sticky_only_falls_back_to_priority() {
+        let accounts = vec![account("a", 101), account("b", 100)];
+        let credit = credit_of(&[("a", Some("2026-10-29"), Some(99999.0))]);
+        let mut counts = HashMap::new();
+        counts.insert("b".to_string(), 3usize);
+        assert_eq!(
+            Some("b".to_string()),
+            pick_with(&accounts, &counts, &credit, ConversationOrder::StickyOnly),
+            "只保粘性：额度与空闲都不参与，回到优先级（b 的数值更小）"
         );
     }
 

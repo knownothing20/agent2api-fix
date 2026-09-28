@@ -161,9 +161,13 @@ pub(super) async fn select_target_account(
     // 额度读数来自定时余额快照（`core::usage_query`），查不到就是两级判据同时
     // 打平、自然落到「在途少 → 优先级」，退化行为可预期。
     let credit = |account_id: &str| crate::server::core::usage_query::credit_rank(account_id);
+    // 第二级排序按设置页那一档走（粘性不受它控制，见 `ConversationOrder` 的说明）。
+    // 逐请求读一次：与 retry_settings 同一取舍，用户改完下一次请求就生效。
+    let order = crate::server::config::scheduling_mode();
     loop {
-        let picked =
-            routing::pick_account_for_conversation(&accounts, keys, &counts, &excluded, now, &credit);
+        let picked = routing::pick_account_for_conversation(
+            &accounts, keys, &counts, &excluded, now, &credit, order,
+        );
         let Some(picked) = picked else {
             break;
         };

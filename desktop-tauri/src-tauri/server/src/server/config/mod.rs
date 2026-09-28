@@ -1113,6 +1113,39 @@ pub fn set_prompt(mode: crate::server::core::prompt::PromptMode, file: Option<St
     })
 }
 
+// ─── 多账号调度档位（schedulingMode）───────────────────────────
+
+/// 当前的多账号调度档位（默认 `creditFirst`）。
+///
+/// 每次调用读一次配置快照：它是**逐请求**的选路输入，与 `retry_settings()` 同一
+/// 取舍（转发层本来就逐请求取那份快照，这里只多一次读锁 + 一次 map 查找）。
+/// 值认不出（手改坏了）时回落默认而**不报错** —— 与 `no_retry_codes_field` 一致。
+pub fn scheduling_mode() -> crate::server::core::routing::ConversationOrder {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            if let Some(text) = config.raw.get(KEY_SCHEDULING_MODE).and_then(Value::as_str) {
+                if let Some(mode) = crate::server::core::routing::ConversationOrder::parse(text) {
+                    return mode;
+                }
+            }
+        }
+    }
+    crate::server::core::routing::ConversationOrder::default()
+}
+
+/// 写入调度档位（设置页「通用 → 多账号调度」）。值由调用方先解析。
+///
+/// 与 `set_update_proxy` 同一模式：内存立即生效（下一次选路就用新档位），
+/// 写盘时不吃掉其它字段。
+pub fn set_scheduling_mode(mode: crate::server::core::routing::ConversationOrder) -> bool {
+    update(move |config| {
+        config.raw.insert(
+            KEY_SCHEDULING_MODE.to_string(),
+            Value::String(mode.as_str().to_string()),
+        );
+    })
+}
+
 // ─── 数据保存目录（logDir / requestStatsDir / debugDir）────────
 //
 // ── 为什么这里**只剩读**，没有对应的写函数（T8 收尾的一处）──────

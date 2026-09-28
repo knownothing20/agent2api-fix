@@ -41,6 +41,7 @@ import {
   RETRY_CODE_MIN,
   RETRY_FIELDS,
   RETRY_MAX_CODES,
+  SCHEDULING_MODES,
   SETTINGS_CAT_KEY,
   TIMEOUT_FIELDS,
   errorMessage,
@@ -74,6 +75,7 @@ export type BusyScope =
   | 'sanitize'
   | 'prompt'
   | 'captcha'
+  | 'scheduling'
   | 'export'
   | 'import'
   | null
@@ -149,6 +151,8 @@ export type SettingsSnapshot = {
   prompt: PromptState
   storage: StorageState
   captcha: { available: boolean; enabled: boolean }
+  /** 多账号调度档位（会话粘性固定生效，这里只决定它之后的第二级排序） */
+  scheduling: { available: boolean; mode: string }
   ioFailure: IoFailure
   /** 保留期改小的确认框正文（非空即开着）；确认 / 取消都收口到 resolveRetentionConfirm */
   retentionConfirm: { head: string } | null
@@ -198,6 +202,8 @@ const INITIAL: SettingsSnapshot = {
     debug: null,
   },
   captcha: { available: true, enabled: false },
+  // 默认与后端一致（creditFirst = 积分优先）：后端认不出这个键时也是它
+  scheduling: { available: true, mode: 'creditFirst' },
   ioFailure: null,
   retentionConfirm: null,
   panelLogin: false,
@@ -868,6 +874,49 @@ export async function saveCaptcha(next: boolean): Promise<void> {
   }
 }
 
+/* ─── 多账号调度档位 ───────────────────────── */
+
+/**
+ * 认不出的值回落默认（`creditFirst`）：与后端「认不出就用默认、不报错」同一取向
+ * —— 手改坏的一个值不该让整块设置不可用。
+ */
+function normalizeSchedulingMode(raw: unknown): string {
+  const text = typeof raw === 'string' ? raw : ''
+  return SCHEDULING_MODES.some(item => item.value === text) ? text : 'creditFirst'
+}
+
+async function loadScheduling(): Promise<void> {
+  try {
+    const state = await shared().workbuddyDesktop?.getSchedulingSetting()
+    publish({
+      scheduling: { available: true, mode: normalizeSchedulingMode(state?.schedulingMode) },
+    })
+  } catch (error) {
+    // 读失败降级成只读（照 captcha 的模式）
+    publish({ scheduling: { available: false, mode: 'creditFirst' } })
+    console.warn('读取调度档位失败:', errorMessage(error))
+  }
+}
+
+export async function saveSchedulingMode(mode: string): Promise<void> {
+  if (busyScope) { repaint(); return }
+  beginBusy('scheduling')
+  publish({ scheduling: { ...snapshot.scheduling, mode } })
+  try {
+    const state = await shared().workbuddyDesktop?.saveSchedulingSetting(mode)
+    publish({
+      scheduling: { available: true, mode: normalizeSchedulingMode(state?.schedulingMode) },
+    })
+    const option = SCHEDULING_MODES.find(item => item.value === mode)
+    toast(`✅ 调度已改为「${option?.toastLabel ?? mode}」`)
+  } catch (error) {
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+    await loadScheduling() // 回滚到后端的真实值
+  } finally {
+    endBusy()
+  }
+}
+
 /* ─── 系统提示词（模式 + 文件 + 降级状态） ───── */
 
 export function renderPrompt(data?: unknown): void {
@@ -1038,6 +1087,7 @@ export async function load(): Promise<void> {
     loadPrompt(),
     loadStorage(),
     loadCaptcha(),
+    loadScheduling(),
     // 软件更新面板是另一个岛（update-panel.tsx），切进设置页时让它自己刷新一次
     shared().wbUpdatePanel?.load?.(),
   ])
