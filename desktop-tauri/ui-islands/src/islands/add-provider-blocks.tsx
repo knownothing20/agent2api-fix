@@ -184,6 +184,13 @@ function ManualSection({
     >
       <h3>{manualTitleOf(config)}</h3>
       <Note {...note} />
+      {/* 网页端为什么没有「网页登录」标签（见 methodsOf 的过滤）+ **怎么不装客户端拿到
+          token** —— 直接写在这一页上，用户才不会以为是功能缺了或自己点错了。 */}
+      {shared().workbuddyDesktop?.platform === 'web' && config.webLogin?.webUnavailable ? (
+        <div className='detail border-l-2 border-border pl-[11px]'>
+          {config.webLogin.webUnavailable}
+        </div>
+      ) : null}
       {config.fields.map(field => {
         const id = fieldIdOf(config, field)
         // 必填只在标签上标出（弹窗不是 <form>，原生 required 不生效），真正的拦截在 submit

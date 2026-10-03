@@ -148,10 +148,14 @@ const RACCOON: ProviderConfig = {
     // （`office-raccoon://auth/callback?code=…`），浏览器把它丢掉后跳回官网首页，
     // 地址里没有 code 也没有 state（2026-10-03 用户实测确认）。
     // 所以这里不给按钮、不给粘贴框，直接说清并指路。
-    webUnavailable: '浏览器无法完成小浣熊登录：官网只在自定义协议回调里交出授权码'
-      + '（office-raccoon://auth/callback?code=…），浏览器拿不到它。'
-      + '请改用下面的「填写凭证」：把小浣熊客户端登录态里的 access_token（一长串 JWT）'
-      + '粘进来即可（可选再填 refreshToken，填了能自动续期）。',
+    // 这段显示在「填写凭证」页顶部（网页端不显示网页登录标签，见 methodsOf）。
+    // 写法上要给**两条**信息：为什么没有网页登录、以及**不用装客户端**也能拿到 token。
+    webUnavailable: '网页端没有「网页登录」：官网只在自定义协议回调'
+      + '（office-raccoon://auth/callback?code=…）里交出授权码，浏览器拿不到它。'
+      + '但 token 不用装客户端也能取 —— 小浣熊官网本身就是网页版应用，'
+      + '在浏览器里登录 xiaohuanxiong.com 后按 F12 → Application（应用）→ Local Storage'
+      + '→ 选 https://xiaohuanxiong.com，把 access_token 那一项的值（eyJ 开头的一长串）'
+      + '复制过来填进下面即可；有 refresh_token 也一并填上，能自动续期。',
   },
   manualTitle: '粘贴 token / refreshToken',
   manualNoteHtml: 'refreshToken 可选，填了到期可自动续期；两者都能从<a href="#" class="raccoon-hint-link" data-raccoon-hint>小浣熊客户端登录态文件</a>里取到。',
@@ -619,7 +623,13 @@ export function methodsOf(config: ProviderConfig, region: string): MethodId[] {
   return ADD_METHODS.filter(method => {
     if (method.id === 'oauth') return Boolean(config.oauthLogin)
     if (method.id === 'sms') return Boolean(config.smsLogin)
-    if (method.id === 'web') return Boolean(config.webLogin) && (!config.webLogin?.region || region === config.webLogin.region)
+    if (method.id === 'web') {
+      // 网页端做不了这家（如小浣熊：官网只在自定义协议回调里给授权码，浏览器拿不到）⇒
+      // **整个标签都不显示**，而不是让用户点进一个没有任何按钮的空页 ——
+      // 后者实测就是「登录都没有啊」这种困惑的来源。桌面版照常显示。
+      if (platform() === 'web' && config.webLogin?.webUnavailable) return false
+      return Boolean(config.webLogin) && (!config.webLogin?.region || region === config.webLogin.region)
+    }
     if (method.id === 'desktop') return desktopImportAvailable(config)
     return true
   }).map(method => method.id)
