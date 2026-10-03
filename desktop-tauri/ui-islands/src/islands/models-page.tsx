@@ -430,6 +430,26 @@ function ModelsPage() {
                 ellipsis 截断时悬停能看全。曾经这里另挂一颗 ⧉ 小按钮，已去掉：
                 点名字更省事，也少一个悬停才显形的控件 */}
             <div className='mid'>
+              {/* 模型启停（只给内置家）：关掉 = 不广告（/v1/models 看不到）+ 请求它 404
+                  + 不参与路由，但这一行仍在管理页可见（开关关着）——「不想用」是**收起来**，
+                  不是删掉，下次拉取还在、随时能再打开。
+                  为什么放在名字左边而不是「操作」列：操作列在最右、要横向滚动才看得见，
+                  而这是每行最常用的动作之一；顺带也和「模型映射」chip 上那颗映射开关
+                  拉开距离（那颗管别名，这颗管模型本身）。 */}
+              {custom ? null : (
+                <Switch size='sm' checked={rowEnabled(model)} disabled={busyRow}
+                  title={rowEnabled(model)
+                    ? '已启用，点击禁用（不再对外提供）'
+                    : '已禁用，点击启用'}
+                  aria-label={`${rowEnabled(model) ? '禁用' : '启用'}模型 ${model.id}`}
+                  onCheckedChange={next => {
+                    void runRowAction(
+                      rowKeyOf(model),
+                      () => writeModelState(model.provider || '', model.id, next),
+                      next ? '模型已启用' : '模型已禁用（不再对外提供）',
+                    )
+                  }} />
+              )}
               <span className='t' data-copy={model.id} title={`点击复制：${model.id}`}>{model.id}</span>
             </div>
             {model.name && model.name !== model.id ? <div className='mname'>{model.name}</div> : null}
@@ -459,25 +479,8 @@ function ModelsPage() {
         return (
           <td className={cellClass('cell-act r', column.align)}>
             <div className='row-actions'>
-              {/* 模型启停（只给内置家）：关掉 = 不广告（/v1/models 看不到）+ 请求它 404
-                  + 不参与路由，但这一行仍在管理页可见（开关关着）—— 「不想用」是收起来，
-                  不是删掉，下次拉取还在、随时能再打开。
-                  自定义家的启停走它自己的编辑弹窗（见 models-custom-source），
-                  所以这里不给它们渲染开关（渲染了也调不动 modelRules）。 */}
-              {custom ? null : (
-                <Switch size='sm' checked={rowEnabled(model)} disabled={busyRow}
-                  title={rowEnabled(model)
-                    ? '已启用，点击禁用（不再对外提供）'
-                    : '已禁用，点击启用'}
-                  aria-label={`${rowEnabled(model) ? '禁用' : '启用'}模型 ${model.id}`}
-                  onCheckedChange={next => {
-                    void runRowAction(
-                      rowKeyOf(model),
-                      () => writeModelState(model.provider || '', model.id, next),
-                      next ? '模型已启用' : '模型已禁用（不再对外提供）',
-                    )
-                  }} />
-              )}
+              {/* 模型启停不在这里 —— 它在「上游模型」列（名字左边）：操作列在最右、
+                  要横向滚动才看得见，而启停是每行最常用的动作之一（见 'model' 分支）。 */}
               {model.source === 'manual' || custom ? (
                 <Button variant='ghost' size='sm' className='text-destructive' disabled={busyRow}
                   onClick={() => void confirmRemoveModel()}>移除</Button>
