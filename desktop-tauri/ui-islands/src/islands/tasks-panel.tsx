@@ -564,6 +564,13 @@ function TasksPanel() {
       // 立即查询积分刚写下一份新快照，让账号页马上应用它 —— 否则用户点完
       // 「立即执行」切到账号页，看到的还是上一次的旧余额
       if (task.id === 'usageQuery') await shared().wbAccountsView?.syncBalancesSnapshot?.()
+      // 自动领福利同理，而且更明显：领到的是**套餐赠送积分**，账号行上那个数字当场就变了
+      // —— 不刷新的话，用户点完「立即执行」会以为没生效（后端其实已经改完了记录）。
+      // 两件事都要做：`refresh` 拉新的账号记录，`syncBalancesSnapshot` 应用新的余额快照。
+      if (task.id === 'codeartsWelfare') {
+        await shared().wbApp?.refresh?.()
+        await shared().wbAccountsView?.syncBalancesSnapshot?.()
+      }
     } catch (error) {
       toast(`执行失败：${errorMessage(error)}`, 'err')
       await loadPanel()
