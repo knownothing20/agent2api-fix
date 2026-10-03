@@ -25,8 +25,15 @@
 //! `GET /api/session/login/wait?state=` 直到 done（与桌面壳的等待语义一致，
 //! 返回最终 session；取消/错误原样上抛）。适用面（对齐各上游回调机制）：
 //!   · WorkBuddy / Qoder / Cline：设备授权轮询，网页端完全可用；
-//!   · AutoClaw（OAuth）/ CatPaw：回调打**本机网关 loopback 端口** ——
+//!   · AutoClaw（OAuth）：回调打**本机网关 loopback 端口** ——
 //!     浏览器与网关同机（compose 本地映射）时可用，远程面板不可用；
+//!   · CatPaw：**远程面板也能用**。它的 loopback 回调与 AutoClaw 同形（浏览器从
+//!     公网页面 POST 到 127.0.0.1，会被私有网络检查 PNA 挡下 —— 官方客户端专门回了
+//!     `Access-Control-Allow-Private-Network` 才过，我们没有），但 `core::login::catpaw`
+//!     同时跑**网关自己轮询上游**的兜底通道（`poll-token`，每 1 秒用本地 sid 问一次，
+//!     **不经过浏览器**，因此不受任何 CORS / PNA 策略影响）⇒ 浏览器只需把登录页打开、
+//!     用户完成登录，token 由网关自己取回。代价只是可能比同机慢一两秒。
+//!     （本条原先写「CatPaw 远程面板不可用」，那是加 poll 兜底之前的旧说法。）
 //!   · 小浣熊：自定义协议回调（office-raccoon://），浏览器无法转交，
 //!     网页端用「填写凭证」。
 //!
