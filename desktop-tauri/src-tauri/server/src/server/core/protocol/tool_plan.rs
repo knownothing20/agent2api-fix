@@ -211,8 +211,30 @@ pub fn restore_namespace(mut item: Value, flat_name: &str, plan: &ToolPlan) -> V
 /// 关键能力 —— 2026-09 那次 Codex 工具失效，症状是模型把调用当正文吐出来，
 /// 若当时有这行日志，一眼就能定位。
 pub fn tool_kind_label(tool: &Value) -> String {
-    let name = string_field(tool, "name");
+    // 字符串简写（`tools: ["web_search"]`）：它自己就是名字
+    if let Some(text) = tool.as_str() {
+        let text = text.trim();
+        return if text.is_empty() {
+            "未命名工具".to_string()
+        } else {
+            text.to_string()
+        };
+    }
     let kind = string_field(tool, "type");
+    // 名字两处可取：扁平写法的顶层 `name`，与嵌套 Chat 形态
+    // （`{"type":"function","function":{"name":…}}`）里层的 `function.name`。
+    // 只看顶层的话，标准 OpenAI 形态的工具在日志里全印成「function」，
+    // 等于没报名字 —— 2026-10-01 排查「工具被整批剔除」时就吃了这个亏。
+    let name = {
+        let flat = string_field(tool, "name");
+        if !flat.is_empty() {
+            flat
+        } else {
+            tool.get("function")
+                .map(|function| string_field(function, "name"))
+                .unwrap_or_default()
+        }
+    };
     if name.is_empty() {
         if kind.is_empty() { "未命名工具".to_string() } else { kind }
     } else if kind.is_empty() || kind.eq_ignore_ascii_case("function") {

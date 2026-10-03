@@ -90,7 +90,7 @@ pub const TASKS: [TaskDef; 7] = [
     TaskDef {
         id: TASK_USAGE_QUERY,
         label: "定时查询积分",
-        description: "定期查询已启用账号的余额 / 积分。启动先展示上次结果，到期再查询；失败会保留查询时间与错误，不因重启反复请求上游。",
+        description: "定期查询全部账号的余额 / 积分（含已禁用账号 —— 禁用只表示不参与转发，不影响余额能否查；凭证不完整的账号会跳过）。启动先展示上次结果，到期再查询；失败会保留查询时间与错误，不因重启反复请求上游。",
         unit: "minutes",
         runner: Runner::Backend,
         min: config::INTERVAL_MIN_MINUTES,

@@ -25,8 +25,8 @@
 use serde_json::{json, Map, Value};
 
 use super::{
-    content_parts, content_text, event_frame, freeform, is_truthy, json_text, random_id,
-    string_field, string_value, tool_plan, SseLineBuffer, FIELD_ENCRYPTED_CONTENT,
+    content_parts, content_text, event_frame, freeform, is_truthy, json_text, native_tool,
+    random_id, string_field, string_value, tool_plan, SseLineBuffer, FIELD_ENCRYPTED_CONTENT,
 };
 use crate::server::logging;
 
@@ -83,7 +83,7 @@ pub fn chat_from_responses(body: &Value) -> Result<Value, ConvertError> {
     if !plan.declarations.is_empty() {
         let mut converted: Vec<Value> = Vec::new();
         let mut downgraded: Vec<String> = Vec::new();
-        let mut ignored: Vec<String> = Vec::new();
+        let mut natives: Vec<Value> = Vec::new();
         for tool in &plan.declarations {
             if let Some(function) = tool_to_chat(tool) {
                 converted.push(function);
@@ -91,8 +91,10 @@ pub fn chat_from_responses(body: &Value) -> Result<Value, ConvertError> {
             }
             // 没转出来的分两类。custom（freeform）是**要**降级的 —— 漏了就是
             // 静默失效（Codex 的 exec / apply_patch 全部失效即由此而来）；
-            // 其余（web_search / local_shell 等 Responses 原生工具）上游确实
-            // 没有对应物，只能丢，但要留痕，否则同样是静默失效
+            // 其余（web_search / tool_search / file_search 等 Responses 宿主工具）
+            // 是**上游服务端执行**的原生能力：保真携带（原样 + 来源标记），
+            // 去留交给出站侧按目标协议定（见 `native_tool` 模块头）。
+            // 曾经在这里直接丢弃 —— issue #61 / #55 的「原生搜索不可用」即由此来。
             if freeform::is_custom_tool(tool) {
                 if let Some(function) = freeform::downgrade_custom_tool(tool) {
                     downgraded.push(string_field(tool, "name"));
@@ -100,16 +102,22 @@ pub fn chat_from_responses(body: &Value) -> Result<Value, ConvertError> {
                     continue;
                 }
             }
-            ignored.push(tool_plan::tool_kind_label(tool));
+            natives.push(native_tool::carry(tool, native_tool::ORIGIN_RESPONSES));
         }
-        if !ignored.is_empty() {
-            logging::log(
+        if !natives.is_empty() {
+            logging::verbose(
                 "[Responses]",
                 &format!(
-                    "⚠️ 上游 Chat 接口无对应形态，已丢弃这些工具声明：{}",
-                    ignored.join(", ")
+                    "原生（服务端执行）工具声明 {} 条随行：{}",
+                    natives.len(),
+                    natives
+                        .iter()
+                        .map(tool_plan::tool_kind_label)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             );
+            converted.extend(natives);
         }
         if !downgraded.is_empty() {
             logging::verbose(
@@ -999,6 +1007,29 @@ pub fn response_envelope(
 }
 
 /// Chat 的 usage → Responses 的 usage（字段名与明细结构都不同）
+/// `finish_reason` 里的**失败信号** → `(code, 可读文案)`；`None` = 不是失败信号。
+///
+/// 目前只认 ZCode 活动套餐通道的 `network_error`（实测 2026-09-30：思考吃光
+/// 输出额度、上游内部熔断等情形会回它，而 HTTP 状态仍是 200、正文是空的）。
+///
+/// 这张表要**短而准**：认不出的取值继续按既有语义走（`length` →
+/// `max_output_tokens`、`content_filter` → `content_filter`、其余 → `completed`）。
+/// 把「没见过的值」一律判失败会误伤正常上游的扩展取值 —— 那类取值的正确处置
+/// 是补进这张表，而不是放宽判据。
+fn finish_failure(finish_reason: Option<&str>) -> Option<(&'static str, String)> {
+    match finish_reason? {
+        "network_error" => Some((
+            "upstream_network_error",
+            "上游报告 network_error：请求已到达上游但没有可用结果。\
+             活动套餐通道上最常见的原因是思考预算吃光了输出额度（正文因此为空，\
+             重试前请调高 max_tokens 或降低思考档位）；也可能是上游瞬时故障，\
+             可直接重试。"
+                .to_string(),
+        )),
+        _ => None,
+    }
+}
+
 pub fn usage_to_responses(usage: Option<&Value>) -> Value {
     let Some(usage) = usage.filter(|value| value.is_object()) else {
         return Value::Null;
@@ -1196,6 +1227,36 @@ impl ResponsesStream {
         }
         self.finished = true;
         out.extend(self.emit_created());
+        // 上游把失败写在 `finish_reason` 里时**如实失败**，不要落进「成功但空」。
+        // ZCode 的活动套餐通道在思考吃光输出额度这类情形下回
+        // `finish_reason:"network_error"`，它既不是 `length` 也不是
+        // `content_filter` —— 按「未知取值 = completed」处理的话，客户端收到的
+        // 是一个 `status:"completed"`、`output` 为空的响应（issue #52「200 但
+        // 回复为空」的表象），排查时也看不出上游其实报了错。
+        if let Some((code, message)) = finish_failure(self.finish_reason.as_deref()) {
+            let mut failed = response_envelope(
+                &self.response_id,
+                &self.model,
+                "failed",
+                Vec::new(),
+                usage_to_responses(self.usage.as_ref()),
+                &self.request,
+                self.created,
+                None,
+            );
+            if let Some(map) = failed.as_object_mut() {
+                map.insert(
+                    "error".to_string(),
+                    json!({ "code": code, "message": message }),
+                );
+            }
+            out.push(self.event(
+                "error",
+                json!({ "code": code, "message": message, "param": Value::Null }),
+            ));
+            out.push(self.event("response.failed", json!({ "response": failed })));
+            return out;
+        }
         out.extend(self.close_reasoning());
         // 上游什么都没给（空流）：补一条空 message，否则客户端解析不到 output
         if !self.text_open && self.tools.is_empty() {

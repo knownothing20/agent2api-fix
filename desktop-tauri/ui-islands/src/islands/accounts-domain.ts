@@ -220,6 +220,18 @@ export function supportsChat(account: AccountRecord | null | undefined): boolean
   return account?.chatSupported !== false
 }
 
+/**
+ * 自定义提供商的 id 判据（`custom-` 前缀）。
+ *
+ * 与后端 `custom_providers::is_custom_provider_id` 的**第一半**一致：那边还要求
+ * 「能在配置里找到这家」（判「这个 id 是不是真家」），界面这里问的是另一件事 ——
+ * 「这条账号是不是自定义形态」，提供商被删后残留的账号同样要按自定义形态展示
+ * （与后端 `to_custom_public_account` 用前缀分派同一取向）。
+ */
+export function isCustomProviderId(provider: string | null | undefined): boolean {
+  return typeof provider === 'string' && provider.startsWith('custom-')
+}
+
 export function typeLabel(type: string | undefined): string {
   if (type === 'enterprise') return '企业'
   if (type === 'ultimate') return '旗舰'
@@ -641,6 +653,19 @@ export function accountTags(account: AccountRecord): AccountTag[] {
     // 留着是为了「将来某家处于只有账号管理的过渡期」时界面能自己说清楚
     supportsChat(account)
       ? null : { text: '仅账号管理', kind: 'plain' as const, title: '该提供商的推理转发尚未接入，账号不参与转发' },
+    // 自定义账号没有凭证：既没填 API Key、也没勾「无需鉴权」时，它在选路里会被
+    // **静默跳过**（后端 hasCredentials = false，目录也不广告它家的模型）——原样
+    // 展示成一条普通账号会让用户完全看不出「为什么加了账号却发不出去请求」。
+    // 判据用后端注入的 hasCredentials（所有家都有这个字段，但只有自定义家会为
+    // false —— 其它家的凭证各有各的链路），再限定 id 前缀避免误报。
+    isCustomProviderId(providerOf(account)) && account.hasCredentials === false
+      ? {
+        text: '未配置凭证',
+        kind: 'bad' as const,
+        title: '这条自定义账号既没有 API Key，也没有勾选「无需鉴权」：转发时会被跳过，'
+          + '该提供商下的模型也不会出现在模型列表里。去账号「设置」里补上 Key，或勾选「该上游无需鉴权」',
+      }
+      : null,
     // 代理配了解析不出来时明确标出：转发会回退直连，属于需要留意的情况
     account.proxy?.error
       ? { text: '代理异常', kind: 'bad' as const, title: `${account.proxy.error}（转发时会回退直连）` }

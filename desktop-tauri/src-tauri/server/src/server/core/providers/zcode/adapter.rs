@@ -9,7 +9,10 @@
 //!
 //! ── 上游协议 ────────────────────────────────────────────────
 //! 推理走 **OpenAI 兼容**端点：`POST {openai_base}/chat/completions`，
-//! `Authorization: Bearer {token}`，body 原样透传（与 raccoon 同构）。
+//! `Authorization: Bearer {token}`。模型名不改写；思考等级是唯一被改写的
+//! 字段 —— 映射上绑定的默认档由 [`ProviderAdapter::reasoning_patch`] 注入，
+//! 随后 `reasoning::apply_to_chat` 把它归一成上游认的三档（见 `super::reasoning`
+//! 的模块头），客户端没点名等级时那条链什么也不做、保持上游默认。
 //! 因此 `is_stateful()` 保持默认 false（一次发送由通用编排层完成），
 //! 与 CatPaw / Qoder / Accio 那三家「适配器自己发」的情形不同。
 //!
@@ -29,13 +32,13 @@
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
 use axum::http::HeaderMap;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::errors::GatewayError;
 
 use super::super::adapter::{
-    ChatRequestPlan, ModelRefreshOutcome, ProviderAdapter, UpstreamErrorClass,
+    ChatRequestPlan, ModelRefreshOutcome, ProviderAdapter, ReasoningPatch, UpstreamErrorClass,
 };
 use super::super::content_block;
 use super::super::ProviderKind;
@@ -82,13 +85,91 @@ impl ProviderAdapter for ZcodeAdapter {
         models::list(self.region)
     }
 
+    /// 映射上绑定的思考等级作为**默认档**注入（客户端自己点名了就让位）。
+    ///
+    /// ── 为什么只接 GLM-5.3 家族 ──────────────────────────────
+    /// 有依据的只有这两条 model id（官方目录 + 实测：上游只认 `low` / `high` /
+    /// `max`，见 `super::reasoning` 的模块头）。别的模型一律 `Skip` —— 通用 8 档
+    /// 表里没有「它们也收这个字段」的证据，塞一个上游不认识的键不叫生效，
+    /// 只是把未知参数推给上游；而猜错档位的代价是把一条本来能用的请求打成 400。
+    ///
+    /// ── 注入的字段两条通道共用 ────────────────────────────────
+    /// 写的是 `reasoning_effort`（[`super::reasoning::EFFORT_FIELD`]）：编码套餐
+    /// 通道由 `reasoning::apply_to_chat` 归一后原样发上游；活动套餐通道由
+    /// `plan::build_request` 从发送体同一处读出来，交给
+    /// `reasoning::apply_to_anthropic` 折成 thinking 预算 + `output_config.effort`
+    /// —— 所以绑一次，两条通道都生效，不需要各写一份。
+    ///
+    /// ── 「客户端指定过」的判据 ────────────────────────────────
+    /// 与 CatPaw 同一口径：绑定是**默认值**，不覆盖用户的显式意图。这里比
+    /// CatPaw 更宽一档 —— 键**在场**就算指定过（哪怕值是 null / 空串 / 一个
+    /// 本家不认的自定义值）：`apply_to_chat` 对认不出的值会按官方默认档发
+    /// `max`，此时再注绑定档会把用户的取值**悄悄换成另一个档位**，而请求照样
+    /// 成功、用户看不出区别。让位之后，写进去的还是他自己那个值（归一结果与
+    /// 不绑定时逐字相同）。`thinking.type = disabled` 是同一件事的另一种写法
+    /// （chat 协议的客户端会这么关思考），同样让位。
+    fn reasoning_patch(&self, level: &str, model: &str, body: &Value) -> ReasoningPatch {
+        if body.get(super::reasoning::EFFORT_FIELD).is_some()
+            || body
+                .pointer("/thinking/type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("disabled"))
+        {
+            return ReasoningPatch::Skip {
+                reason: "客户端请求体里已指定思考参数，绑定不覆盖",
+            };
+        }
+        if !super::reasoning::is_glm53(model) {
+            return ReasoningPatch::Skip {
+                reason: "该模型没有已确认的 ZCode 思考档位（目前只有 GLM-5.3 家族）",
+            };
+        }
+        // 表外等级（界面的「自定义输入」）不注入：上游收不收没有证据，
+        // 与 `model_rules` 的「表外值不参与转发」同一闸门（`off` / `none`
+        // 在更早一步就被通用注入点拦下，这里兜的是直调本函数的路径）。
+        if crate::server::core::model_rules::reasoning_rank(level).is_none() {
+            return ReasoningPatch::Skip {
+                reason: "该等级不在通用档位表内（自定义等级不参与转发）",
+            };
+        }
+        match super::reasoning::normalize(Some(level)) {
+            Some(level) => ReasoningPatch::Set {
+                field: super::reasoning::EFFORT_FIELD,
+                value: Value::String(level.as_str().to_string()),
+            },
+            None => ReasoningPatch::Skip {
+                reason: "该等级没有可翻译的 ZCode 目标值",
+            },
+        }
+    }
+
+    /// 随请求上行的思考等级（请求日志「上游等级」列的采集口）。
+    ///
+    /// 默认实现读的是**客户端原值**（并集键链），而本家对 GLM-5.3 家族会把它
+    /// 归一成上游认的三档再发 —— 那一列于是会写出一个没发出去的档位
+    /// （`xhigh` 而字节里是 `max`）。所以这里按**本家 resolver 的同一条规则**
+    /// 读：模型是 5.3 家族且体里有 `reasoning_effort` 时报归一后的值；
+    /// 其余情形回落到默认实现（别的键名原样随请求上行，见 trait 的说明）。
+    fn outbound_reasoning(&self, body: &Value) -> Option<String> {
+        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+        let declared = body
+            .get(super::reasoning::EFFORT_FIELD)
+            .and_then(Value::as_str)
+            .filter(|_| super::reasoning::is_glm53(model));
+        if let Some(level) = declared.and_then(|level| super::reasoning::normalize(Some(level))) {
+            return Some(level.as_str().to_string());
+        }
+        crate::server::core::model_rules::read_client_level(body)
+            .filter(|level| !crate::server::core::model_rules::reasoning_is_off(level))
+    }
+
     /// 构造上游请求：按账号的「使用套餐」（`zcodePlan`）**二选一**。
     ///
     ///   - `coding-plan`（默认）：`POST {openai_base}/chat/completions`，
-    ///     `Authorization: Bearer {accessToken}`，body 原样透传 —— 上游就是
-    ///     OpenAI 协议，本家没有任何要改写的字段（不做模型改名、不注入思考
-    ///     等级：后者靠 `reasoning_patch` 的默认 `Skip`，那是「没证据就不注入」
-    ///     的正确默认）；
+    ///     `Authorization: Bearer {accessToken}`，模型名不改写；思考等级由
+    ///     [`Self::reasoning_patch`] 注入映射绑定的默认档、再由
+    ///     `reasoning::apply_to_chat` 归一后发出（客户端没绑定也没点名等级时
+    ///     保持上游默认）；
     ///   - `start-plan`：`POST {zcode}/api/v1/zcode-plan/anthropic/v1/messages`，
     ///     `Authorization: Bearer {jwt}`，OpenAI 体翻成 Anthropic 并装配官方
     ///     系统提示词块 —— 细节全在 [`super::plan`]，本函数只做分派。
@@ -141,10 +222,24 @@ impl ProviderAdapter for ZcodeAdapter {
             ("Authorization".to_string(), format!("Bearer {token}")),
         ];
         headers.extend(identity_headers(None));
+        let mut outgoing = body.clone();
+        // 思考等级：这条通道没有「思考预算」这个概念，`reasoning_effort` 是唯一
+        // 的旋钮，注了才拦得住「小输出额度被思考吃光、正文空串」（见
+        // `super::reasoning` 的模块头与 `apply_to_chat` 的说明）。
+        let wire_model = outgoing
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        super::reasoning::apply_to_chat(&mut outgoing, &wire_model);
+        // 流式补 `stream_options.include_usage`：上游只在显式要求时才回用量帧，
+        // 不补的话这条通道的输入/输出/缓存三列恒为 0（面板看着像没计费）。
+        // 与 workbuddy 的 `normalize` 同一手法：**不覆盖**客户端已有的取值。
+        ensure_include_usage(&mut outgoing);
         Ok(ChatRequestPlan::chat(
             format!("{}/chat/completions", self.openai_base_url()),
             headers,
-            body.clone(),
+            outgoing,
         ))
     }
 
@@ -369,5 +464,34 @@ fn os_category() -> &'static str {
         "macos"
     } else {
         "linux"
+    }
+}
+
+/// 流式请求补 `stream_options.include_usage = true`。
+///
+/// ── 为什么要补 ──────────────────────────────────────────────
+/// OpenAI 协议的流式响应**默认不带用量帧**，上游只在客户端显式要求时才在流末
+/// 补一帧 `usage`。不补的后果是这条通道的请求日志三列（输入 / 输出 / 缓存）
+/// 恒为 0 —— 面板看着像「这条没计费」，也让「用量对不上上游账单」这类问题
+/// （issue #56）失去参照物。非流式响应本来就带 usage，因此这里只动流式。
+///
+/// ── 为什么不覆盖客户端的取值 ────────────────────────────────
+/// 客户端可能显式写了 `include_usage: false`（少数客户端拿它省一帧），
+/// 那是它的选择；网关补的是**缺省值**，不是替它做决定 —— 与 workbuddy
+/// `normalize` 的 `stream_options` 处理同一条口径。
+fn ensure_include_usage(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    if object.get("stream").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let options = object
+        .entry("stream_options".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(options) = options.as_object_mut() {
+        options
+            .entry("include_usage".to_string())
+            .or_insert_with(|| json!(true));
     }
 }

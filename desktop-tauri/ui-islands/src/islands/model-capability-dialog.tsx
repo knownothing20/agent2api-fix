@@ -36,7 +36,7 @@ import {
 import {
   BOOLEAN_KEYS, CAPABILITY_KEYS, CAPABILITY_LABELS, TOKEN_KEYS,
   capabilitiesOf, capabilityState, exactTokens, normalizeCapability, normalizeOverrides,
-  patchFromDraft, type CapabilityDraft, type CapabilityKey,
+  patchFromDraft, reasoningLevelsOf, type CapabilityDraft, type CapabilityKey,
 } from './model-capability'
 import * as customSource from './models-custom-source'
 import {
@@ -115,6 +115,8 @@ function draftFrom(capabilities: ReturnType<typeof capabilitiesOf>, setKeys: Cap
 export function CapabilityDialog({ context, onClose }: { context: CapabilityContext; onClose: () => void }) {
   const custom = customSource.isCustom(context.provider)
   const row = modelRowOf(context.provider, context.id)
+  // 模型自己能配的思考档位（`null` = 上游没声明 → 那一块整个不显示）
+  const levelsInfo = reasoningLevelsOf(row)
   const capabilities = capabilitiesOf(row)
   const setKeys = setKeysOf(capabilities, normalizeOverrides(row?.capOverrides), custom)
   const [draft, setDraft] = React.useState<CapabilityDraft>(() => draftFrom(capabilities, setKeys))
@@ -239,6 +241,23 @@ export function CapabilityDialog({ context, onClose }: { context: CapabilityCont
               </p>
             </div>
           ))}
+
+          {levelsInfo ? (
+            <div className='rounded-md border border-border bg-surface-inset px-3 py-2.5 text-xs leading-[1.7] text-subtle'>
+              <div className='flex flex-wrap items-center gap-x-2 gap-y-1'>
+                <span>可配思考档位</span>
+                <span className='font-mono text-[12px] text-primary-fg'>
+                  {levelsInfo.levels.join(' / ')}
+                </span>
+                {levelsInfo.defaultLevel ? (
+                  <span>（默认 <span className='font-mono text-[12px] text-primary-fg'>{levelsInfo.defaultLevel}</span>）</span>
+                ) : null}
+              </div>
+              <div className='mt-1'>
+                这是模型自己能配的档位（来自上游目录），只读；要改某一档请到映射弹窗里选。
+              </div>
+            </div>
+          ) : null}
 
           <p className='text-xs leading-[1.65] text-subtle'>
             这几项是给<b>下游客户端</b>看的能力声明（<code>/v1/models</code> 里的

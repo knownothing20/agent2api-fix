@@ -54,8 +54,21 @@ export type AccountRecord = {
   email?: string
   priority?: number
   enabled?: boolean
+  /** 凭证完整性（后端逐家给出；缺省视为可用）：false = 登录态缺失 / 凭证不全。
+   *  余额的批量目标集合按它排除（与后端 `resolve_batch_targets` 同一口径），
+   *  与 `enabled` 是两回事 —— 禁用只表示不参与转发，余额仍可查。 */
+  available?: boolean
   /** 桌面端实时登录态（凭证每次从客户端登录态文件读取） */
   desktop?: boolean
+  /**
+   * 后端注入的**跨家事实**：这条账号有没有可用凭证（`has_token || desktop ||
+   * apiKey || jwt || noAuth`，见后端 `state::has_credentials`）。
+   *
+   * 界面现在只用它做一件事：给「自定义账号且没有凭证」标一枚「未配置凭证」——
+   * 那种账号在选路里会被静默跳过，不标出来用户看不出为什么请求发不出去。
+   * 缺失（旧版后端）按「有凭证」处理，宁可少标一枚徽章也不要误报。
+   */
+  hasCredentials?: boolean
   edition?: string
   editionLabel?: string
   chatSupported?: boolean
@@ -64,6 +77,13 @@ export type AccountRecord = {
   zcodePlan?: string
   hasRefreshToken?: boolean
   hasBalanceToken?: boolean
+  /**
+   * 自定义账号：记录里有没有非空 `apiKey`（设置弹窗据此决定输入框的提示文案与
+   * 有无「清除」按钮）。**值本身绝不透出**，后端只给这个布尔。
+   */
+  hasApiKey?: boolean
+  /** 自定义账号：是否声明了「该上游无需鉴权」（与 `hasApiKey` 互斥，见后端 `state::no_auth`） */
+  noAuth?: boolean
   maxConcurrent?: number
   checkinAt?: number
   addedAt?: number
@@ -284,8 +304,14 @@ export type SharedWindow = {
   }
   /** 自定义提供商目录（查一家 / 改一家 / 删一家），账号设置弹窗里的「提供商」一段用它 */
   wbCustomProvidersUi?: {
-    find?: (id: string) => Promise<{ id: string; name?: string; protocol?: string; baseUrl?: string } | null | undefined>
-    update?: (patch: { id: string; name: string; protocol: string; baseUrl: string }) => Promise<unknown>
+    find?: (id: string) => Promise<{
+      id: string; name?: string; protocol?: string; baseUrl?: string
+      /** 客户端形态伪装（'' / 'opencode'）：账号设置弹窗的「提供商」段读它做初值 */
+      clientEmulation?: string
+    } | null | undefined>
+    update?: (patch: {
+      id: string; name: string; protocol: string; baseUrl: string; clientEmulation?: string
+    }) => Promise<unknown>
     remove?: (id: string) => Promise<boolean>
   }
   /** 并发上限小对话框（已迁的岛，见 conc-dialog.tsx） */

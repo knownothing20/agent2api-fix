@@ -360,7 +360,8 @@ impl AccountStore {
     ///
     /// `hasCredentials` / `chatSupported` / `checkinAt` 由 [`Self::public_account`]
     /// 统一注入（跨家事实，见那里的说明）；自定义账号的 `hasCredentials`
-    /// 判据是 `apiKey` 非空（见 `state::has_credentials` 的第三条）。
+    /// 判据是「`apiKey` 非空 **或** 声明了无需鉴权」（见 `state::no_auth`），
+    /// 两者都没有 = 未配置凭证，界面据此标出「转发会被跳过」。
     pub(crate) fn to_custom_public_account(&self, record: &StoredAccount) -> Value {
         let fields = record.fields();
         let mut public = Map::new();
@@ -372,6 +373,13 @@ impl AccountStore {
             "tokenTail".to_string(),
             value_or(fields.get("tokenTail"), Value::String(String::new())),
         );
+        // ── 凭证形态的两个读数（界面「设置」里改凭证要用）──────────
+        // `hasApiKey` 恒给一个布尔：输入框的提示文案要区分「已配置，留空则
+        // 不修改」与「还没配」；`noAuth` 恒给布尔（缺键即 false）—— 开关的
+        // 初值由它决定。**apiKey 本身绝不透出**（值与尾号两条管道分开，
+        // 见 `custom_credential_by_id` 的说明）。
+        public.insert("hasApiKey".to_string(), Value::Bool(record.has_api_key()));
+        public.insert("noAuth".to_string(), Value::Bool(record.no_auth()));
         // 覆盖项：记录里**写了键**才透出（缺键 = 未覆盖，语义见函数头）
         if let Some(base_url) = fields.get("baseUrl") {
             public.insert("baseUrl".to_string(), base_url.clone());
@@ -382,7 +390,15 @@ impl AccountStore {
         public.insert("addedAt".to_string(), Value::from(record.added_at()));
         public.insert("updatedAt".to_string(), Value::from(record.updated_at()));
         public.insert("proxy".to_string(), describe_account_proxy(Some(&record.proxy())));
-        public.insert("available".to_string(), Value::Bool(true));
+        // 「可用」= 凭证完整（与各家同一语义，见 `accounts-shared` 的 available 说明）。
+        // 自定义账号这一项以前恒 true，于是「没填 Key 也没勾无需鉴权」的账号照样出现在
+        // 「模型来源」下拉里（界面按 `available !== false` 过滤，见 models-fetch-modal）
+        // ——它去拉清单必然报「请先添加账号」，那条选项本身就是误导。
+        // 现在按 `has_credentials` 如实给：这类账号在界面上显示为「未配置凭证」。
+        public.insert(
+            "available".to_string(),
+            Value::Bool(record.enabled() && record.has_credentials()),
+        );
         // 单账号并发上限（与 to_public_account 同口径，兜底共用
         // `max_concurrent_public`）：0 = 不限，缺键同样输出 0
         public.insert(

@@ -28,10 +28,11 @@
 use serde_json::{json, Map, Value};
 
 use super::{
-    content_parts, content_text, event_frame, is_truthy, json_text, random_id, string_field,
-    string_value, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
+    content_parts, content_text, event_frame, is_truthy, json_text, native_tool, random_id,
+    string_field, string_value, tool_plan, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
 };
 use super::responses::ConvertError;
+use crate::server::logging;
 
 /// Anthropic 的 `max_tokens` 缺省值。
 ///
@@ -99,9 +100,39 @@ pub fn chat_from_anthropic(body: &Value) -> Result<Value, ConvertError> {
     if let Some(stops) = body.get("stop_sequences").filter(|value| is_truthy(value)) {
         out.insert("stop".to_string(), stops.clone());
     }
-    // 工具：Anthropic 的 `{name, description, input_schema}` → Chat 的嵌套形态
+    // 工具：Anthropic 的 `{name, description, input_schema}` → Chat 的嵌套形态；
+    // 服务端工具（`{"type":"web_search_20250305", …}`，上游自己执行）**保真携带**——
+    // 它的 `type` 是准入凭据（DeepSeek 的 Anthropic 端点只认 web_search_*
+    // 两个值，别的形态整轮 400），曾在这里被改写成一只**空壳 function**
+    // （`name` 在、`type` 没了），症状正是「模型自带的搜索工具无法调用」
+    // （issue #61）。去留交给出站侧按目标协议定，见 `native_tool` 模块头。
     if let Some(tools) = body.get("tools").and_then(Value::as_array) {
-        let converted: Vec<Value> = tools.iter().filter_map(tool_to_chat).collect();
+        let mut converted: Vec<Value> = Vec::new();
+        let mut natives: Vec<Value> = Vec::new();
+        for tool in tools {
+            if native_tool::is_native_anthropic(tool) {
+                natives.push(native_tool::carry(tool, native_tool::ORIGIN_ANTHROPIC));
+                continue;
+            }
+            if let Some(function) = tool_to_chat(tool) {
+                converted.push(function);
+            }
+        }
+        if !natives.is_empty() {
+            logging::verbose(
+                "[Anthropic]",
+                &format!(
+                    "原生（服务端执行）工具声明 {} 条随行：{}",
+                    natives.len(),
+                    natives
+                        .iter()
+                        .map(tool_plan::tool_kind_label)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            converted.extend(natives);
+        }
         if !converted.is_empty() {
             out.insert("tools".to_string(), Value::Array(converted));
         }

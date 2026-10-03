@@ -33,17 +33,26 @@ pub struct TargetError {
     pub status_code: u16,
 }
 
-/// 批量操作的目标集合：**全部可用账号中被启用的那些**，外加被跳过的数量。
+/// 批量操作的目标集合：**全部可用账号**（`available: false` 的除外），外加
+/// 被跳过的数量。
 ///
 /// `provider`：`Some(id)` 只取该家；`None` 跨四家取（**余额查询**用它 ——
 /// 四家的余额接口各不相同、由各自适配器负责）。显式指定 id 时**不做过滤**
 /// （与「显式指定就执行」的既有语义一致）。
 ///
+/// ── 为什么不再按 `enabled` 过滤 ─────────────────────────────
+/// 禁用只表示「不参与转发」，与「这个账号还剩多少」无关 —— 与单查路径
+/// （`?id=`）的既有口径一致。按启用状态把批量 / 定时这一轮挡掉，界面上那些
+/// 行就永远是「未查询」，用户只能逐个手点「余额」按钮才看得到读数：定时查询
+/// 等于白跑（真实反馈：账号大多处于禁用状态时，余额列看起来像从没查过）。
+///
 /// 从 `api::accounts` 下沉（原 `resolve_batch_targets`）：它是纯粹的数据判定，
 /// 不含任何 HTTP 语义，而「定时查询积分」必须与手动查询用**同一份口径**
 /// —— 两条路径各写一份，「跳过了几个账号」这种算法迟早会漂。
 ///
-/// 返回 `(targets, skipped)`：`skipped` 是「可用账号里被禁用掉的数量」。
+/// 返回 `(targets, skipped)`：`skipped` 是「范围内**不可用**
+/// （`available: false`）的数量」—— 那些账号连凭证都不完整，查询只会稳定
+/// 失败，所以不进目标集合（与「已知必然失败就别发请求」同一取舍）。
 pub fn resolve_batch_targets(
     store: &AccountStore,
     provider: Option<&str>,
@@ -70,9 +79,6 @@ pub fn resolve_batch_targets(
     let is_available = |account: &Value| {
         account.get("available").and_then(Value::as_bool).unwrap_or(true)
     };
-    let is_enabled = |account: &Value| {
-        account.get("enabled").and_then(Value::as_bool).unwrap_or(true)
-    };
     if let Some(id) = id.filter(|value| !value.is_empty()) {
         let found: Vec<Value> = accounts
             .iter()
@@ -84,14 +90,16 @@ pub fn resolve_batch_targets(
         }
         return Ok((found, 0));
     }
-    let available: Vec<Value> = accounts
-        .into_iter()
-        .filter(in_scope)
-        .filter(is_available)
-        .collect();
-    let skipped = available.len();
-    let targets: Vec<Value> = available.into_iter().filter(is_enabled).collect();
-    let skipped = skipped - targets.len();
+    // 目标集合 = 范围内全部**可用**账号（不看 enabled，见函数头）；
+    // skipped 记的是范围内不可用的数量，供界面说清「为什么少了几行」
+    let (mut targets, mut skipped) = (Vec::new(), 0usize);
+    for account in accounts.into_iter().filter(in_scope) {
+        if is_available(&account) {
+            targets.push(account);
+        } else {
+            skipped += 1;
+        }
+    }
     Ok((targets, skipped))
 }
 
@@ -189,9 +197,10 @@ fn supports_usage(account: &Value) -> bool {
 /// 逐账号并发查询余额 / 积分汇总
 /// （`{ results: [{id,name,usage,error,code?}], skipped }`）。
 ///
-/// 目标集合是**全部启用账号**（`resolve_batch_targets(provider = None)`），逐账号
-/// 按 `provider` 分流到 `ProviderAdapter::query_usage`。改造前这条路径只查
-/// workbuddy —— 三家账号被静默跳过，前端连按钮都不给。
+/// 目标集合是**全部可用账号**（`resolve_batch_targets(provider = None)`，
+/// 不看启用状态，见那里的说明），逐账号按 `provider` 分流到
+/// `ProviderAdapter::query_usage`。改造前这条路径只查 workbuddy ——
+/// 三家账号被静默跳过，前端连按钮都不给。
 ///
 /// **并发**是关键：Node 版用 `Promise.all`，20 个账号串行会让前端转圈 20 次
 /// 往返。这里用 `join_all` 在同一个任务里并发轮询（每个 future 都是网络等待，
@@ -199,14 +208,15 @@ fn supports_usage(account: &Value) -> bool {
 /// **超时由各适配器自己设**（15~20 秒）；这里不叠加第二层超时 —— 那会让
 /// 「上游慢」与「网关掐断」在日志里无法区分。
 ///
-/// ── `id`：显式指定时**不看启用状态** ────────────────────────
-/// 批量路径只查启用账号是对的（禁用就是「别用它」，定时那一轮不该为它们发请求），
-/// 但**用户手点某一行账号的「积分」按钮**是另一个语义：那是在问「这个账号现在
-/// 还剩多少」。账号被禁用只说明它不参与转发，与其余额能不能查没有关系 ——
-/// 按启用状态把这次查询挡掉，界面只会得到一句「未返回余额数据」，用户看不出
-/// 是「禁用了」还是「上游挂了」。所以指定 id 时按 `resolve_batch_targets` 的
-/// 既有分支走（那条分支本就不做启用过滤），也不过滤 `supports_usage`：
+/// ── `id`：显式指定时只查这一个 ──────────────────────────────
+/// **用户手点某一行账号的「积分」按钮**问的是「这个账号现在还剩多少」。
+/// 账号被禁用只说明它不参与转发，与其余额能不能查没有关系 —— 按启用状态把
+/// 这次查询挡掉，界面只会得到一句「未返回余额数据」，用户看不出是「禁用了」
+/// 还是「上游挂了」。所以指定 id 时按 `resolve_batch_targets` 的单查分支走
+/// （那条分支只认 id，不做范围与可用性过滤），也不过滤 `supports_usage`：
 /// 能力过滤是给批量路径避免一整片 501 的，单查应当如实报「这家不支持」。
+/// 批量路径现在同样不看启用状态（见 `resolve_batch_targets`），两条路径的
+/// 唯一差别就是「查一个」还是「查全部可用」。
 ///
 /// 未知 id 由 `resolve_batch_targets` 报 404「账号不存在」。
 pub async fn query_all(store: &AccountStore, id: Option<&str>) -> Result<Value, TargetError> {

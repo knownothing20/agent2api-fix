@@ -20,7 +20,9 @@
 //!   - 请求体：客户端的字节**原样**出去（send_body 已做过系统提示词/脱敏两层
 //!     处理），唯一的改写是 `model` 字段（映射 alias → 上游真名）与按需注入
 //!     `reasoning_effort`（思考等级绑定）—— 都是「客户端语义」的修正，不是
-//!     协议翻译；
+//!     协议翻译。**唯一的例外**是记录显式开了 `clientEmulation`
+//!     （见 [`emulation`]：OpenCode Zen 的免费档要求请求体是「智能体形态」，
+//!     要补两个桩工具）—— 那是 opt-in 的形态伪装，默认一个字节都不动；
 //!   - 响应：上游永远以 `stream:true` 被请求（编排层入口已强制注入），流式
 //!     客户端拿 SSE 逐帧透传（reasoning 合并照走 `ForwardStream`），非流式
 //!     客户端拿聚合后的完整 JSON（照走 `aggregate_sse_completion`）—— 两者的
@@ -28,6 +30,14 @@
 //!     `sse_model_rewrite`：上游回显的名字以网关为准）。
 //!   - usage 旁路提取在 `ForwardStream` / 聚合器内部完成（它们是 SSE 逐行
 //!     解析的唯一入口），本函数不需要再读一遍响应体。
+//!
+//! ── 鉴权头怎么发（三档，见 [`ProviderQuirks`] 的两条拼装说明）────
+//!   - 账号有 apiKey → 发 `Authorization: Bearer <key>`（或 anthropic 的
+//!     `x-api-key`）；
+//!   - 账号声明了无需鉴权（`noAuth`）→ **一个凭证头都不发**：空 Bearer 对
+//!     严格的上游等同凭证错误，与「这家不要凭证」的语义正好相反；
+//!   - 开了客户端伪装且没有 key → 用上游认的匿名凭证 `public`
+//!     （OpenCode 免费档：不填 Key 也能跑，这就是那条路）。
 //!
 //! ── 协议分派（三种协议的分派点）─────────────────────────────
 //!   - chat_completions：上游就是 chat 形态，**原样透传**（见「透传语义」）；
@@ -69,6 +79,7 @@ use crate::server::core::custom_providers;
 use crate::server::core::model_rules;
 use crate::server::core::protocol::{anthropic_outbound, responses_outbound};
 use crate::server::core::proxies::ResolvedProxy;
+use crate::server::core::providers::custom::emulation;
 use crate::server::core::upstream::connections::ConnectionGuard;
 use crate::server::core::upstream::request::{read_upstream_error, send_chat_request, TransportRequest};
 use crate::server::core::upstream::sse::ModelRewrite;
@@ -177,7 +188,28 @@ pub(crate) async fn forward(
     // 见 `protocol::mod` 的说明）绝不发上游 —— 严格校验的 OpenAI 兼容上游会拒绝
     // 消息上的未知字段整轮 400。翻译分支（上方已 return）**不**剥：那些字段正是
     // 出站翻译要消费的（cache_control / is_error / encrypted_content 的恢复源）。
-    let stripped = crate::server::core::protocol::strip_internal_fields(body);
+    //
+    // 剥之前先过原生工具闸门：自定义家的契约是透传（chat 入口带上来的 chat 方言
+    // 原生工具，如智谱的 `{"type":"web_search","web_search":{…}}`，原样上行），
+    // 但**带标记的跨协议声明**（下游走 /v1/messages 或 /v1/responses 带过来的
+    // `web_search_20250305` / `web_search` 那类）没有 chat 形态，硬发只会换来
+    // 上游一次 400 —— 剔除 + 留痕，见 `protocol::native_tool` 模块头。
+    let cross = crate::server::core::protocol::native_tool::strip_cross_protocol(
+        body,
+        crate::server::core::protocol::native_tool::ORIGIN_CHAT,
+    );
+    if let Some((_, dropped)) = &cross {
+        logging::log(
+            "[CustomProvider]",
+            &dropped.describe(
+                Some(provider_id),
+                Some("该家按 chat 协议透传，承载不了别的协议的原生声明"),
+            ),
+        );
+    }
+    let stripped = crate::server::core::protocol::strip_internal_fields(
+        cross.as_ref().map(|(next, _)| next).unwrap_or(body),
+    );
     let body: &Value = &stripped;
     let url = format!(
         "{}/chat/completions{}",
@@ -192,24 +224,38 @@ pub(crate) async fn forward(
         .unwrap_or("")
         .trim()
         .to_string();
-    let (outbound, rewrite) = rewrite_body(body, provider_id, &requested);
+    let (mut outbound, rewrite) = rewrite_body(body, provider_id, &requested);
+    // 客户端形态伪装（OpenCode 免费档）：补桩工具。未开启时不碰请求体。
+    // 放在 `rewrite_body` 之后、序列化之前 —— 会话种子取自**改写后**的体，
+    // 与最终发出去的字节同源（模型名换了不影响 messages，两种取法等价，
+    // 但同源更不容易在将来改坏）
+    quirks.apply_emulation_to_body(&mut outbound);
     let payload = serde_json::to_string(&outbound)
         .map_err(|error| GatewayError::with_status(500, format!("请求体序列化失败: {error}")))?;
-    let mut headers = vec![
-        (
+    // ── 出站头（三段拼装，顺序不可换）────────────────────────────
+    //   ① 默认头：**只有 apiKey 非空才带凭证头** —— 无需鉴权的上游
+    //      （`noAuth` 账号）拿到一个空 `Bearer ` 会当成凭证错误，
+    //      与「这家不要凭证」的语义正好相反；
+    //   ② 伪装头（OpenCode）：补齐官方客户端的头与匿名凭证 `public`；
+    //   ③ 记录上的静态额外头（`quirks.apply_to`）：用户手写的最优先。
+    let api_key = credential.api_key.trim();
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    if !api_key.is_empty() {
+        headers.push((
             "Authorization".to_string(),
-            format!("Bearer {}", credential.api_key),
-        ),
-        ("Content-Type".to_string(), "application/json".to_string()),
-    ];
+            format!("Bearer {api_key}"),
+        ));
+    }
+    quirks.apply_emulation_headers(&mut headers, api_key, &outbound);
     quirks.apply_to(&mut headers);
 
     logging::verbose(
         "[CustomProvider]",
         &format!(
-            "POST {url} model={} stream={stream} account={account_id} 出口={}",
+            "POST {url} model={} stream={stream} account={account_id} 出口={}{}",
             if requested.is_empty() { "(默认)" } else { &requested },
             describe_proxy(proxy.as_ref()),
+            if quirks.emulate_opencode { " 伪装=opencode" } else { "" },
         ),
     );
     let transport = TransportRequest {
@@ -288,11 +334,11 @@ impl OutboundKind {
 }
 
 /// 提供商记录上的 **per-provider 特判**（`urlSuffix` / `headers` /
-/// `anthropicToolType`，形状见 `custom_providers` 的模块头）。
+/// `anthropicToolType` / `clientEmulation`，形状见 `custom_providers` 的模块头）。
 ///
 /// 这些字段由预置目录在创建时写入（参考实现 9Router 每家适配器里的修正：
 /// GLM / MiniMax 的 `?beta=true` 与 `Anthropic-Beta`、OpenRouter 的来源头、
-/// MiniMax 的工具 type 补齐），手写的家没有这三个键 —— 提取时缺省即「无特判」，
+/// MiniMax 的工具 type 补齐），手写的家没有这几个键 —— 提取时缺省即「无特判」，
 /// 旧记录不用迁移。
 struct ProviderQuirks {
     /// 原样追加到出站 URL 末尾的查询串（如 `?beta=true`）
@@ -301,6 +347,11 @@ struct ProviderQuirks {
     headers: Vec<(String, String)>,
     /// 发 anthropic 上游时给每个工具补 `type: "custom"`（MiniMax 拒绝无 type 工具）
     tool_type_custom: bool,
+    /// 是否按 **OpenCode 官方 CLI 的形状**补齐出站请求（`clientEmulation`，
+    /// 见 [`emulation`]）：无 key 用匿名凭证 `public`、补官方会话头、请求体补
+    /// 两个桩工具 —— OpenCode Zen 的免费档只有这个形状才放行。**会改写请求体**，
+    /// 所以只在记录显式声明时生效。
+    emulate_opencode: bool,
 }
 
 impl ProviderQuirks {
@@ -332,6 +383,12 @@ impl ProviderQuirks {
                 .is_some_and(|text| {
                     text.eq_ignore_ascii_case(custom_providers::TOOL_TYPE_CUSTOM)
                 }),
+            emulate_opencode: provider
+                .get("clientEmulation")
+                .and_then(Value::as_str)
+                .is_some_and(|text| {
+                    text.eq_ignore_ascii_case(custom_providers::CLIENT_EMULATION_OPENCODE)
+                }),
         }
     }
 
@@ -345,6 +402,35 @@ impl ProviderQuirks {
                 None => headers.push((key.clone(), value.clone())),
             }
         }
+    }
+
+    /// 伪装头与匿名凭证（只在 `clientEmulation: "opencode"` 时动手）。
+    ///
+    /// `api_key` 为空时用匿名凭证 `public` —— 这正是「不填 Key 也能用 OpenCode
+    /// Zen 免费档」的落点；填了 key 就用 key（付费模型必须）。
+    ///
+    /// **调用顺序**：默认头 → 本函数 → `apply_to`（静态额外头）。放在 `apply_to`
+    /// 之前是刻意的：手写在记录上的头优先级最高，伪装不该盖掉用户的显式选择。
+    fn apply_emulation_headers(
+        &self,
+        headers: &mut Vec<(String, String)>,
+        api_key: &str,
+        body: &Value,
+    ) {
+        if !self.emulate_opencode {
+            return;
+        }
+        let session = emulation::session_id(&emulation::conversation_seed(body));
+        emulation::apply_headers(headers, api_key, &session);
+    }
+
+    /// 请求体补成「智能体形态」（`stream: true` + `bash` / `read` 桩工具）。
+    /// 未开启伪装时**一个字节都不动** —— 透传是自定义家的默认语义。
+    fn apply_emulation_to_body(&self, body: &mut Value) {
+        if !self.emulate_opencode {
+            return;
+        }
+        let _ = emulation::ensure_agent_shape(body);
     }
 }
 
@@ -379,7 +465,10 @@ async fn forward_translated(
         .unwrap_or("")
         .trim()
         .to_string();
-    let (outbound_chat, rewrite) = rewrite_body(body, provider_id, &requested);
+    let (mut outbound_chat, rewrite) = rewrite_body(body, provider_id, &requested);
+    // 客户端形态伪装：与 chat 分支同一时机（改写后、翻译前）—— 桩工具要由
+    // 转换器一起翻成上游协议的形态（anthropic 的 tools 数组）
+    quirks.apply_emulation_to_body(&mut outbound_chat);
     // 发给上游的真名 = 改写后的 model 字段（rewrite_body 的产物；请求没带
     // model 时是空串，与 chat 分支「没有回写答案」的口径一致）
     let wire_model = outbound_chat
@@ -387,6 +476,9 @@ async fn forward_translated(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    // 出站头里的凭证（三段拼装的顺序说明见 chat 分支；这里按协议选凭证头的名字）
+    let api_key = api_key.trim();
+    let has_key = !api_key.is_empty();
 
     let (url, headers, payload) = match kind {
         OutboundKind::Responses => {
@@ -406,10 +498,11 @@ async fn forward_translated(
             if let Some(object) = payload.as_object_mut() {
                 object.insert("stream".to_string(), Value::Bool(true));
             }
-            let mut headers = vec![
-                ("Authorization".to_string(), format!("Bearer {api_key}")),
-                ("Content-Type".to_string(), "application/json".to_string()),
-            ];
+            let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+            if has_key {
+                headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+            }
+            quirks.apply_emulation_headers(&mut headers, api_key, &outbound_chat);
             quirks.apply_to(&mut headers);
             (url, headers, payload)
         }
@@ -448,12 +541,16 @@ async fn forward_translated(
                 }
             }
             // anthropic 的鉴权头不是 Bearer（与 `custom_providers::
-            // fetch_upstream_models` 同一套），版本头按官方当前稳定值
+            // fetch_upstream_models` 同一套），版本头按官方当前稳定值。
+            // **凭证为空时不发 x-api-key**（理由见 chat 分支的①）
             let mut headers = vec![
-                ("x-api-key".to_string(), api_key.to_string()),
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
                 ("Content-Type".to_string(), "application/json".to_string()),
             ];
+            if has_key {
+                headers.push(("x-api-key".to_string(), api_key.to_string()));
+            }
+            quirks.apply_emulation_headers(&mut headers, api_key, &outbound_chat);
             quirks.apply_to(&mut headers);
             (url, headers, payload)
         }

@@ -138,6 +138,32 @@ export function capabilityState(value: unknown): CapabilityState {
   return 'unset'
 }
 
+/**
+ * 这个模型**自己能配哪些思考档位**（清单项里的可选键；缺失 = 未声明）。
+ *
+ * ── 与 `models-reasoning.ts` 那份「等级」不是一回事 ──────────
+ * 那一份是**用户给某条映射指定**的档位，候选来自通用 8 档表
+ * （`off` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`），
+ * 用户可以随便挑；这一份是**模型自己支持**的档位，来自该家的官方目录
+ * （例如 ZCode 的 GLM-5.3 只认 `low` / `high` / `max` 三档，且关不掉思考），
+ * **只读** —— 它回答的是「这家上游认哪几个值」，用户改不了上游。
+ *
+ * 缺失（没有这个键）时返回 `null`：调用方据此**不显示**这一行，而不是显示一个
+ * 空的档位表 —— 「上游没声明」与「一档都没有」对用户是两件事。
+ */
+export function reasoningLevelsOf(
+  model: { reasoningLevels?: unknown; reasoningDefaultLevel?: unknown } | null | undefined,
+): { levels: string[]; defaultLevel: string } | null {
+  const raw = model?.reasoningLevels
+  if (!Array.isArray(raw)) return null
+  const levels = raw.filter(
+    (level): level is string => typeof level === 'string' && level.trim() !== '',
+  )
+  if (!levels.length) return null
+  const preset = model?.reasoningDefaultLevel
+  return { levels, defaultLevel: typeof preset === 'string' ? preset.trim() : '' }
+}
+
 /** 单键的 tooltip 文案（表格里四枚徽章与数值列共用） */
 export function capabilityTip(key: CapabilityKey, value: unknown, overridden: boolean): string {
   const label = CAPABILITY_LABELS[key]

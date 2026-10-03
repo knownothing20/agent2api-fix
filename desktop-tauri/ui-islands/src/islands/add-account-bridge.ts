@@ -29,6 +29,8 @@ export type CustomProviderRecord = {
   protocol?: string
   baseUrl?: string
   accountCount?: number
+  /** 客户端形态伪装（预置卡写入的记录字段）：'opencode' = 按官方 CLI 形状补齐请求 */
+  clientEmulation?: string
   quirks?: {
     urlSuffix?: string
     headers?: Record<string, string>
@@ -43,6 +45,10 @@ export type PresetRecord = {
   baseUrl?: string
   hint?: string
   quirks?: CustomProviderRecord['quirks']
+  /** 客户端形态伪装：随创建写进提供商记录（OpenCode Zen 用它过免费档的三道校验） */
+  clientEmulation?: string
+  /** 该家账号的默认取值（表单初始勾选态）：noAuth = 预勾「该上游无需鉴权」 */
+  account?: { noAuth?: boolean }
 }
 
 /** web-login.js 的控制器（只列本子系统用到的成员） */

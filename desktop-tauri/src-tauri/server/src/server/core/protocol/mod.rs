@@ -44,6 +44,7 @@ pub mod anthropic;
 pub mod anthropic_outbound;
 pub mod freeform;
 pub mod history;
+pub mod native_tool;
 pub mod responses;
 pub mod responses_outbound;
 pub mod tool_plan;

@@ -55,7 +55,11 @@ struct Spec {
 /// 顺序 = 展示顺序：能力由强到弱、同代相邻，便于管理页阅读。
 const MODELS: &[Spec] = &[
     Spec { id: "glm-5.3", name: "GLM-5.3", context: 1_000_000, max_output: 128_000, reasoning: true, vision: false },
-    Spec { id: "glm-5.3-flash", name: "GLM-5.3 Flash", context: 1_000_000, max_output: 128_000, reasoning: true, vision: false },
+    // `glm-5.3-flash` **有视觉**：目录（`agent/configs` 的 `capabilities.vision`）
+    // 与实测（2026-09-30 发一张红色 4×4 PNG，它答「红色」；同一张图打
+    // `glm-5.3` 被 400 拒掉，原文是「messages.content.type 参数非法，取值范围
+    // ['text']」）两处一致 —— 改造前这里标的是 `false`，属清单与事实不符。
+    Spec { id: "glm-5.3-flash", name: "GLM-5.3 Flash", context: 1_000_000, max_output: 128_000, reasoning: true, vision: true },
     Spec { id: "glm-5.2", name: "GLM-5.2", context: 1_000_000, max_output: 128_000, reasoning: true, vision: false },
     Spec { id: "glm-5.1", name: "GLM-5.1", context: 200_000, max_output: 64_000, reasoning: true, vision: false },
     Spec { id: "glm-5", name: "GLM-5", context: 200_000, max_output: 64_000, reasoning: true, vision: false },
@@ -69,6 +73,45 @@ const MODELS: &[Spec] = &[
     Spec { id: "glm-5v-turbo", name: "GLM-5V Turbo", context: 200_000, max_output: 131_072, reasoning: false, vision: true },
 ];
 
+/// 一个模型的**目录补充信息**（`agent/configs` 的 `builtinModels[]`）
+struct Extra {
+    /// 上游模型 id（与本表的 `Spec::id` 同一口径：小写）
+    id: &'static str,
+    /// 视频输入。`None` = 未声明（出口不出这个键，管理页显示「未声明」）
+    video: Option<bool>,
+    /// 可配的思考档位（出口为 `reasoningLevels`；空 = 未声明）
+    levels: &'static [&'static str],
+    /// 默认思考档位（出口为 `reasoningDefaultLevel`）
+    default_level: &'static str,
+}
+
+/// 目录补充信息表。
+///
+/// ── 为什么与 [`MODELS`] 分开放 ───────────────────────────────
+/// 这两项**只有 GLM-5.3 家族有依据**（目录 + 实测）。塞进 `Spec` 会让另外九行
+/// 各拖一串「没有」的占位值，反而看不出「谁真有数据」；分表之后，没有依据的
+/// 模型就是**不在表里**，出口也如实不出这些键（管理页显示「未声明」，见
+/// `ui-islands` 的 `model-capability.ts` 三态说明）。
+///
+/// ── 档位值的来源 ────────────────────────────────────────────
+/// 目录给每个档位写的是「往 `output_config.effort` 塞什么值」，三个档位
+/// 各一条（`low` / `high` / `max`），`defaultLevel` 是 `max`。这与本家
+/// `reasoning.rs` 的实现逐字对应 —— 那三个值正是上游接受的合法取值。
+const CATALOG_EXTRAS: &[Extra] = &[
+    Extra {
+        id: "glm-5.3",
+        video: Some(false),
+        levels: &["low", "high", "max"],
+        default_level: "max",
+    },
+    Extra {
+        id: "glm-5.3-flash",
+        video: Some(true),
+        levels: &["low", "high", "max"],
+        default_level: "max",
+    },
+];
+
 /// 本家的模型清单（聚合目录认的形态）。
 ///
 /// `region` 当前**不影响**返回值（两地清单相同，见模块头），参数保留是为了
@@ -78,7 +121,7 @@ pub fn list(_region: Region) -> Vec<Value> {
     MODELS
         .iter()
         .map(|spec| {
-            json!({
+            let mut item = json!({
                 "id": spec.id,
                 "name": spec.name,
                 "maxInputTokens": spec.context,
@@ -87,9 +130,44 @@ pub fn list(_region: Region) -> Vec<Value> {
                 "supportsToolCall": true,
                 "supportsImages": spec.vision,
                 "supportsReasoning": spec.reasoning,
-            })
+            });
+            if let Some(extra) = CATALOG_EXTRAS.iter().find(|extra| extra.id == spec.id) {
+                append_catalog_extras(&mut item, extra);
+            }
+            item
         })
         .collect()
+}
+
+/// 把目录补充信息写进一条清单项（只写**有依据**的键）。
+///
+/// 没有依据的模型这几项在出口里**缺失**，管理页照三态显示成「未声明」——
+/// 而不是被我们替上游答一个「不支持」（两者对用户是两件事，见
+/// `ui-islands` 的 `model-capability.ts`）。
+fn append_catalog_extras(item: &mut Value, extra: &Extra) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    if let Some(video) = extra.video {
+        object.insert("supportsVideo".to_string(), Value::Bool(video));
+    }
+    if extra.levels.is_empty() {
+        return;
+    }
+    object.insert(
+        "reasoningLevels".to_string(),
+        Value::Array(
+            extra
+                .levels
+                .iter()
+                .map(|level| Value::String((*level).to_string()))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "reasoningDefaultLevel".to_string(),
+        Value::String(extra.default_level.to_string()),
+    );
 }
 
 /// 这个模型名是不是本家认识的（**广告视图**的判据，见 `adapter` 的 `list_models`）。
@@ -97,6 +175,19 @@ pub fn list(_region: Region) -> Vec<Value> {
 /// 大小写不敏感：上游模型 id 是小写，而客户端偶尔会带上原始大小写
 /// （`GLM-5.3`），若按严格相等判定会让「列表里明明有」的名字点不动。
 pub fn is_known(model: &str) -> bool {
+    find(model).is_some()
+}
+
+/// 模型的最大输出额度（思考预算相加后的**截顶**用，见 `zcode::reasoning`）。
+///
+/// 与 [`is_known`] 同源的查表（同一份大小写不敏感的比较），`None` = 不认识这个
+/// 模型 —— 调用方据此放弃截顶而不是拿一个假上限去截。
+pub(super) fn max_output(model: &str) -> Option<i64> {
+    find(model).map(|spec| spec.max_output)
+}
+
+/// 按 id 找规格（大小写不敏感；`find` 是本文件唯一的比较口径，避免两处漂移）
+fn find(model: &str) -> Option<&'static Spec> {
     let needle = model.trim().to_ascii_lowercase();
-    MODELS.iter().any(|spec| spec.id == needle)
+    MODELS.iter().find(|spec| spec.id == needle)
 }

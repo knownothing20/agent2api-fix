@@ -33,6 +33,9 @@
    *   baseUrl  预填基址（按本网关的拼接语义，见文件头）
    *   hint     表单 Base URL 栏下的备注：该家另一端协议的地址 / 站点差异说明
    *   quirks   该家的上游特判（随创建写进提供商记录，转发时生效，见下）
+   *   account  该家账号的默认取值（表单里的初始勾选态，用户可改）：
+   *            · noAuth —— 「该上游无需鉴权」预勾选（无需 API Key 的家里预勾上；
+   *              用户一填 Key 就自动取消，见 add-custom-provider.tsx）
    *
    * ── quirks 的取值（抄自 9Router 各家适配器，后端 customProviders 记录的字段）──
    *   urlSuffix          原样追加到出站 URL 的查询串（GLM / MiniMax 的
@@ -46,6 +49,12 @@
    *                      （MiniMax 的 Claude 兼容端点拒绝无 type 的工具；
    *                      注意 DeepSeek 恰好相反、拒绝 type:"custom"，而本网关
    *                      翻译器默认输出无 type 形态，两家各按各的特判走）。
+   *   clientEmulation    "opencode" = 按 **OpenCode 官方 CLI 的形状**补齐出站请求
+   *                      （无 Key 时用匿名凭证 `public`、补 `ses_…` 会话头、
+   *                      请求体补 `bash` / `read` 两个桩工具 —— 上游免费档的
+   *                      三道校验，2026-09 实测 403 FreeTierError 就是这个）。
+   *                      **它会改写请求体**，所以只有 OpenCode Zen 默认开着，
+   *                      别的家不要加。
    *
    * 其余在 9Router 注册表里出现的特判**有意不搬**（本网关的行为已天然覆盖）：
    * preserveCacheControl（chat 透传原样发请求体）、dropOutputConfig（翻译器
@@ -158,17 +167,22 @@
     {
       key: 'opencode-go', name: 'OpenCode Go', icon: 'opencode-go.png',
       protocol: P.openai, baseUrl: 'https://opencode.ai/zen/go/v1',
-      hint: '同地址换 anthropic 协议即走它的 Claude 兼容端点',
+      hint: '同地址换 anthropic 协议即走它的 Claude 兼容端点。转发必须填 OpenCode Go 的 API Key（订阅制；获取模型清单不需要 Key，但发请求上游会回 401「Missing API key」）',
     },
     {
       key: 'opencode-zen', name: 'OpenCode Zen', icon: 'opencode-zen.png',
       protocol: P.openai, baseUrl: 'https://opencode.ai/zen/v1',
-      hint: '同地址换 anthropic 协议即走它的 Claude 兼容端点',
+      hint: '免费模型不用填 Key（默认勾上「该上游无需鉴权」，网关自动用匿名凭证）；付费模型则填 Zen 的 API Key。免费档上游只认官方客户端形态，已默认开启「伪装 OpenCode 官方客户端」',
+      // 免费档的三道校验（匿名凭证 / 会话头 / 请求体形态）由该开关统一补齐，
+      // 见后端 providers::custom::emulation 的模块头（含实测记录）
+      clientEmulation: 'opencode',
+      account: { noAuth: true },
     },
     {
       key: 'ollama-local', name: 'Ollama（本地）', icon: 'ollama-local.png',
       protocol: P.openai, baseUrl: 'http://localhost:11434/v1',
-      hint: '本机 Ollama 的 OpenAI 兼容端点，无需 API Key（鉴权留空即可）',
+      hint: '本机 Ollama 的 OpenAI 兼容端点，无需 API Key（默认已勾上「该上游无需鉴权」，鉴权头一个都不发）',
+      account: { noAuth: true },
     },
   ];
 

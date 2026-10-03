@@ -303,6 +303,24 @@ impl CompletionAccumulator {
 
     /// 组装最终 body（对应 Node 的 handleChunk 结束后的返回对象）
     fn into_completion(self) -> AggregatedCompletion {
+        // ── 诊断：上游只回了思考、正文为空 ──────────────────────────
+        // 这是**允许发生**的一种结局（始终思考的模型在小输出额度下会把额度
+        // 全花在思考上，上游仍回 200，见 `providers::zcode::reasoning` 的模块头）。
+        // 网关不在这里改协议 —— 伪造一个错误帧会让「上游到底说了什么」失去
+        // 可信度；这里只把事实写进日志：排查这类问题时最缺的正是
+        // 「上游其实只回了思考」这一条。
+        if self.content.trim().is_empty() && !self.reasoning.trim().is_empty() {
+            crate::server::logging::verbose(
+                "[Model]",
+                &format!(
+                    "⚠️ 上游只回了思考、正文为空（model={} finish={} 思考 {} 字）：\
+                     多为输出额度被思考吃光，可调高 max_tokens 或降低思考档位",
+                    self.model,
+                    if self.finish.is_empty() { "-" } else { &self.finish },
+                    self.reasoning.chars().count(),
+                ),
+            );
+        }
         let mut message = Map::new();
         message.insert(
             "role".to_string(),

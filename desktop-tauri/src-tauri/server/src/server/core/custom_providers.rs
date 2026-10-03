@@ -27,7 +27,12 @@
 //!   ],
 //!   "mappings": [                   // 对外别名 → 上游模型 id 的映射（同上）
 //!     { "alias": "my-alias", "target": "gpt-x", "enabled": true, "reasoning": "" }
-//!   ]
+//!   ],
+//!   // per-provider 特判（可选，缺省即「无特判」；预置卡创建时写入）：
+//!   "urlSuffix": "?beta=true",      // 追加到出站 URL 的查询串
+//!   "headers": { "Anthropic-Beta": "…" },  // 合并到默认头上的静态额外头
+//!   "anthropicToolType": "custom",  // 发 anthropic 上游时给工具补 type
+//!   "clientEmulation": "opencode"   // 按 OpenCode 官方 CLI 的形状补齐请求
 //! }
 //! ```
 //!
@@ -132,6 +137,16 @@ const MAX_HEADER_VALUE_CHARS: usize = 512;
 /// 对应给每个工具补 `type: "custom"`。空串 = 按默认（无 type）。
 pub const TOOL_TYPE_CUSTOM: &str = "custom";
 
+/// 客户端形态伪装的唯一合法值：OpenCode 官方 CLI。开着它时转发会按官方客户端的
+/// 形状补齐请求（`Bearer public` 匿名凭证、`ses_…` 会话头、`bash` / `read` 桩
+/// 工具），否则 OpenCode Zen 的免费档一律 403 `FreeTierError`（实现与实测记录
+/// 见 `providers::custom::emulation`）。空串 = 不伪装（默认）。
+///
+/// **它是 opt-in 且会改写请求体**，所以必须由**记录显式声明**（预置卡
+/// 「OpenCode Zen」会写入它），不能按 baseUrl 猜 —— 猜错的后果是给别的上游
+/// 塞两个假工具。
+pub const CLIENT_EMULATION_OPENCODE: &str = "opencode";
+
 /// 拉取上游模型清单的总超时（毫秒）。清单接口是一次性的管理动作，
 /// 不参与对话转发的长连接口径（egress 的 read_timeout 是给 SSE 的）。
 const FETCH_MODELS_TIMEOUT_MS: u64 = 15_000;
@@ -215,10 +230,11 @@ fn item_of(object: &Map<String, Value>) -> Value {
         "models": model_entries_of(object.get("models")),
         "mappings": mapping_entries_of(object.get("mappings")),
         // per-provider 特判字段：读侧容错归一（坏值按缺省丢弃，与 models 同一口径）。
-        // 缺省即「无特判」—— 老记录没有这三个键，转发侧按缺省走。
+        // 缺省即「无特判」—— 老记录没有这几个键，转发侧按缺省走。
         "urlSuffix": url_suffix_of(object.get("urlSuffix")),
         "headers": headers_of(object.get("headers")),
         "anthropicToolType": tool_type_of(object.get("anthropicToolType")),
+        "clientEmulation": client_emulation_of(object.get("clientEmulation")),
     })
 }
 
@@ -284,6 +300,19 @@ fn tool_type_of(value: Option<&Value>) -> String {
     let text = value.and_then(Value::as_str).map(str::trim).unwrap_or("");
     if text.eq_ignore_ascii_case(TOOL_TYPE_CUSTOM) {
         TOOL_TYPE_CUSTOM.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// 读侧归一：客户端形态伪装。目前只有 `opencode` 一个合法值（空 = 不伪装）。
+///
+/// 与 `tool_type_of` 同一口径：认不出的值按「不伪装」处理 —— 伪装会改写请求体，
+/// 宁可少伪装一次（表现为上游 403，能查）也不要把一个手改坏的值当成开关打开。
+fn client_emulation_of(value: Option<&Value>) -> String {
+    let text = value.and_then(Value::as_str).map(str::trim).unwrap_or("");
+    if text.eq_ignore_ascii_case(CLIENT_EMULATION_OPENCODE) {
+        CLIENT_EMULATION_OPENCODE.to_string()
     } else {
         String::new()
     }
@@ -386,6 +415,34 @@ pub fn list() -> Vec<Value> {
     read_items()
 }
 
+/// 摘要形态的自定义家列表（`{id, label, count}`）——「可选哪些家」这类候选表的
+/// **自定义家那一半**（另一半是注册表，见 `providers::summary_json`）。
+///
+/// 形状与注册表那一份**逐键一致**：消费方（`api::keys_api` 的「可用提供商」候选）
+/// 把两张表首尾拼成一张候选表，形状不同就得在拼接处再写一层适配，而那种适配层
+/// 只会让「加一个字段忘了另一边」的事故重演 —— 形状一致时，界面拿到的就是一张
+/// 无差别的表（它本来也不该知道哪一项是自定义家）。
+///
+/// `label` 取 `name`：用户起的名字就是这一家的展示名（与 `label_of` 同一口径，
+/// 回退 id 而不是「未知」——见 `providers::label_of` 的说明）。
+///
+/// 为什么 `count` 由调用方算而不是在这里数：账号在 `AccountStore` 里，本模块是
+/// 配置层、不认识它（与 `providers::summary_json` 同一取舍）。也正因为只借一个
+/// 计数闭包，两张表的 `count` 必然同口径 —— 都是「这家现在有几个账号」。
+pub fn summary_json<F>(count: F) -> Vec<Value>
+where
+    F: Fn(&str) -> usize,
+{
+    list()
+        .into_iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?;
+            let label = item.get("name").and_then(Value::as_str).unwrap_or(id);
+            Some(json!({ "id": id, "label": label, "count": count(id) }))
+        })
+        .collect()
+}
+
 /// 按 id 取一条；不存在返回 None。
 pub fn get(id: &str) -> Option<Value> {
     let id = id.trim();
@@ -462,6 +519,7 @@ pub fn create(payload: &Value) -> Result<Value, String> {
         "urlSuffix": validate_url_suffix(object.get("urlSuffix"))?,
         "headers": validate_headers(object.get("headers"))?,
         "anthropicToolType": validate_tool_type(object.get("anthropicToolType"))?,
+        "clientEmulation": validate_client_emulation(object.get("clientEmulation"))?,
     });
     let mut items = read_items();
     items.push(item.clone());
@@ -530,6 +588,12 @@ pub fn update(id: &str, payload: &Value) -> Result<Value, String> {
         merged.insert(
             "anthropicToolType".to_string(),
             Value::String(validate_tool_type(Some(value))?),
+        );
+    }
+    if let Some(value) = object.get("clientEmulation") {
+        merged.insert(
+            "clientEmulation".to_string(),
+            Value::String(validate_client_emulation(Some(value))?),
         );
     }
     let updated = Value::Object(merged);
@@ -702,9 +766,18 @@ pub fn wire_model_for(provider_id: &str, requested_name: &str) -> (String, Optio
 ///   鉴权：前两者 `Authorization: Bearer <key>`；anthropic 是
 ///   `x-api-key` + `anthropic-version: 2023-06-01`（它的鉴权头不是 Bearer）。
 ///
-/// key 取该家**第一个 enabled 且 apiKey 非空**的账号（`first_custom_credential`，
-/// 按优先级升序 —— 与转发选路的「队首优先」同口径）；一个都没有时报
-/// 「请先添加账号」。账号配了出网代理就带上（`ResolvedProxy`），没有则直连。
+/// key 取该家**第一个可用账号**的凭证（`first_custom_credential`：启用且
+/// 「apiKey 非空 **或** 声明了无需鉴权」，按优先级升序 —— 与转发选路的
+/// 「队首优先」同口径）；一个都没有时报「请先添加账号」。账号配了出网代理就
+/// 带上（`ResolvedProxy`），没有则直连。
+///
+/// ── 凭证为空时**不发鉴权头**（2026-09 修）──────────────────────
+/// 无需鉴权的上游（本地 Ollama、OpenCode Zen 的免费档）在 `/models` 上
+/// 本来就不校验凭证。旧实现在这里无条件拼 `Authorization: Bearer `（空）或
+/// `x-api-key: `，严格的上游会直接 401 —— 而这条路径以前根本走不到（空 key
+/// 的账号被 `first_custom_credential` 过滤掉了，见那个函数的说明）。
+/// **有意不套 `clientEmulation` 的伪装头**：`/models` 实测无需伪装即可 200，
+/// 多套一层只会让这条管理动作也跟着上游的形态校验一起坏掉。
 ///
 /// 响应解析：OpenAI 与 anthropic 的清单形态相同（`{data: [{id}]}`），
 /// 取每个条目的非空 `id`。**不落盘** —— 清单拉回来给前端确认后再调
@@ -735,17 +808,25 @@ pub async fn fetch_upstream_models(
     };
     let credential = store
         .first_custom_credential(provider_id)
-        .ok_or_else(|| "请先添加账号：拉取模型清单需要一个启用且填写了 apiKey 的账号".to_string())?;
+        .ok_or_else(|| {
+            "请先添加账号：拉取模型清单需要一条启用且可用（填了 apiKey，或声明了无需鉴权）的账号"
+                .to_string()
+        })?;
     let client = egress::client_for(credential.proxy.as_ref());
     let mut builder = client
         .get(&url)
         .timeout(Duration::from_millis(FETCH_MODELS_TIMEOUT_MS));
-    if protocol == PROTOCOL_ANTHROPIC {
-        builder = builder
-            .header("x-api-key", credential.api_key.as_str())
-            .header("anthropic-version", "2023-06-01");
-    } else {
-        builder = builder.header("Authorization", format!("Bearer {}", credential.api_key));
+    // 凭证为空（无需鉴权的账号）时**一个鉴权头都不发**：空 Bearer 对严格的上游
+    // 等同凭证错误，与「这家不要凭证」的语义正好相反（见函数头的说明）
+    let api_key = credential.api_key.trim();
+    if !api_key.is_empty() {
+        builder = if protocol == PROTOCOL_ANTHROPIC {
+            builder
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            builder.header("Authorization", format!("Bearer {api_key}"))
+        };
     }
     let response = builder.send().await.map_err(|error| {
         format!("上游请求失败: {}", egress::describe_error_detail(&error))
@@ -1096,4 +1177,22 @@ fn validate_tool_type(value: Option<&Value>) -> Result<String, String> {
         return Ok(TOOL_TYPE_CUSTOM.to_string());
     }
     Err("anthropicToolType 只支持 \"custom\"（留空表示不补 type）".to_string())
+}
+
+/// 客户端形态伪装：空 = 不伪装；`opencode` = 按 OpenCode 官方 CLI 的形状补齐
+/// 请求（见 `providers::custom::emulation`）。其余值一律拒绝 —— 与
+/// `validate_tool_type` 同一理由：它是请求体修正的开关，拼错等于静默改变
+/// 转发行为（而且这里改的是**请求体内容**，后果比一个头更重）。
+fn validate_client_emulation(value: Option<&Value>) -> Result<String, String> {
+    let Some(value) = value else { return Ok(String::new()) };
+    let text = value.as_str().unwrap_or("").trim();
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+    if text.eq_ignore_ascii_case(CLIENT_EMULATION_OPENCODE) {
+        return Ok(CLIENT_EMULATION_OPENCODE.to_string());
+    }
+    Err(format!(
+        "clientEmulation 只支持 \"{CLIENT_EMULATION_OPENCODE}\"（留空表示不伪装上游客户端）"
+    ))
 }

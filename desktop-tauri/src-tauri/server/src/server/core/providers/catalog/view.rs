@@ -186,6 +186,13 @@ pub fn manage_view(store: &AccountStore) -> Value {
                 "source": source, "enabled": enabled, "aliases": aliases,
                 "capabilities": capability::effective(&item),
                 "capOverrides": cap_overrides,
+                // 模型**自己能配哪些思考档位**（清单项里的可选键，只有给过依据
+                // 的家才有 —— 目前是 ZCode 的 GLM-5.3 家族，数据来自官方目录）。
+                // 与上面 `mappings[].reasoning`（用户给某条映射**指定**的档位）
+                // 是两件事：这里回答「这个模型支持哪些档」，那里回答「这条映射
+                // 用哪一档」。缺失（null）= 该模型未声明，界面据此不显示这一行。
+                "reasoningLevels": item.get("reasoningLevels"),
+                "reasoningDefaultLevel": item.get("reasoningDefaultLevel"),
                 // 这一家的清单是什么时候拉到的（毫秒；0 = 从未成功拉过）。
                 // 缓存恢复的清单与刚拉的清单**都是 `remote`**，时效只能靠这个
                 // 时间戳说明（见 `providers::catalog_cache` 的模块头）。

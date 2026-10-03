@@ -2,6 +2,9 @@
 
 [简体中文](./README.md) | **English**
 
+<!-- Remove this block after the National Day holiday. -->
+> 📢 **National Day holiday notice**: the project runs in slow mode during the holiday. Issues are still accepted, but replies, triage and releases will be noticeably slower and are mostly batched after the holiday. For blocking problems, prefix the issue title with `[阻断]` and it will be looked at first; existing issues stay in the queue and won't be dropped. Discussion: [#66](https://github.com/aimod-cc/agent2api/issues/66).
+
 Wraps the login state of several AI desktop clients into a local **OpenAI-compatible API gateway**, exposing a single `base_url` and bundling multi-provider account management, model management (enable / disable / delete / alias), content redaction, egress proxying and request reporting — plus a ready-to-run Tauri desktop app. Any OpenAI client that accepts a custom `base_url` can call these providers' model quota through `http://127.0.0.1:3065/v1` — no API key, no client source changes needed.
 
 ```

@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use super::{
-    chat_frame, content_parts, content_text, is_truthy, json_text, random_id, string_field,
-    string_value, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
+    chat_frame, content_parts, content_text, is_truthy, json_text, native_tool, random_id,
+    string_field, string_value, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
 };
 use super::anthropic::{parse_json_object, tool_result_text, DEFAULT_MAX_TOKENS};
 use super::responses::ConvertError;
@@ -167,14 +167,36 @@ pub fn anthropic_request_from_chat(chat: &Value, model: &str) -> Result<Value, C
             out.insert("stop_sequences".to_string(), Value::Array(list));
         }
     }
+    // 工具声明：函数工具翻译成 Anthropic 形态；原生（服务端执行）声明只有
+    // 「来源就是 Anthropic」的原样恢复（保真），跨协议的不猜 —— 剔除并留痕
+    // （见 `native_tool` 模块头；静默剔除或硬塞给上游都是 #61 那类难查的形态）
+    let mut natives: Vec<Value> = Vec::new();
     if let Some(tools) = chat.get("tools").and_then(Value::as_array) {
-        let converted: Vec<Value> = tools.iter().filter_map(tool_to_anthropic).collect();
+        let converted: Vec<Value> = tools
+            .iter()
+            .filter_map(|tool| tool_to_anthropic(tool, &mut natives))
+            .collect();
         if !converted.is_empty() {
             out.insert("tools".to_string(), Value::Array(converted));
         }
     }
+    let mut choice_reason: Option<String> = None;
     if let Some(choice) = chat.get("tool_choice").filter(|value| is_truthy(value)) {
-        out.insert("tool_choice".to_string(), tool_choice_to_anthropic(choice));
+        // 点名的工具被剔除时 `tool_choice` 一并撤掉：留着它上游会按
+        // 「指定的工具不存在」报错，把一次「搜索不可用」升级成整轮 400
+        match native_tool::choice_conflict(choice, &natives) {
+            Some(reason) => choice_reason = Some(reason),
+            None => {
+                out.insert("tool_choice".to_string(), tool_choice_to_anthropic(choice));
+            }
+        }
+    }
+    if !natives.is_empty() || choice_reason.is_some() {
+        let dropped = native_tool::Downgrade { tools: natives, choice: choice_reason };
+        crate::server::logging::log(
+            "[Anthropic]",
+            &dropped.describe(None, Some("目标上游按 anthropic 协议收，只认 anthropic 来源的原生声明")),
+        );
     }
     Ok(Value::Object(out))
 }
@@ -355,8 +377,20 @@ fn image_to_anthropic(part: &Value) -> Option<Value> {
     None
 }
 
-/// Chat 工具声明（嵌套 function）→ Anthropic 工具（`input_schema` 形态）。
-fn tool_to_anthropic(tool: &Value) -> Option<Value> {
+/// Chat 工具声明 → Anthropic 工具（`input_schema` 形态）。
+///
+/// 原生（服务端执行）声明分两种归宿：来源是 Anthropic 的原样恢复（`natives`
+/// 不收，保真）；其余（Responses 来源、或 chat 入口的方言原生工具）收进
+/// `natives` 由调用方留痕剔除 —— 目标协议是 anthropic，承载不了别的协议的
+/// 原生类型（见 `native_tool` 模块头）。
+fn tool_to_anthropic(tool: &Value, natives: &mut Vec<Value>) -> Option<Value> {
+    if native_tool::is_native(tool) {
+        if native_tool::origin_of(tool) == Some(native_tool::ORIGIN_ANTHROPIC) {
+            return Some(native_tool::restore(tool));
+        }
+        natives.push(tool.clone());
+        return None;
+    }
     // chat 侧只会有嵌套形态；裸 function 对象也容忍（两种形态等价）
     let function = tool.get("function").unwrap_or(tool);
     let name = string_field(function, "name");
@@ -449,12 +483,13 @@ fn thinking_budget(effort: &str) -> Option<i64> {
 /// 事件折法（对照 `AnthropicStream` 的反方向与参考实现
 /// `anthropicStreamToChat`，字段口径按本项目 chat 侧收敛）：
 ///   - `message_start` → 首帧（role assistant）+ 记下 message.id 与
-///     `usage.input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`
+///     `message.usage`（**按字段**吸收，见 [`Self::absorb_usage`]）
 ///   - `content_block_start`（tool_use）→ `tool_calls` 宣告帧（id / name）
 ///   - `content_block_delta`：`text_delta` → `delta.content`；
 ///     `thinking_delta` → `delta.reasoning_content`；
 ///     `input_json_delta` → `delta.tool_calls[…]`；`signature_delta` 丢弃
-///   - `message_delta` → 记 stop_reason 与 `usage.output_tokens`
+///   - `message_delta` → 记 stop_reason 与 usage（同样是**按字段**吸收：
+///     真实 `input_tokens` 只在这一帧出现，见 [`Self::absorb_usage`]）
 ///   - `message_stop` → 收尾帧 + usage 帧 + `data: [DONE]`
 ///   - `error` → `data: {"error":{…}}` + `data: [DONE]`（与 ForwardStream
 ///     的断流收尾同形状，聚合器据此转 502）
@@ -547,16 +582,7 @@ impl ChatFromAnthropicStream {
                     self.id = id.to_string();
                 }
                 if let Some(usage) = event.pointer("/message/usage").filter(|usage| usage.is_object()) {
-                    self.input_tokens =
-                        usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-                    self.cache_read = usage
-                        .get("cache_read_input_tokens")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
-                    self.cache_creation = usage
-                        .get("cache_creation_input_tokens")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
+                    self.absorb_usage(usage);
                 }
                 self.start()
             }
@@ -662,14 +688,49 @@ impl ChatFromAnthropicStream {
                     }
                 }
                 if let Some(usage) = event.get("usage").filter(|usage| usage.is_object()) {
-                    if let Some(output) = usage.get("output_tokens").and_then(Value::as_i64) {
-                        self.output_tokens = output;
-                    }
+                    self.absorb_usage(usage);
                 }
                 Vec::new()
             }
             "message_stop" => self.complete(),
             _ => Vec::new(),
+        }
+    }
+
+    /// 吸收一帧 usage，**按字段**更新（这一帧没带的字段保留原值）。
+    ///
+    /// ── 为什么必须按字段而不是整组覆盖 ──────────────────────────
+    /// 上游的两帧 usage 是**互补**的两次上报，谁都不是完整快照。实测
+    /// （2026-09-30，`zcode.z.ai` 的活动套餐通道，glm-5.3-flash 流式）：
+    ///
+    /// ```text
+    ///   message_start  → {"usage":{"input_tokens":0,"output_tokens":0}}
+    ///   message_delta  → {"usage":{"input_tokens":13,"output_tokens":64,
+    ///                              "cache_read_input_tokens":0,…}}
+    /// ```
+    ///
+    /// 即开头那帧把 `input_tokens` 报成 **0 占位**，真实值只在收尾前那帧出现；
+    /// 而 `output_tokens` 反过来只有收尾帧有效。因此：
+    ///   - 用「最后一次快照整组覆盖」的写法，会把先到那帧真有的字段清零；
+    ///   - 只认 `output_tokens`（改造前的写法）则输入与缓存**恒为 0** ——
+    ///     这正是 issue #56「账号已用 70M、界面只统计 3M」的根因
+    ///     （编码场景输入远大于输出，丢掉输入就等于账目少一个数量级）。
+    ///
+    /// 判据用「字段在不在」而不是「值是否非零」：0 是合法上报值（缓存未命中
+    /// 就是 0），拿它当「没报」会让我们永远回落到一个更早的旧值。
+    fn absorb_usage(&mut self, usage: &Value) {
+        let take = |key: &str| usage.get(key).and_then(Value::as_i64);
+        if let Some(value) = take("input_tokens") {
+            self.input_tokens = value;
+        }
+        if let Some(value) = take("cache_read_input_tokens") {
+            self.cache_read = value;
+        }
+        if let Some(value) = take("cache_creation_input_tokens") {
+            self.cache_creation = value;
+        }
+        if let Some(value) = take("output_tokens") {
+            self.output_tokens = value;
         }
     }
 
@@ -701,8 +762,14 @@ impl ChatFromAnthropicStream {
         });
         out.push(self.finish_frame(&finish_reason));
         // chat 口径：input_tokens 含缓存部分（`usage_to_anthropic` 的反向
-        // 不等式 —— 那边是「减掉缓存」，这边加回来）
-        let prompt_tokens = self.input_tokens + self.cache_read + self.cache_creation;
+        // 不等式 —— 那边是「减掉缓存」，这边加回来）。缓存另开一个具体字段：
+        // 请求统计的「缓存」列按 `prompt_tokens_details.cached_tokens` 取值
+        // （见 `upstream::usage::extract_usage`），不带它这一列在活动套餐通道
+        // 上恒显示 0 —— 与输入恒 0 是同一类「账目看着对、其实没采到」。
+        // `cache_creation` 也并进这一项：它同样落在 prompt_tokens 里，
+        // 不并会让「input = prompt - cached」两边对不上。
+        let cached = self.cache_read + self.cache_creation;
+        let prompt_tokens = self.input_tokens + cached;
         out.push(chat_frame(&json!({
             "id": self.id,
             "object": "chat.completion.chunk",
@@ -713,6 +780,7 @@ impl ChatFromAnthropicStream {
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": self.output_tokens,
                 "total_tokens": prompt_tokens + self.output_tokens,
+                "prompt_tokens_details": { "cached_tokens": cached },
             },
         })));
         out.push(bytes::Bytes::from_static(b"data: [DONE]\n\n"));

@@ -406,8 +406,28 @@ impl StoredAccount {
     /// `plan: start-plan` 的转发**只用 JWT**（见 `zcode::plan`）—— 只认
     /// `accessToken` 会让这类账号在选路时被跳过，报成「没有可用账号」，
     /// 与「账号明明能用」矛盾。
+    ///
+    /// 第五条判据 `no_auth()` 同样只对自定义账号有效：上游本来就不要鉴权时
+    /// （本地 Ollama、OpenCode Zen 的匿名免费档、自建无反代），「没有 key」
+    /// 不是缺陷而是**这条账号的正常形态**。判据必须**显式**落在记录上 ——
+    /// 只看「apiKey 为空」会把用户忘了填 key 的记录一起放行，表现成一条
+    /// 看不懂的上游 401（见 [`Self::no_auth`]）。
     pub fn has_credentials(&self) -> bool {
         self.has_token() || self.is_desktop() || self.has_api_key() || self.has_jwt()
+            || self.no_auth()
+    }
+
+    /// 记录是否**显式声明「该上游无需鉴权」**（自定义账号的 `noAuth: true`）。
+    ///
+    /// 写入侧保证它与 `apiKey` 互斥（[`super::custom_accounts`] 的两个写入
+    /// 入口都守着这条不变量）：勾了无需鉴权就没有 key 可存，存了 key 就摘掉
+    /// 这个标记。于是「有没有凭证」与「发不发鉴权头」两件事都只有一种读法，
+    /// 转发侧不必再判优先级。
+    ///
+    /// 内置八家的记录里没有这个键（它们各有登录态与刷新链路），判定天然不受
+    /// 影响 —— 也就与 `has_api_key` 同一条「不判 provider」的取舍。
+    pub fn no_auth(&self) -> bool {
+        matches!(self.fields.get("noAuth"), Some(Value::Bool(true)))
     }
 
     /// 记录里是否有**非空**的 `jwt`（ZCode 的套餐令牌）

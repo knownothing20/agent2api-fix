@@ -50,6 +50,7 @@
 //!   captcha.rs      活动套餐通道的人机验证令牌池（界面铸造 → 网关消费）—— 已完成
 //!   balance.rs      套餐余额（`billing/balance`：余额桶 + 套餐 + 到期）—— 已完成
 //!   plan.rs         活动套餐通道（系统提示词块 + Anthropic 协议 + JWT 鉴权）—— 已完成
+//!   reasoning.rs    GLM-5.3 家族的思考等级契约（等级 ↔ 预算、预算与 max_tokens 配对）—— 已完成
 //!   adapter.rs      `ProviderAdapter` 实现（按账号的两条通道 + 余额接线）—— 已完成
 //!   credentials.rs  凭证（访问令牌 + 套餐 JWT + 设备标识）—— 已完成
 //!   oauth.rs        CLI 轮询登录（init / poll / 授权地址中转页）—— 已完成
@@ -90,6 +91,7 @@ pub mod credentials;
 pub mod models;
 pub mod oauth;
 pub mod plan;
+pub mod reasoning;
 pub mod region;
 
 /// 账号记录上的「用哪条通道」字段名（`accounts.json` 的键；界面读同一个名字）。

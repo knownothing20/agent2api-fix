@@ -70,14 +70,18 @@
   }
 
   /**
-   * 保存提供商配置：POST /api/custom-providers/update（三个字段一起提交，
-   * 都是表单上的必填值，后端也会再校验一次）。
+   * 保存提供商配置：POST /api/custom-providers/update。
+   * 三个字段一起提交（都是表单上的必填值，后端也会再校验一次）；`clientEmulation`
+   * 只在调用方**真的带了**这个键时才提交（patch 语义：不带 = 不改）—— 账号设置
+   * 弹窗总是带它（勾选框有初值，改没改都是确定态），而别处调用不带。
    * 失败原样抛出（不在这里 toast）：调用方是账号设置弹窗，它要把「账号已保存、
    * 提供商未更新」这句话写在弹窗里，笼统报一句「保存失败」会把两件事混成一件。
    */
-  async function update({ id, name, protocol, baseUrl }) {
+  async function update({ id, name, protocol, baseUrl, clientEmulation }) {
     if (!isCustomProviderId(id)) throw new Error('不是自定义提供商');
-    await providers.customRequest('POST', '/api/custom-providers/update', { id, name, protocol, baseUrl });
+    const body = { id, name, protocol, baseUrl };
+    if (typeof clientEmulation === 'string') body.clientEmulation = clientEmulation;
+    await providers.customRequest('POST', '/api/custom-providers/update', body);
     await refreshAfterChange();
   }
 
@@ -89,6 +93,13 @@
    * 过滤）—— 确认文案必须先把「会连带删掉多少条」说清楚，这是级联删除与单条、
    * 可逆操作的分界。响应里的 accountsRemoved 是权威值，成功提示用它（万一与
    * 本地计数不一致，以删掉的真实条数为准）。
+   *
+   * 后端还会级联把这家的 id 从各 Key 的「可用提供商」白名单里摘掉（响应里的
+   * keysUpdated / keysUnrestricted）：不摘的话那几把 Key 会变成「谁都进不来」。
+   * 这两个读数在**成功提示**里说 —— 可用范围是**权限**，其中 keysUnrestricted
+   * 那几把是从「只允许这家」变成「不限制」，不写出来等于悄悄放宽了权限。
+   * 确认文案里不写它们：那不是删除动作带来的数据损失（不像上面那 N 个账号），
+   * 而本地没有 Key 列表面，为它多打一次 /api/keys 换一句提示不划算。
    */
   async function remove(providerId) {
     const provider = await findProvider(providerId);
@@ -110,7 +121,16 @@
     try {
       const data = await providers.customRequest('POST', '/api/custom-providers/remove', { id: providerId });
       const removed = Number(data?.accountsRemoved);
-      toast(`✅ 已删除自定义提供商「${name}」${Number.isFinite(removed) ? `及 ${removed} 个账号` : ''}`);
+      const keysUpdated = Number(data?.keysUpdated);
+      const keysUnrestricted = Number(data?.keysUnrestricted);
+      let keysNote = '';
+      if (Number.isFinite(keysUpdated) && keysUpdated > 0) {
+        keysNote = `，并从 ${keysUpdated} 把 Key 的可用提供商里移除`;
+        if (Number.isFinite(keysUnrestricted) && keysUnrestricted > 0) {
+          keysNote += `（其中 ${keysUnrestricted} 把恢复为不限制）`;
+        }
+      }
+      toast(`✅ 已删除自定义提供商「${name}」${Number.isFinite(removed) ? `及 ${removed} 个账号` : ''}${keysNote}`);
       await refreshAfterChange();
       return true;
     } catch (error) {

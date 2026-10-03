@@ -292,6 +292,18 @@ export function startConnectionsPolling(): void {
 /* ─── 余额 / 签到：动作层 ───────────────────── */
 
 /**
+ * 批量余额查询的目标集合判据（与后端 `resolve_batch_targets` **逐字一致**）：
+ * 「有余额概念 + 凭证完整（`available !== false`）」，**不看启用状态** ——
+ * 禁用只表示不参与转发，与「这个账号还剩多少」无关。
+ *
+ * 工具条「查询余额」、签到 / 领套餐后的自动刷新、以及批量返回后的「未返回」补位
+ * 共用这一处；三处各写一份判据，迟早会漂成「界面算的目标集合与后端返回的行对不上」。
+ */
+function batchUsageTargets(): AccountRecord[] {
+  return allAccounts().filter(account => supportsUsage(account) && account.available !== false)
+}
+
+/**
  * 缓存条目 → 失败描述的**唯一入口**（余额列的摘要渲染与这里的 toast 播报共用同一份
  * 判据，两处不会一个说红一个说灰）。返回 null 表示这不是失败（还在查询中 / 是结果）。
  *
@@ -360,11 +372,11 @@ export async function syncBalancesSnapshot(): Promise<boolean> {
 /**
  * 查询余额。`id` 缺省 = 全部（后端批量目标集合）；给了 id 则**带 `?id=` 请求**。
  *
- * 为什么单查要走 `?id=` 而不是「取一批后筛一条」：后端批量路径的目标集合是「全部
- * **启用**账号」，但用户手点某一行账号的「余额」按钮问的是另一个问题：「这个账号现在
- * 还剩多少」。按启用状态把它挡掉，结果里就没有这一行，界面只能兜底成「未返回余额数据」
- * —— 用户分不清是禁用了还是上游挂了。所以单查带 id 走后端那条**不看启用状态**的分支。
- * 批量（`id` 缺省）仍是「全部启用账号」，行为与改造前一致。
+ * 为什么单查要走 `?id=` 而不是「取一批后筛一条」：后端批量路径的目标集合是
+ * 「全部**可用**账号」，而用户手点某一行账号的「余额」按钮问的是另一个问题：
+ * 「这个账号现在还剩多少」。单查带 id 走后端那条只认 id 的分支（不做范围与
+ * 可用性过滤）。两条路径现在都不看启用状态 —— 禁用只表示不参与转发，与余额
+ * 能否查无关；批量若按启用状态挡掉，那些行就只能永远停在「未查询」。
  */
 export async function queryUsageFor(id?: string | null): Promise<{ results?: Array<Record<string, unknown>> } | null | undefined> {
   const data = await shared().workbuddyDesktop?.getAllBalances?.(id || undefined)
@@ -383,13 +395,12 @@ export async function queryUsageFor(id?: string | null): Promise<{ results?: Arr
     bump()
     return data
   }
-  // 只给**批量目标集合内的**账号补「未返回」：后端的目标集合是「启用 + 有余额概念」，
-  // 缺失一行才是异常。禁用账号不在集合里，补它等于把「这行没参与本轮查询」说成
-  // 「上游没给数据」—— 与单查那个 bug 同源。
-  for (const account of allAccounts()) {
-    if (!returned.has(account.id) && supportsUsage(account) && account.enabled !== false) {
-      usageMap.set(account.id, '未返回余额数据')
-    }
+  // 只给**批量目标集合内的**账号补「未返回」：后端的目标集合是「可用 + 有余额概念」，
+  // 缺失一行才是异常。不在集合里的账号（不可用、没有余额概念）补它等于把「这行没参与
+  // 本轮查询」说成「上游没给数据」—— 与单查那个 bug 同源。判据走 `batchUsageTargets`，
+  // 与后端 `resolve_batch_targets` 逐字一致。
+  for (const account of batchUsageTargets()) {
+    if (!returned.has(account.id)) usageMap.set(account.id, '未返回余额数据')
   }
   bump()
   return data
@@ -397,13 +408,14 @@ export async function queryUsageFor(id?: string | null): Promise<{ results?: Arr
 
 /**
  * 批量查询全部可查询账号的余额（工具条「查询余额」）。
- * 目标集合只含「有余额概念 + 启用」：已禁用账号后端同样会跳过，界面若把它算进分母，
- * 播报的「已更新 N/M」会与真实条数对不上。
+ * 目标集合见 `batchUsageTargets()`：**有余额概念 + 凭证完整**的全部账号，
+ * 不看启用状态（与后端一致）—— 禁用账号后端现在同样会查，界面把它们排除在外，
+ * 「查询中」中间态与失败兜底就会与后端返回的行对不上。
  * 每次点击都是一次查询（明细面板已取消，没有「第二次点击收起」那套语义）。
  */
 export async function queryAllUsage(): Promise<void> {
   if (getStore().usageBusy) return
-  const targets = allAccounts().filter(account => supportsUsage(account) && account.enabled !== false)
+  const targets = batchUsageTargets()
   if (!targets.length) { toast('暂无可查询余额的账号', 'err'); return }
   patch({ usageBusy: true })
   // 先写「查询中」再重绘：余额列立刻显示查询中，结果回来了直接换成读数
@@ -621,10 +633,11 @@ export async function queryUsageOnce(id: string): Promise<void> {
  * 再落到新读数；批量那条同时把工具条的「查询中…」点亮（`usageBusy`，顺带挡住
  * 用户在刷新期间重复点「查询余额」）。
  *
- * 目标集合：`id` 给定 = 该账号（后端单查路径不看 `enabled`，与行上那颗「余额」
- * 按钮同一条）；缺省 = 与工具条「查询余额」逐字相同的集合（有余额概念 + 启用），
- * 免得自动刷新比手动查询还「多查一批」。没有余额概念的账号直接跳过 ——
- * 签到范围的几家都有余额概念，这一条是留给将来新增 provider 的兜底。
+ * 目标集合：`id` 给定 = 该账号（后端单查路径，与行上那颗「余额」按钮同一条）；
+ * 缺省 = 与工具条「查询余额」逐字相同的集合（见 `batchUsageTargets()`：有余额概念
+ * + 凭证完整的全部账号，**不看启用状态**），免得自动刷新比手动查询还「多查一批」。
+ * 没有余额概念的账号直接跳过 —— 签到范围的几家都有余额概念，这一条是留给将来
+ * 新增 provider 的兜底。
  *
  * 失败只写缓存（余额列显示失败原因）、不播报：签到请求成功而余额查询失败时，
  * 用户需要的是「这行为什么没有读数」，而那条原因就在列上。
@@ -642,7 +655,7 @@ export async function refreshUsageAfterCheckin(id?: string): Promise<void> {
     return
   }
   if (getStore().usageBusy) return
-  const targets = allAccounts().filter(account => supportsUsage(account) && account.enabled !== false)
+  const targets = batchUsageTargets()
   if (!targets.length) return
   patch({ usageBusy: true })
   targets.forEach(account => usageMap.set(account.id, null))

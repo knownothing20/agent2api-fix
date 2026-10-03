@@ -1022,6 +1022,46 @@ pub async fn patch_account(state: &ServerState, id: &str, body: &Bytes) -> Respo
             Err(error) => return store_error(error),
         }
     }
+    // 自定义账号的凭证（`apiKey` / `noAuth`）：与上面两段同一处境 —— 只有自定义
+    // 家认这两个键，所以不进通用 `apply_patch`。**账号 id 由 HTTP 路径给定，
+    // 改凭证不改 id**（id 是身份：限额冷却、请求日志、导出文件都按它关联），
+    // 于是这里不需要「同 key 合并」那条添加侧的逻辑。
+    if patch.get("apiKey").is_some() || patch.get("noAuth").is_some() {
+        // `custom_account_provider` 一次回答两件事：账号在不在、属不属于自定义家
+        // （判据是记录里的 `provider` 前缀，不要求提供商本身还在配置里，
+        // 见那个函数的说明）—— 与 balanceToken / zcodePlan 的两次查询同口径
+        if state.store().custom_account_provider(&id).is_none() {
+            let known = state
+                .store()
+                .list_accounts()
+                .get("accounts")
+                .and_then(Value::as_array)
+                .map(|accounts| {
+                    accounts
+                        .iter()
+                        .any(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                })
+                .unwrap_or(false);
+            return if known {
+                management_error(400, "只有自定义提供商的账号有 API Key / 无需鉴权这两项")
+            } else {
+                store_error(AccountStoreError::new("账号不存在", 404))
+            };
+        }
+        // 只把请求里**真的带了**的键递下去（`apiKey: null` 是有意义的取值：
+        // 清除凭证），其余字段由下面的通用 `update_account` 处理 —— 两者各守
+        // 各的字段集，互不干扰
+        let mut scoped = Map::new();
+        for key in ["apiKey", "noAuth"] {
+            if let Some(value) = patch.get(key) {
+                scoped.insert(key.to_string(), value.clone());
+            }
+        }
+        match state.store().update_custom_credentials(&id, &Value::Object(scoped)) {
+            Ok(changes) => balance_changes.extend(changes),
+            Err(error) => return store_error(error),
+        }
+    }
     match state.store().update_account(&id, &patch) {
         Ok((account, mut changes)) => {
             changes.extend(balance_changes);

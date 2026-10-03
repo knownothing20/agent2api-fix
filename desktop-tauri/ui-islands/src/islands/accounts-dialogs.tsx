@@ -20,6 +20,7 @@
 import * as React from 'react'
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogBody,
   DialogContent,
@@ -485,19 +486,77 @@ function BalanceTokenField({
   )
 }
 
+/**
+ * 自定义账号的**凭证段**（API Key / 无需鉴权）：只有自定义家渲染（内置八家的
+ * 凭证各有自己的登录链路，改不了也不该在这儿改）。
+ *
+ * ── 为什么这里能改 Key（添加表单之外唯一的入口）──────────────
+ * 添加表单只在「加账号」那一刻经过；建完账号后要换一把 Key、或者当初忘了勾
+ * 「无需鉴权」（账号因此被选路跳过），都必须有地方改。改凭证**不动账号 id**
+ * （id 是身份，见后端 `update_custom_credentials`），所以改完仍是同一条账号。
+ *
+ * ── 两个字段互斥（与后端同一不变量）─────────────────────────
+ * 勾了「无需鉴权」就没有 Key 可填（输入框禁用、保存时后端也会把 key 清掉）；
+ * 填了 Key 就自动摘掉「无需鉴权」。界面上不做花哨的联动提示，只把禁用的输入框
+ * 与一句说明摆在那里 —— 两件事同时成立本来就是矛盾的输入。
+ */
+function CustomCredentialFields({
+  hasApiKey, noAuth, value, onValue,
+  onToggleNoAuth, onClear, clearBusy,
+}: {
+  hasApiKey: boolean
+  noAuth: boolean
+  value: string
+  onValue: (next: string) => void
+  onToggleNoAuth: (next: boolean) => void
+  onClear: () => void
+  clearBusy: boolean
+}) {
+  return (
+    <>
+      <div className='field-row mt-2.5'>
+        <label htmlFor='account-api-key-input'>API Key</label>
+        <Input id='account-api-key-input' type='password' autoComplete='new-password'
+          className='min-w-[220px]' disabled={noAuth}
+          placeholder={hasApiKey ? '已配置，留空则不修改' : 'sk-…'}
+          title='上游的 API Key。留空 = 不修改（改凭证不会换账号 id）；要清掉已配的凭证用右边的「清除」'
+          value={value} onChange={event => onValue(event.currentTarget.value)} />
+        {hasApiKey && !noAuth ? (
+          <Button variant='outline' size='sm' disabled={clearBusy} onClick={onClear}
+            title='清除已配置的 API Key（转发时会因缺少凭证被跳过）'>清除</Button>
+        ) : null}
+      </div>
+      <div className='field-row mt-2.5'>
+        <Label className='inline-flex cursor-pointer items-center gap-2.5 font-normal'>
+          <Checkbox checked={noAuth} aria-label='该上游无需鉴权'
+            onCheckedChange={next => onToggleNoAuth(next === true)} />
+          <span className='text-xs text-subtle'>该上游无需鉴权（转发与拉取模型都不发送鉴权头）</span>
+        </Label>
+      </div>
+      <p className='detail'>
+        上游本来不要凭证时（本地 Ollama、OpenCode Zen 的免费档）勾上这一项：
+        账号会被正常选路；只把 Key 留空<strong>又不勾</strong>会被当成「未配置凭证」而跳过。
+      </p>
+    </>
+  )
+}
+
 /** 自定义提供商的「提供商」一段（内置家不渲染：它们的协议与地址写在代码里） */
 function ProviderSection({
-  provider, name, protocol, baseUrl, count,
-  onName, onProtocol, onBaseUrl, onRemove,
+  provider, name, protocol, baseUrl, count, emulation,
+  onName, onProtocol, onBaseUrl, onEmulation, onRemove,
 }: {
   provider: { id: string; name?: string; protocol?: string; baseUrl?: string }
   name: string
   protocol: string
   baseUrl: string
   count: number
+  /** 客户端形态伪装（'' = 不伪装；'opencode' = 按官方 CLI 形状补齐请求） */
+  emulation: string
   onName: (next: string) => void
   onProtocol: (next: string) => void
   onBaseUrl: (next: string) => void
+  onEmulation: (next: string) => void
   onRemove: () => void
 }) {
   const protocols = shared().wbProviders?.PROTOCOL_OPTIONS || [
@@ -537,6 +596,18 @@ function ProviderSection({
           placeholder='OpenAI 兼容填到 /v1；Anthropic 填根地址'
           value={baseUrl} onChange={event => onBaseUrl(event.currentTarget.value)} />
       </div>
+      <div className='field-row mt-2.5'>
+        <Label className='inline-flex cursor-pointer items-center gap-2.5 font-normal'>
+          <Checkbox checked={emulation === 'opencode'} aria-label='伪装 OpenCode 官方客户端'
+            onCheckedChange={next => onEmulation(next === true ? 'opencode' : '')} />
+          <span className='text-xs text-subtle'>伪装 OpenCode 官方客户端（OpenCode Zen 免费档要它才放行）</span>
+        </Label>
+      </div>
+      <p className='detail'>
+        开启后，网关按 OpenCode 官方 CLI 的形状发请求：没填 Key 的账号用匿名凭证
+        <code>public</code>、补官方会话头、请求体补两个占位工具（上游免费档的三道校验）。
+        <strong>它会改写请求体</strong>，只对 OpenCode Zen 这类上游有意义，别的家请关掉。
+      </p>
       <div className='field-row mt-3'>
         <Button variant='destructive' onClick={onRemove}>删除提供商</Button>
         <span className='detail'>级联删除名下全部账号，不可恢复</span>
@@ -556,10 +627,17 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
   const [planChannel, setPlanChannel] = React.useState(() => zcodePlanOf(account))
   const [busy, setBusy] = React.useState(false)
   const [status, setStatus] = React.useState<React.ReactNode>('')
-  const [provider, setProvider] = React.useState<{ id: string; name?: string; protocol?: string; baseUrl?: string } | null>(null)
+  const [provider, setProvider] = React.useState<{
+    id: string; name?: string; protocol?: string; baseUrl?: string; clientEmulation?: string
+  } | null>(null)
   const [providerName, setProviderName] = React.useState('')
   const [providerProtocol, setProviderProtocol] = React.useState('chat_completions')
   const [providerBaseUrl, setProviderBaseUrl] = React.useState('')
+  /** 客户端形态伪装草稿（'' = 不伪装；'opencode' = 按官方 CLI 形状补齐请求） */
+  const [providerEmulation, setProviderEmulation] = React.useState('')
+  /** 自定义账号的凭证草稿：新 Key（留空 = 不改，走「清除」按钮）与「无需鉴权」勾选 */
+  const [apiKeyDraft, setApiKeyDraft] = React.useState('')
+  const [noAuthDraft, setNoAuthDraft] = React.useState(account?.noAuth === true)
 
   // 「提供商」那一段：目录里查得到才算自定义家（id 前缀只说明「长得像」，而记录本身
   // 才带着协议 / Base URL 的现值 —— 三个字段要拿它预填）。
@@ -575,6 +653,7 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
       setProviderName(found.name || '')
       setProviderProtocol(found.protocol || 'chat_completions')
       setProviderBaseUrl(found.baseUrl || '')
+      setProviderEmulation(typeof found.clientEmulation === 'string' ? found.clientEmulation : '')
     }).catch(() => { /* 目录不可用：退化成「不是自定义家」，不注入那一段 */ })
     return () => { alive = false }
   }, [id])
@@ -601,6 +680,9 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
     : undefined
   const used = [...new Set(peers.map(item => Number(item.priority)))].sort((a, b) => a - b)
   const isCatpaw = providerOf(target) === 'catpaw'
+  // 自定义账号：凭证段（API Key / 无需鉴权）只对它渲染。判据用 provider 前缀 ——
+  // 与后端 `custom_account_provider` 一致（提供商被删后残留的账号同样该能改凭证）
+  const isCustomAccount = providerOf(target).startsWith('custom-')
 
   /** 清除余额凭证（立即落库，不走保存按钮 —— 它是一个独立的撤销动作） */
   async function clearBalanceToken(): Promise<void> {
@@ -618,8 +700,45 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
     }
   }
 
-  /** 读「提供商」那一段的改动：没这一段（内置家）或三个字段都没动 → null（不提交） */
-  function readProviderPatch(): { error: string } | { id: string; name: string; protocol: string; baseUrl: string } | null {
+  /**
+   * 清除 API Key（与余额凭证同一形制：立即落库的独立撤销动作）。
+   * 清掉之后账号变成「未配置凭证」，转发时会被跳过 —— 所以提示语点明这一点，
+   * 而列表上那枚「未配置凭证」徽章会立刻出现，用户看得到后果。
+   */
+  async function clearApiKey(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    try {
+      await shared().workbuddyDesktop?.updateAccount?.(id, { apiKey: null })
+      setApiKeyDraft('')
+      toast('✅ 已清除 API Key（该账号现在没有凭证，转发会被跳过）')
+      await shared().wbApp?.refresh?.()
+    } catch (error) {
+      toast(`清除失败：${errorMessage(error)}`, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 读「凭证」那一段的改动：没这一段（内置家）或什么都没改 → null。
+   *
+   * 三个字段的语义与后端逐条对齐（`update_custom_credentials`）：
+   *   · 输入框填了 → 写新 Key（后端会顺手摘掉「无需鉴权」）；
+   *   · 勾选态变了 → 写 noAuth（开=清 key，后端归一）；
+   *   · 输入框留空且勾选态没变 → 什么都不发（留空是「不修改」，清除走按钮）。
+   */
+  function readCredentialPatch(): Record<string, unknown> | null {
+    if (!isCustomAccount) return null
+    const key = apiKeyDraft.trim()
+    const patch: Record<string, unknown> = {}
+    if (key) patch.apiKey = key
+    else if (noAuthDraft !== (target.noAuth === true)) patch.noAuth = noAuthDraft
+    return Object.keys(patch).length ? patch : null
+  }
+
+  /** 读「提供商」那一段的改动：没这一段（内置家）或字段都没动 → null（不提交） */
+  function readProviderPatch(): { error: string } | { id: string; name: string; protocol: string; baseUrl: string; clientEmulation: string } | null {
     if (!provider) return null
     const nextName = providerName.trim()
     const nextBase = providerBaseUrl.trim()
@@ -627,8 +746,15 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
     // 却发现账号的改动生效了。所以在账号落库之前先验一遍
     if (!nextName) return { error: '请填写提供商名称' }
     if (!nextBase) return { error: '请填写提供商的 Base URL' }
-    if (provider.name === nextName && provider.protocol === providerProtocol && provider.baseUrl === nextBase) return null
-    return { id: provider.id, name: nextName, protocol: providerProtocol, baseUrl: nextBase }
+    const beforeEmulation = typeof provider.clientEmulation === 'string' ? provider.clientEmulation : ''
+    if (
+      provider.name === nextName && provider.protocol === providerProtocol
+      && provider.baseUrl === nextBase && beforeEmulation === providerEmulation
+    ) return null
+    return {
+      id: provider.id, name: nextName, protocol: providerProtocol,
+      baseUrl: nextBase, clientEmulation: providerEmulation,
+    }
   }
 
   async function save(): Promise<void> {
@@ -651,6 +777,9 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
       setStatus(<span className='text-destructive'>{providerPatch.error}</span>)
       return
     }
+    // 凭证段（自定义账号）：与代理 / 套餐同一层，跟着这次保存一起落库
+    // （它走的是 PATCH /api/accounts 的自定义分支，见后端 `update_custom_credentials`）
+    const credentialPatch = readCredentialPatch() || {}
 
     setBusy(true)
     try {
@@ -672,6 +801,7 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
         proxy,
         ...balancePatch,
         ...planPatch,
+        ...credentialPatch,
       })
       // 提供商那一段排在账号之后（账号是本弹窗的主角，先落库）。它失败时账号已经存下了，
       // 所以留在弹窗里把那句话说清楚 —— 笼统报成「保存失败」会把两件事混成一件
@@ -747,6 +877,16 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
                 onChange={setBalanceToken} clearBusy={busy}
                 onClear={() => void clearBalanceToken()} />
             ) : null}
+            {isCustomAccount ? (
+              <CustomCredentialFields
+                hasApiKey={target.hasApiKey === true}
+                noAuth={noAuthDraft}
+                value={apiKeyDraft}
+                onValue={setApiKeyDraft}
+                onToggleNoAuth={setNoAuthDraft}
+                onClear={() => void clearApiKey()}
+                clearBusy={busy} />
+            ) : null}
             {supportsPlanChannel(target) ? (
               <PlanChannelField plan={planChannel} hasJwt={account.canClaim === true}
                 onChange={setPlanChannel} />
@@ -756,7 +896,9 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
           {provider ? (
             <ProviderSection provider={provider} count={peers.length + 1}
               name={providerName} protocol={providerProtocol} baseUrl={providerBaseUrl}
+              emulation={providerEmulation}
               onName={setProviderName} onProtocol={setProviderProtocol} onBaseUrl={setProviderBaseUrl}
+              onEmulation={setProviderEmulation}
               onRemove={() => {
                 if (busy) return
                 // 删掉了就把本弹窗一起关掉（账号也没了）

@@ -71,7 +71,10 @@ type KeyEntry = {
   allowedModels?: string[]
 }
 
-/** 「可用提供商」的候选项：后端注册表摘要（项目禁止维护第二份 provider 清单） */
+/**
+ * 「可用提供商」的候选项：后端拼好的整张表 —— 注册表（内置家）+ 已建的自定义家
+ * （项目禁止维护第二份 provider 清单；自定义家是运行期数据，只有后端拿得到）。
+ */
 type ProviderOption = { id: string; label?: string }
 
 /** 四个接口的响应；`created` 只在 POST 的响应里（新建后要立刻展开它） */
@@ -243,7 +246,7 @@ function keysOf(payload: KeysPayload | null): KeyEntry[] {
   return Array.isArray(payload?.keys) ? payload.keys : []
 }
 
-/** 后端下发的提供商摘要（注册表顺序：workbuddy → raccoon → …） */
+/** 后端下发的提供商摘要（注册表顺序：workbuddy → raccoon → …，自定义家附在末尾） */
 function providersOf(payload: KeysPayload | null): ProviderOption[] {
   return Array.isArray(payload?.providers) ? payload.providers : []
 }
@@ -392,7 +395,11 @@ function KeyModal({ target, providers, modelsByProvider, onClose, onSaved }: Key
     () => stringList(target?.allowedModels),
   )
 
-  /** 提供商候选 = 后端下发的注册表摘要（项目禁止维护第二份 provider 清单） */
+  /**
+   * 提供商候选 = 后端下发的整张表（内置家 + 已建的自定义家）。自定义家必须在这一层
+   * 就进候选：`pickedFromOptions` 只认候选里有的 id，缺了它，已存的 `custom-xxx`
+   * 会在保存时被静默丢掉（见后端 `keys_api` 里 `providers` 候选表的说明）。
+   */
   const providerOptions = React.useMemo<MultiSelectOption[]>(
     () => providers.map(item => ({ value: String(item.id), label: String(item.label ?? item.id) })),
     [providers],

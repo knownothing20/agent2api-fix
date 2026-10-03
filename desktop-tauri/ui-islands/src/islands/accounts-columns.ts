@@ -10,10 +10,10 @@
  * 两套共用同一份列集合：`ACCOUNT_COLUMNS` 的 key（= CSS 类后缀 `.cell-<key>`）。
  *
  * 表格是 table-layout: fixed，列宽由 `<colgroup>` 的 `<col>` 决定 —— 拖动只改被拖的
- * 那一列的 style.width，其余列不动。默认宽度在 DEFAULTS 里与 page-accounts-table.css 的
- * `.cell-*` 类保持一致：没拖过的列不带 inline style、走 CSS；拖过（或还原过）之后以
- * 这里的值为准 —— 所以改 CSS 默认列宽时**两处要同步**（漂移的症状：用户双击把手
- * 「还原」后列宽跳到另一个值）。
+ * 那一列的 style.width，其余列不动。默认宽度只有 DEFAULTS 这一处（colgroup 逐列把它
+ * 写成 inline width），page-accounts-table.css 的 `.cell-*` 是同一组数字的第二处声明，
+ * 两处要同步（漂移的症状：用户双击把手「还原」后列宽跳到另一个值）。
+ * 例外是弹性列（FLEX_COLUMNS）：它**不写宽度**，吃表格的剩余宽度。
  */
 
 import type { Align } from './accounts-shared'
@@ -107,18 +107,19 @@ const STORE_KEY = 'agent2api-accounts-col-widths'
  *
  * 改这里**必须**同时改 CSS 与那份文件头的列宽预算说明 —— 三处是同一组数字。
  * 预算：十个固定列合计 1193px（勾选 47 / 优先级 132 / 提供商 132 / 代理 186 /
- * 连接数 56 / 状态 80 / 限流 148 / 有效期 80 / 余额 132 / 操作 200），账号列吃掉剩余宽度。
+ * 连接数 56 / 状态 80 / 限流 148 / 有效期 80 / 余额 132 / 操作 200）。
  * 代理列 186 是「节点名 :端口」的常见形态 + 选择器自带的约 41px 固定开销；
  * 余额列 132 是「主额度桶两行形态」的最小值（套餐名一行要放得下
  * 「ZCode Trust Build」，被省略号砍成「ZCode Tr…」这一列就白给了）；
  * 操作列 200 是四颗按钮并排的最坏情况（「已签到 / 余额 / 设置 / ⋯」），
  * 改按钮文案或增删按钮时重算一遍。
+ *
+ * **账号列不在这张表里** —— 它是唯一的弹性列，理由见 FLEX_COLUMNS。
  */
 const DEFAULTS: Record<string, number> = {
   pick: 47,
   priority: 132,
   provider: 132,
-  account: 300,
   proxy: 186,
   connections: 56,
   status: 80,
@@ -128,8 +129,40 @@ const DEFAULTS: Record<string, number> = {
   actions: 200,
 }
 
+/**
+ * 弹性列的 key：**不写宽度**，由 table-layout: fixed 把剩余宽度全部给它。
+ *
+ * 只有账号列在这一组里：它是全表唯一内容长度不可控的列（昵称 / uid / 邮箱），
+ * 该跟着窗口伸缩；其余十列装的是长度固定的控件（复选框 / 序号 / 开关 / 徽章 /
+ * 四颗按钮），一起伸缩只会让同一列在不同窗口下忽宽忽窄，纵向对齐就失去意义。
+ *
+ * 这里**曾经**给账号列也写了 300px（DEFAULTS.account），于是 11 列全是定宽、一列弹性
+ * 列都不剩：表格宽度被钉成 1493px 这个常数，而容器最宽只有 min(80vw, 页面限宽) −
+ * 滚动槽，结果横向滚动条常驻、最右的「操作 / ⋯」列永远被切掉一截（按页脚量出来的
+ * 溢出最少 104px）。而 page-accounts-table.css 那侧从始至终写着「.cell-account 不写
+ * 宽度：table-layout: fixed 下它会自动吃掉剩下的全部」—— 与那一行 300px 正是两套
+ * 互相矛盾的口径。
+ *
+ * 用户拖过之后它照旧是定宽（拖过就以用户的值为准），双击把手还原回弹性。
+ */
+const FLEX_COLUMNS = new Set(['account'])
+
+/**
+ * 弹性列的下限：容器窄到要把这一列压得比它还窄时，**撑宽表格交给横向滚动**，
+ * 而不是继续挤它（page-accounts-table.css 的原则：不压缩列宽，宁可横滚）。
+ *
+ * 取 300 是「账号列原本的默认宽度」—— 于是窄窗口（容器 < 定宽列合计 + 300 = 1493px，
+ * 约等于窗口 < 1867px）下的行为与改动前**逐字一致**：表格 1493px、账号列 300px、
+ * 照样横滚。改动的收益只出现在装得下 1493px 的宽窗口上：多余宽度归账号列，
+ * 表格不再恒定溢出、最右的「操作 / ⋯」列不再被切。
+ */
+const FLEX_MIN_WIDTH = 300
+
 /** 拖动的下限：再窄就该点不准里面的控件了 */
 const MIN_WIDTH = 56
+
+/** 有宽度概念的列全集（定宽列的默认值 + 弹性列）：存盘回读的合法性校验按它认列 */
+const KNOWN_COLUMNS = new Set([...Object.keys(DEFAULTS), ...FLEX_COLUMNS])
 
 /** 用户改过的列宽（只有与默认不同的列才会有值），启动时从 localStorage 恢复 */
 const overrides: Record<string, number> = (() => {
@@ -138,7 +171,9 @@ const overrides: Record<string, number> = (() => {
     const clean: Record<string, number> = {}
     for (const [key, value] of Object.entries(raw || {})) {
       const width = Number(value)
-      if (DEFAULTS[key] && Number.isFinite(width) && width >= MIN_WIDTH) clean[key] = Math.round(width)
+      // 按「列存在与否」认列，不是按「有没有默认值」—— 弹性列没有默认值，但它可以有
+      // 用户拖出来的覆盖（用真值判断会把账号列拖过的宽度在下次启动时悄悄丢掉）
+      if (KNOWN_COLUMNS.has(key) && Number.isFinite(width) && width >= MIN_WIDTH) clean[key] = Math.round(width)
     }
     return clean
   } catch {
@@ -152,13 +187,47 @@ function persist(): void {
   } catch { /* 隐私模式等存不了就算了：本次会话内仍然生效 */ }
 }
 
-/** 渲染时的列宽表：默认值 + 用户覆盖（每个 key 都有值，colgroup 一次写全） */
+/**
+ * 渲染时的列宽表：定宽列的默认值 + 用户覆盖。
+ *
+ * 弹性列只在**被拖过**时才会出现在这里 —— 没有它的 key，`<ColGroup>` 就不给那一列写
+ * inline width，它才真的是弹性的。这一条是整张表能不能吃满容器的关键，改动前务必
+ * 先想清楚：把弹性列也塞进这个 map，表格宽度立刻退回一个常数，横滚条随之常驻。
+ */
 export function columnWidths(): Record<string, number> {
-  const map: Record<string, number> = {}
-  for (const [key, width] of Object.entries(DEFAULTS)) {
-    map[key] = overrides[key] ?? width
+  return { ...DEFAULTS, ...overrides }
+}
+
+/**
+ * 表格的宽度下限：`∑可见列宽 + 弹性列的下限`（已隐藏的列已从 DOM 摘掉，不计入）。
+ *
+ * 两个作用缺一不可：
+ *   · table-layout: fixed 下弹性列吃剩余宽度，容器比「定宽列之和」还窄时它会被压成 0
+ *     （表头直接看不见）—— 这个坑 ui/table-columns.js 的同名函数里记着实测；
+ *   · 它同时是「表格开始横向滚动」的那一刻：容器宽于它就不滚、弹性列吃掉差额，
+ *     窄于它才滚。所以要断言一张表在某宽度下会不会横滚，看的就是它。
+ *
+ * 因此这个值必须**从列宽算出来**，不能手写。原先它是 CSS 里一条写死的
+ * `min-width: 1155px`（= 定宽列合计 1193 − 38），而账号列同时被钉着 300px ——
+ * 表格真实需要 1493px，1155 永远碰不到：它没拦住任何东西，也没能让任何人注意到
+ * 「账号页那条 1400px 的限宽已经比表格的下限还窄」（1193 + 300 + 滚动槽 11 = 1504 > 1400，
+ * 所以那条限宽下面横滚条必然常驻）。
+ */
+export function tableMinWidth(visibleKeys: readonly string[]): number {
+  let total = 0
+  for (const key of visibleKeys) {
+    const override = overrides[key]
+    // 覆盖值不必再夹 MIN_WIDTH：拖动与读盘两处都已经夹过了
+    if (override) total += override
+    else if (FLEX_COLUMNS.has(key)) total += FLEX_MIN_WIDTH
+    // 默认宽度**原样**计入，不要套 Math.max(MIN_WIDTH, …)：MIN_WIDTH 是「拖动能拖到
+    // 多窄」的下限，不是布局地板 —— 勾选列 47px 就低于它，而 47 是算出来的对齐值
+    // （16 + 15 + 16，见 page-accounts-table.css 的 .cell-pick），抬到 56 会让表格在
+    // 还有余地时就先横滚
+    else if (DEFAULTS[key]) total += DEFAULTS[key]
+    else total += MIN_WIDTH
   }
-  return map
+  return Math.round(total)
 }
 
 /**
@@ -181,7 +250,9 @@ function columnAt(table: Element | null, index: number): { key: string; col: Ele
 function applyWidth(col: Element, key: string, px: number): void {
   const width = Math.max(MIN_WIDTH, Math.round(px))
   ;(col as HTMLElement).style.width = width + 'px'
-  if (DEFAULTS[key] && width !== DEFAULTS[key]) overrides[key] = width
+  // 定宽列拖回默认值就不必存盘；弹性列没有「默认宽度」可比 —— 只要拖过就存下来
+  // （它由此从「吃剩余」变成定宽，双击把手再还原回弹性）
+  if (FLEX_COLUMNS.has(key) || width !== DEFAULTS[key]) overrides[key] = width
   else delete overrides[key]
 }
 

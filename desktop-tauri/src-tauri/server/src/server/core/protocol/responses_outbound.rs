@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use super::{
-    chat_frame, content_parts, content_text, is_truthy, json_number_of, json_text, random_id,
-    string_field, string_value, SseLineBuffer, FIELD_ENCRYPTED_CONTENT,
+    chat_frame, content_parts, content_text, is_truthy, json_number_of, json_text, native_tool,
+    random_id, string_field, string_value, SseLineBuffer, FIELD_ENCRYPTED_CONTENT,
 };
 use super::responses::{image_url_of, tool_output_text, ConvertError};
 use super::tool_plan;
@@ -123,16 +123,35 @@ pub fn responses_request_from_chat(chat: &Value, model: &str) -> Result<Value, C
             out.insert(key.to_string(), value.clone());
         }
     }
-    // 工具声明：chat 只会有嵌套 function 形态（Responses 原生工具在
-    // chat 侧没有表达，不会出现在这里）；转不出来的条目丢弃并留下痕迹
+    // 工具声明：函数工具翻译成 Responses 扁平形态；原生（服务端执行）声明只有
+    // 「来源就是 Responses」的原样恢复（保真，含 web_search / tool_search 等
+    // 宿主工具的一切字段），跨协议的不猜 —— 剔除并留痕（见 `native_tool` 模块头）
+    let mut natives: Vec<Value> = Vec::new();
     if let Some(tools) = chat.get("tools").and_then(Value::as_array) {
-        let converted: Vec<Value> = tools.iter().filter_map(tool_to_responses).collect();
+        let converted: Vec<Value> = tools
+            .iter()
+            .filter_map(|tool| tool_to_responses(tool, &mut natives))
+            .collect();
         if !converted.is_empty() {
             out.insert("tools".to_string(), Value::Array(converted));
         }
     }
+    let mut choice_reason: Option<String> = None;
     if let Some(choice) = chat.get("tool_choice").filter(|value| is_truthy(value)) {
-        out.insert("tool_choice".to_string(), tool_choice_to_responses(choice));
+        // 点名的工具被剔除时 `tool_choice` 一并撤掉（理由同 `anthropic_outbound`）
+        match native_tool::choice_conflict(choice, &natives) {
+            Some(reason) => choice_reason = Some(reason),
+            None => {
+                out.insert("tool_choice".to_string(), tool_choice_to_responses(choice));
+            }
+        }
+    }
+    if !natives.is_empty() || choice_reason.is_some() {
+        let dropped = native_tool::Downgrade { tools: natives, choice: choice_reason };
+        crate::server::logging::log(
+            "[Responses]",
+            &dropped.describe(None, Some("目标上游按 responses 协议收，只认 responses 来源的原生声明")),
+        );
     }
     // response_format → text.format（json_schema 的嵌套 → 扁平）
     if let Some(format) = chat.get("response_format").filter(|value| is_truthy(value)) {
@@ -294,14 +313,25 @@ fn chat_content_to_responses(content: &Value, role: &str) -> Value {
     }
 }
 
-/// Chat 工具声明（嵌套 function）→ Responses 工具声明（扁平）。
+/// Chat 工具声明 → Responses 工具声明（扁平）。
 ///
 /// `parameters` 缺省给空对象 schema（`nested_from_flat` 的同一兜底）；
 /// `strict` 原样搬运（两协议同名）。
-fn tool_to_responses(tool: &Value) -> Option<Value> {
+///
+/// 原生（服务端执行）声明：来源是 Responses 的原样恢复（`natives` 不收，
+/// 保真）；其余（Anthropic 来源、或 chat 入口的方言原生工具）收进 `natives`
+/// 由调用方留痕剔除 —— 目标协议是 responses，别的原生类型没有对应形态。
+fn tool_to_responses(tool: &Value, natives: &mut Vec<Value>) -> Option<Value> {
+    if native_tool::is_native(tool) {
+        if native_tool::origin_of(tool) == Some(native_tool::ORIGIN_RESPONSES) {
+            return Some(native_tool::restore(tool));
+        }
+        natives.push(tool.clone());
+        return None;
+    }
     if !tool_plan::is_nested_function(tool) {
-        // 非嵌套形态（裸 name/parameters 或原生工具类型）：出站没有可靠的
-        // 翻译口径，丢弃而不是发一个半成品上去
+        // 非嵌套形态（裸 name/parameters）：出站没有可靠的翻译口径，
+        // 丢弃而不是发一个半成品上去
         return None;
     }
     let function = tool.get("function")?;
