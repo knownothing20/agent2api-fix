@@ -1133,7 +1133,7 @@ pub fn scheduling_mode() -> crate::server::core::routing::ConversationOrder {
     crate::server::core::routing::ConversationOrder::default()
 }
 
-/// 写入调度档位（设置页「通用 → 多账号调度」）。值由调用方先解析。
+/// 写入调度档位（设置页「网关 → 多账号调度」）。值由调用方先解析。
 ///
 /// 与 `set_update_proxy` 同一模式：内存立即生效（下一次选路就用新档位），
 /// 写盘时不吃掉其它字段。
@@ -1143,6 +1143,35 @@ pub fn set_scheduling_mode(mode: crate::server::core::routing::ConversationOrder
             KEY_SCHEDULING_MODE.to_string(),
             Value::String(mode.as_str().to_string()),
         );
+    })
+}
+
+/// 满员时等一个会话槽位的最长秒数（默认 [`SCHEDULING_WAIT_DEFAULT`]）。
+///
+/// 取值不在区间内（手改坏了 / 负数 / 小数）时**回落默认**而不报错 —— 与
+/// `scheduling_mode` 同一取向：一个坏值不该让选路整条不可用。
+/// 注意 `0` 是**合法值**（不等待），所以这里不能用「0 当缺省」的写法。
+pub fn scheduling_wait_seconds() -> u64 {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            if let Some(value) = config.raw.get(KEY_SCHEDULING_WAIT).and_then(Value::as_u64) {
+                if (SCHEDULING_WAIT_MIN..=SCHEDULING_WAIT_MAX).contains(&value) {
+                    return value;
+                }
+            }
+        }
+    }
+    SCHEDULING_WAIT_DEFAULT
+}
+
+/// 写入等待秒数（设置页「网关 → 多账号调度」）。调用方**必须先校验区间**
+/// （`SCHEDULING_WAIT_MIN..=SCHEDULING_WAIT_MAX`）：越界值会被上面的回读逻辑丢弃，
+/// 那会让用户以为设置生效了。
+pub fn set_scheduling_wait_seconds(seconds: u64) -> bool {
+    update(move |config| {
+        config
+            .raw
+            .insert(KEY_SCHEDULING_WAIT.to_string(), Value::from(seconds));
     })
 }
 

@@ -129,6 +129,22 @@ pub const KEY_PROMPT_FILE: &str = "promptFile";
 /// —— 引入设置项不该悄悄改变既有部署的行为。
 pub const KEY_SCHEDULING_MODE: &str = "schedulingMode";
 
+/// 满员时**等一个会话槽位**的最长秒数（config.json 键，设置页「网关 → 多账号调度」）。
+///
+/// 语义：本地会话闸满员（该账号的并发上限用满）时，请求不立刻拿 409，而是等一个空位；
+/// 等满这么多秒还没等到，就把**原来的 409 原样返回**。`0` = 不等待（等于改造前的行为）。
+///
+/// ── 为什么要做成可配的 ──────────────────────────────────────
+/// 它是**客户端超时预算**里的一块：实测一次等待叠加换号后整体可以花到 60 秒以上
+/// （见 `codearts::session` 的说明），而各客户端自己的超时长短不一。用户需要按自己
+/// 客户端的耐心来调 —— 客户端 60 秒就断的话，这里留 30 秒是上限而不是目标。
+pub const KEY_SCHEDULING_WAIT: &str = "schedulingWaitSeconds";
+/// 等待秒数的合法区间（与前端 `SCHEDULING_WAIT_FIELD` 的 min/max 同源）。
+pub const SCHEDULING_WAIT_MIN: u64 = 0;
+pub const SCHEDULING_WAIT_MAX: u64 = 300;
+/// 默认等待秒数（老配置里没有这个键时用它，等于引入设置项之前的行为）。
+pub const SCHEDULING_WAIT_DEFAULT: u64 = 30;
+
 /// 系统提示词设置（设置页「通用 → 系统提示词」）。
 ///
 /// 与 `RetrySettings` 同一取舍：几个值总是一起用（转发层逐请求取一次、

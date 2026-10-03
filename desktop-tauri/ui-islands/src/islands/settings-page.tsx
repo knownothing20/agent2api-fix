@@ -28,6 +28,7 @@ import {
   NOTES,
   PROMPT_MODES,
   SCHEDULING_MODES,
+  SCHEDULING_WAIT_FIELD,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
   RETRY_FIELDS,
@@ -83,6 +84,7 @@ import {
   saveRetryField,
   saveSanitize,
   saveSchedulingMode,
+  saveSchedulingWait,
   saveTimeoutField,
   saveToggle,
   selectCategory,
@@ -777,6 +779,14 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
                 </Select>
               </span>
             </div>
+            {/* 满员等待：账号并发用满时，请求等一个空位最多等几秒（0 = 不等待）。
+                它吃的是**客户端自己的超时预算**，所以要能按客户端耐心来调。 */}
+            <NumberRow
+              field={SCHEDULING_WAIT_FIELD}
+              value={snap.scheduling.waitSeconds}
+              disabled={!snap.scheduling.available || snap.busy === 'scheduling'}
+              onCommit={raw => saveSchedulingWait(raw)}
+            />
           </div>
           <div className='hint'>{NOTES.schedulingMode}</div>
         </div>

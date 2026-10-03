@@ -139,7 +139,8 @@ impl ProviderAdapter for CodeArtsAdapter {
             // 上游对每个账号只有 3 路并发（付费 5 路），本地闸就是照它设的。
             // 单账号 + 多个客户端的用法下，「满员立刻 409」会让第 4 个客户端白等
             // 一次重试 —— 而前面那个会话往往几秒后就结束了。等一会儿再进，客户端
-            // 只是慢一点、不会失败（时长与轮询间隔见 `session::SESSION_WAIT_*`）。
+            // 只是慢一点、不会失败（上限见 config 的 `KEY_SCHEDULING_WAIT`，
+            // 轮询间隔见 `session::SESSION_WAIT_POLL`）。
             //
             // 等待期间的几个约束：
             //   · **只等「本地满员」这一种错**（按 code 判，不看状态码）：别的错误
@@ -150,7 +151,11 @@ impl ProviderAdapter for CodeArtsAdapter {
             //     「这次为什么慢」，而每 50ms 记一次会把尝试明细刷爆；
             //   · 等不到（超时）就把**原来的 409** 返回，文案不变 —— 客户端看到的
             //     仍是「并发已达上限」，与不等时逐字一致。
-            let deadline = std::time::Instant::now() + session::SESSION_WAIT_TIMEOUT;
+            // 等待上限**可配**（设置页「网关 → 多账号调度 → 满员等待」）。0 = 不等待：
+            // 此时 deadline 立刻到期，循环第一次就返回原来的 409 —— 也就是改造前的行为。
+            let wait_seconds = crate::server::config::scheduling_wait_seconds();
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds);
             let mut queued = false;
             let permit = loop {
                 match gate.acquire(models::DEFAULT_BASE_URL, &gate_identity, gate_override) {
@@ -170,7 +175,7 @@ impl ProviderAdapter for CodeArtsAdapter {
                                 None,
                                 session::SESSION_WAIT_POLL.as_millis() as u64,
                                 1,
-                                (session::SESSION_WAIT_TIMEOUT.as_millis()
+                                (wait_seconds.max(1) as u128 * 1000
                                     / session::SESSION_WAIT_POLL.as_millis().max(1))
                                     as usize,
                             );

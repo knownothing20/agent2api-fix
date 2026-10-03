@@ -687,10 +687,11 @@ pub fn shim_js() -> &'static str {
       return call('PUT', '/api/captcha', { captchaEnabled: on === true });
     },
 
-    // ── 多账号调度档位（会话粘性固定生效，这里只调粘性之后的第二级）──
+    // ── 多账号调度（会话粘性固定生效：这里只调粘性之后的第二级排序 + 满员等待秒数）──
     getSchedulingSetting: function () { return call('GET', '/api/scheduling'); },
-    saveSchedulingSetting: function (mode) {
-      return call('PUT', '/api/scheduling', { schedulingMode: String(mode) });
+    saveScheduling: function (patch) {
+      // 只传要改的项（后端允许部分字段），返回生效后的全量值
+      return call('PUT', '/api/scheduling', patch || {});
     },
 
     // ── 数据存储概况 ──

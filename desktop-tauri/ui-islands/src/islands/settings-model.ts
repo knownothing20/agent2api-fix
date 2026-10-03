@@ -74,8 +74,15 @@ export type SettingsBridge = {
   getStorage(): Promise<unknown>
   getCaptchaSetting(): Promise<{ captchaEnabled?: boolean } | null | undefined>
   saveCaptchaSetting(on: boolean): Promise<{ captchaEnabled?: boolean } | null | undefined>
-  getSchedulingSetting(): Promise<{ schedulingMode?: string } | null | undefined>
-  saveSchedulingSetting(mode: string): Promise<{ schedulingMode?: string } | null | undefined>
+  getSchedulingSetting(): Promise<{
+    schedulingMode?: string
+    schedulingWaitSeconds?: number
+  } | null | undefined>
+  /** 只传要改的项（后端允许部分字段），返回生效后的全量值 */
+  saveScheduling(patch: {
+    schedulingMode?: string
+    schedulingWaitSeconds?: number
+  }): Promise<{ schedulingMode?: string; schedulingWaitSeconds?: number } | null | undefined>
   panelLogout(): Promise<unknown>
   /** 打开外链的唯一出口（只放行 http(s)）：桌面走系统浏览器，网页端 shim 是 window.open */
   openReleasePage?(url: string): Promise<unknown>
@@ -429,6 +436,27 @@ export type SchedulingModeOption = { value: string; optionLabel: string; toastLa
  * 时同一条会话的每一轮都落在同一个账号），这一档只决定粘性命中**之后**怎么排。
  * 取值与后端 `core::routing::ConversationOrder` 的 `as_str` 逐字对应。
  */
+/** 与后端 `SCHEDULING_WAIT_MIN` / `SCHEDULING_WAIT_MAX` 同源（越界后端会 400） */
+export const SCHEDULING_WAIT_MIN = 0
+export const SCHEDULING_WAIT_MAX = 300
+
+/**
+ * 「满员等待」这一行：该账号并发用满时，请求等一个槽位最多等几秒（0 = 不等待）。
+ *
+ * 为什么它是可配的：等待吃的是**客户端自己的超时预算** —— 实测一次等待叠加换号后
+ * 整体可以花到 60 秒以上，而各客户端耐心长短不一。客户端 60 秒就断的话，这里留
+ * 30 秒是上限而不是目标。
+ */
+export const SCHEDULING_WAIT_FIELD: NumberField = {
+  key: 'schedulingWaitSeconds',
+  id: 'settings-scheduling-wait',
+  label: '满员等待',
+  unit: '秒',
+  min: SCHEDULING_WAIT_MIN,
+  max: SCHEDULING_WAIT_MAX,
+  hint: '账号并发用满时，请求等一个空位最多等这么久（等到就进，等不到才返回原来的并发错误）。填 0 = 不等待。它花的是客户端自己的超时预算：等待期间请求日志会显示「排队中」，实测一次等待叠加换号后整体可以超过 60 秒，客户端超时短的话请调小。',
+}
+
 export const SCHEDULING_MODES: SchedulingModeOption[] = [
   {
     value: 'creditFirst',

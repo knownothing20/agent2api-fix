@@ -42,6 +42,8 @@ import {
   RETRY_FIELDS,
   RETRY_MAX_CODES,
   SCHEDULING_MODES,
+  SCHEDULING_WAIT_MAX,
+  SCHEDULING_WAIT_MIN,
   SETTINGS_CAT_KEY,
   TIMEOUT_FIELDS,
   errorMessage,
@@ -151,8 +153,11 @@ export type SettingsSnapshot = {
   prompt: PromptState
   storage: StorageState
   captcha: { available: boolean; enabled: boolean }
-  /** 多账号调度档位（会话粘性固定生效，这里只决定它之后的第二级排序） */
-  scheduling: { available: boolean; mode: string }
+  /**
+   * 多账号调度（会话粘性固定生效）：`mode` = 粘性之后的第二级排序，
+   * `waitSeconds` = 满员时等一个槽位最多等几秒（null = 还没读到后端值）
+   */
+  scheduling: { available: boolean; mode: string; waitSeconds: number | null }
   ioFailure: IoFailure
   /** 保留期改小的确认框正文（非空即开着）；确认 / 取消都收口到 resolveRetentionConfirm */
   retentionConfirm: { head: string } | null
@@ -202,8 +207,8 @@ const INITIAL: SettingsSnapshot = {
     debug: null,
   },
   captcha: { available: true, enabled: false },
-  // 默认与后端一致（creditFirst = 积分优先）：后端认不出这个键时也是它
-  scheduling: { available: true, mode: 'creditFirst' },
+  // 默认与后端一致（creditFirst = 积分优先、等待 30 秒）：后端认不出这两个键时也是它们
+  scheduling: { available: true, mode: 'creditFirst', waitSeconds: 30 },
   ioFailure: null,
   retentionConfirm: null,
   panelLogin: false,
@@ -885,16 +890,35 @@ function normalizeSchedulingMode(raw: unknown): string {
   return SCHEDULING_MODES.some(item => item.value === text) ? text : 'creditFirst'
 }
 
+/** 等待秒数归一：非整数 / 越界一律回落到后端默认值（30），与后端「坏值回默认」同一取向。 */
+function normalizeSchedulingWait(raw: unknown): number {
+  const value = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isInteger(value) || value < SCHEDULING_WAIT_MIN || value > SCHEDULING_WAIT_MAX) {
+    return 30
+  }
+  return value
+}
+
+/** 桥返回的两项 → 状态里那一格（读与写共用，免得两处归一化漂移）。 */
+function readScheduling(state?: {
+  schedulingMode?: string
+  schedulingWaitSeconds?: number
+} | null): { available: boolean; mode: string; waitSeconds: number } {
+  return {
+    available: true,
+    mode: normalizeSchedulingMode(state?.schedulingMode),
+    waitSeconds: normalizeSchedulingWait(state?.schedulingWaitSeconds),
+  }
+}
+
 async function loadScheduling(): Promise<void> {
   try {
     const state = await shared().workbuddyDesktop?.getSchedulingSetting()
-    publish({
-      scheduling: { available: true, mode: normalizeSchedulingMode(state?.schedulingMode) },
-    })
+    publish({ scheduling: readScheduling(state) })
   } catch (error) {
     // 读失败降级成只读（照 captcha 的模式）
-    publish({ scheduling: { available: false, mode: 'creditFirst' } })
-    console.warn('读取调度档位失败:', errorMessage(error))
+    publish({ scheduling: { available: false, mode: 'creditFirst', waitSeconds: 30 } })
+    console.warn('读取调度设置失败:', errorMessage(error))
   }
 }
 
@@ -903,15 +927,37 @@ export async function saveSchedulingMode(mode: string): Promise<void> {
   beginBusy('scheduling')
   publish({ scheduling: { ...snapshot.scheduling, mode } })
   try {
-    const state = await shared().workbuddyDesktop?.saveSchedulingSetting(mode)
-    publish({
-      scheduling: { available: true, mode: normalizeSchedulingMode(state?.schedulingMode) },
-    })
+    const state = await shared().workbuddyDesktop?.saveScheduling({ schedulingMode: mode })
+    publish({ scheduling: readScheduling(state) })
     const option = SCHEDULING_MODES.find(item => item.value === mode)
     toast(`✅ 调度已改为「${option?.toastLabel ?? mode}」`)
   } catch (error) {
     toast(`保存失败：${errorMessage(error)}`, 'err')
     await loadScheduling() // 回滚到后端的真实值
+  } finally {
+    endBusy()
+  }
+}
+
+/** 满员等待秒数（数字行提交；0 = 不等待）。校验口径与后端一致：0–300 的整数。 */
+export async function saveSchedulingWait(raw: string): Promise<void> {
+  const parsed = parseInteger(raw, SCHEDULING_WAIT_MIN, SCHEDULING_WAIT_MAX, '满员等待')
+  if (!parsed.ok) {
+    toast(parsed.message, 'err')
+    return
+  }
+  if (busyScope) { repaint(); return }
+  beginBusy('scheduling')
+  publish({ scheduling: { ...snapshot.scheduling, waitSeconds: parsed.value } })
+  try {
+    const state = await shared().workbuddyDesktop?.saveScheduling({
+      schedulingWaitSeconds: parsed.value,
+    })
+    publish({ scheduling: readScheduling(state) })
+    toast(parsed.value === 0 ? '✅ 已保存：满员不再等待' : `✅ 已保存：满员最多等 ${parsed.value} 秒`)
+  } catch (error) {
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+    await loadScheduling()
   } finally {
     endBusy()
   }
