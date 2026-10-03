@@ -650,6 +650,21 @@ mod grace_window_tests {
 
     use super::*;
 
+    /// 三条用例共用**同一张进程内全局表**（`REFRESH_TOKENS`），而 `cargo test`
+    /// 默认**多线程并行** —— 不串行的话，别的用例的 `reset()` 会把这一条正在用的
+    /// 记录清掉，表现为偶发失败（实测：`..._keeps_the_chain` 报「窗口内的第二次
+    /// 出示必须放行」，看着像宽限窗口失效，其实是测试互相踩）。
+    ///
+    /// 用一把静态锁把这三条串起来。中毒时照旧取回内层值 —— 与生产代码处理
+    /// 锁中毒的取向一致（一次断言失败不该让后续用例全部陪葬）。
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// 每个用例独占全局表：先清空，避免互相干扰。
     fn reset() {
         match refresh_tokens().lock() {
@@ -682,6 +697,7 @@ mod grace_window_tests {
 
     #[test]
     fn a_second_presentation_inside_the_grace_window_keeps_the_chain() {
+        let _serial = serial();
         reset();
         let first = IssuedSession::new_session();
         rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
@@ -701,6 +717,7 @@ mod grace_window_tests {
 
     #[test]
     fn a_second_presentation_outside_the_grace_window_revokes_the_chain() {
+        let _serial = serial();
         reset();
         let first = IssuedSession::new_session();
         rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
@@ -713,6 +730,7 @@ mod grace_window_tests {
 
     #[test]
     fn a_chain_without_a_live_token_is_not_rescued_by_the_grace_window() {
+        let _serial = serial();
         reset();
         let first = IssuedSession::new_session();
         rotate_session(Some(&first.refresh_cookie)).expect("第一次轮换应当成功");
