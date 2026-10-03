@@ -178,8 +178,13 @@ pub fn shim_js() -> &'static str {
         var refreshed = await tryRefresh();
         if (refreshed) return httpCall(method, path, body, true);
         window.location.href = '/login';
-        // 页面即将整页跳转，返回一个挂起的承诺占位
-        return new Promise(function () {});
+        // ⚠️ 这里**不能**返回一个永不 resolve 的承诺（原实现是 `new Promise(function(){})`，
+        // 注释写「页面即将整页跳转」）。跳转并不一定会发生 —— 被浏览器拦下、页面是 SPA、
+        // 用户已经切走，都会让调用方**永远卡住**：实测「批量删除账号」按钮一直停在
+        // 「执行中…」，`finally` 不跑、`busy` 不复位，而服务端其实**早就删成功了**
+        // （日志有 🗑️、接口 1ms 返回）—— 用户看到的是一个永远不结束的操作。
+        // 改成 reject：调用方照常走 catch/finally，弹出可读原因并复位按钮。
+        throw new Error('面板登录已过期，正在跳转登录页；若没有自动跳转，请手动刷新页面');
       }
       var key = await askForKey();
       if (key) {
