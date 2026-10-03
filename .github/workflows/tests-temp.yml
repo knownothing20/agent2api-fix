@@ -32,7 +32,11 @@ jobs:
 
       # amd64 原生构建不需要额外系统依赖（依赖全是纯 Rust + rusqlite bundled 的
       # SQLite 源码），见 Dockerfile 的 builder 阶段。
+      # ⚠️ 必须 set -o pipefail：否则 `cargo test | tail` 的退出码是 tail 的（恒 0），
+      # 测试编译失败也会被报成「成功」——实测踩过。
       - name: cargo test -p agent2api-server
+        shell: bash
         run: |
+          set -o pipefail
           cd desktop-tauri/src-tauri
-          cargo test -p agent2api-server 2>&1 | tail -120
+          cargo test -p agent2api-server 2>&1 | tail -150

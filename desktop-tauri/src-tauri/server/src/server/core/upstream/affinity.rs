@@ -168,19 +168,28 @@ mod tests {
         assert_eq!(None, pinned("test-empty-account"));
     }
 
+    /// 造一个头值。`HeaderValue` **没有 `Default`**，所以不能走
+    /// `parse().unwrap_or_default()`；这里在**测试**里用 `expect`（生产代码零
+    /// panic，测试里断言失败本来就要炸，两者不冲突）。
+    // 用全路径而不是在文件顶部加 import：`HeaderValue` 只在测试里用到，
+    // 顶部加会变成非测试构建下的 unused import（警告）。
+    fn header(text: &str) -> axum::http::HeaderValue {
+        axum::http::HeaderValue::from_str(text).expect("测试里的头值都应当是合法的")
+    }
+
     #[test]
     fn the_header_is_normalized() {
         let mut headers = HeaderMap::new();
         assert_eq!(None, conversation_key(&headers), "没有头 = 没有会话号");
-        headers.insert(SESSION_HEADER, "  abc  ".parse().unwrap_or_default());
+        headers.insert(SESSION_HEADER, header("  abc  "));
         assert_eq!(Some("abc".to_string()), conversation_key(&headers), "首尾空白要去掉");
-        headers.insert(SESSION_HEADER, "   ".parse().unwrap_or_default());
+        headers.insert(SESSION_HEADER, header("   "));
         assert_eq!(None, conversation_key(&headers), "全空白 = 没有会话号");
         let too_long = "x".repeat(MAX_SESSION_ID_CHARS + 1);
-        headers.insert(SESSION_HEADER, too_long.parse().unwrap_or_default());
+        headers.insert(SESSION_HEADER, header(&too_long));
         assert_eq!(None, conversation_key(&headers), "超长不截断，直接丢弃");
         let at_limit = "x".repeat(MAX_SESSION_ID_CHARS);
-        headers.insert(SESSION_HEADER, at_limit.parse().unwrap_or_default());
+        headers.insert(SESSION_HEADER, header(&at_limit));
         assert!(conversation_key(&headers).is_some(), "正好到上限是合法的");
     }
 }

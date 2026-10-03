@@ -667,7 +667,12 @@ mod conversation_scheduling_tests {
     }
 
     /// 固定读数表：`(账号 id, 到期日, 剩余积分)`。
-    fn credit_of(table: &[(&str, Option<&str>, Option<f64>)]) -> impl Fn(&str) -> CreditRank + '_ {
+    ///
+    /// 生命周期写成具名 `'a`（不是 `'_`）：入参里有**多个**可省略的生命周期
+    /// （`&[..]` 一个、元组里的 `&str` 两个），`'_` 指代不明会直接报 E0106。
+    fn credit_of<'a>(
+        table: &'a [(&'a str, Option<&'a str>, Option<f64>)],
+    ) -> impl Fn(&str) -> CreditRank + 'a {
         move |id: &str| {
             table
                 .iter()
