@@ -265,6 +265,64 @@ impl StoredAccount {
             .insert("checkinAt".to_string(), Value::from(value));
     }
 
+    /// 最近一次**领取 ZCode 套餐成功**的时刻（毫秒时间戳，0 = 从未领过）。
+    ///
+    /// 与 `checkinAt` 刻意分开：ZCode 没有签到，它的运营玩法是限时发放的套餐
+    /// （2026 那期是「每天登录领 1 亿」，见 `providers::zcode::claim` 的模块头），
+    /// 界面据此显示「今日已领」并在次日恢复按钮。混用签到那个字段会让两家的
+    /// 状态互相污染 —— 改 ZCode 的领取状态会顺手点亮别家的签到按钮。
+    pub fn claim_at(&self) -> i64 {
+        integer_of(self.fields.get("claimAt"))
+    }
+
+    pub fn set_claim_at(&mut self, value: i64) {
+        self.fields.insert("claimAt".to_string(), Value::from(value));
+    }
+
+    /// 最近一次领取到的套餐 id（`zcode-v3-start-plan-trust-0928` 这类带日期段的串）。
+    ///
+    /// 只用于展示与排障：判「今天领过没」用的是 [`Self::claim_at`] 的本地自然日，
+    /// 而套餐 id 里的日期段是**上游的**日期（时区未必与本机一致），拿它比日期
+    /// 会在跨时区时误判。
+    pub fn claim_plan_id(&self) -> String {
+        as_text(self.fields.get("claimPlanId"))
+    }
+
+    pub fn set_claim_plan_id(&mut self, value: &str) {
+        self.fields
+            .insert("claimPlanId".to_string(), Value::String(value.to_string()));
+    }
+
+    /// 领取台账：`{ "<plan_id>": <毫秒时刻> }` —— 哪几份套餐在什么时候领过
+    /// （见 `AccountStore::mark_zcode_claim` 里「为什么记成一张表」那段）。
+    ///
+    /// 读不懂的形状（数组 / 字符串这类手工编辑出的脏值）一律当空表：台账只服务
+    /// 「这份今天领过没」的展示，按「没领过」处理最多让用户多点一次（上游会如实
+    /// 回「已领取过」并顺手把台账补上），而拿脏值去判会让整个账号页出错。
+    pub fn claim_plans(&self) -> Map<String, Value> {
+        let mut ledger = match self.fields.get("claimPlans") {
+            Some(Value::Object(map)) => map.clone(),
+            _ => Map::new(),
+        };
+        // 老记录兼容：台账是后加的，更早的版本只记了「最近一次领到的套餐」
+        // （`claimPlanId` + `claimAt`）。这里把它并进来 —— 否则升级后第一次点开
+        // 弹窗，会把已经领过的那一份重新列成可选中，点下去必然拿回一句
+        // 「已领取过」，用户以为自己白点了一次。
+        if ledger.is_empty() {
+            let last_plan = as_optional_text(self.fields.get("claimPlanId")).unwrap_or_default();
+            let last_at = self.claim_at();
+            if !last_plan.is_empty() && last_at > 0 {
+                ledger.insert(last_plan, Value::from(last_at));
+            }
+        }
+        ledger
+    }
+
+    pub fn set_claim_plans(&mut self, ledger: Map<String, Value>) {
+        self.fields
+            .insert("claimPlans".to_string(), Value::Object(ledger));
+    }
+
     /// 账号级出网代理配置（缺失返回 Value::Null）
     pub fn proxy(&self) -> Value {
         self.fields.get("proxy").cloned().unwrap_or(Value::Null)
@@ -272,6 +330,43 @@ impl StoredAccount {
 
     pub fn set_proxy(&mut self, proxy: Value) {
         self.fields.insert("proxy".to_string(), proxy);
+    }
+
+    // ── ZCode 账号字段 ──────────────────────────────────────
+
+    /// 设备标识（`X-Device-Mid`）：领取与余额查询都要带，上游要求 **UUID 形态**
+    /// 且**跨请求稳定**（风控把同一个设备标识的多次请求关联起来，每次现编一个
+    /// 会被当成换设备）。登录时生成一次随凭证落盘，本访问器只读它。
+    pub fn device_mid(&self) -> String {
+        as_text(self.fields.get("deviceMid"))
+    }
+
+    pub fn set_device_mid(&mut self, value: &str) {
+        self.fields
+            .insert("deviceMid".to_string(), Value::String(value.to_string()));
+    }
+
+    /// 套餐 JWT（打 `zcode.z.ai` 的领取 / 余额 / 活动套餐通道用；可能为空）。
+    ///
+    /// 与 `accessToken` 分开：两者不能互相替代（见 `zcode::credentials` 的模块头）。
+    pub fn jwt(&self) -> String {
+        as_text(self.fields.get("jwt"))
+    }
+
+    /// ZCode 用哪条上游通道（`zcode::PLAN_FIELD`，取值见 `zcode::{PLAN_CODING,
+    /// PLAN_START}`）。
+    ///
+    /// **原样存取**，归一化（认不出的值怎么落）在 `zcode::normalize_plan` 一处：
+    /// 存储层不做取值白名单，否则将来加第三条通道要改两个地方。
+    pub fn zcode_plan(&self) -> String {
+        as_text(self.fields.get(crate::server::core::providers::zcode::PLAN_FIELD))
+    }
+
+    pub fn set_zcode_plan(&mut self, value: &str) {
+        self.fields.insert(
+            crate::server::core::providers::zcode::PLAN_FIELD.to_string(),
+            Value::String(value.to_string()),
+        );
     }
 
     /// 是否「有可用凭证」（当前账号派生、凭据查询都以此为准）
@@ -305,8 +400,19 @@ impl StoredAccount {
     /// 静默消失。判据只看「记录里有没有非空 `apiKey`」，不判 provider：
     /// 内置八家的记录里没有这个键，判定天然不受影响（也就不必在这里回头
     /// 依赖 `custom_providers`）。
+    ///
+    /// 第四条判据 `has_jwt()` 只对 ZCode 有效（`jwt` 是它独有的凭证键）：
+    /// 那条链路上「粘贴凭证」允许只填套餐 JWT（用户可能只想测领取），而
+    /// `plan: start-plan` 的转发**只用 JWT**（见 `zcode::plan`）—— 只认
+    /// `accessToken` 会让这类账号在选路时被跳过，报成「没有可用账号」，
+    /// 与「账号明明能用」矛盾。
     pub fn has_credentials(&self) -> bool {
-        self.has_token() || self.is_desktop() || self.has_api_key()
+        self.has_token() || self.is_desktop() || self.has_api_key() || self.has_jwt()
+    }
+
+    /// 记录里是否有**非空**的 `jwt`（ZCode 的套餐令牌）
+    pub fn has_jwt(&self) -> bool {
+        !self.jwt().is_empty()
     }
 
     /// 记录里是否有**非空**的 `apiKey`（自定义提供商账号的凭证键，见上）

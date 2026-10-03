@@ -225,6 +225,22 @@ impl AccountStore {
         // 「能不能领取套餐」是**跨地区同语义**的能力位：没有 jwt 时界面上
         // 的领取按钮应当不可点，而不是点了才报「缺少登录态」
         public.insert("canClaim".to_string(), Value::Bool(jwt_present));
+        // 最近一次领取的时刻 + 领到的套餐 id（0 / 空串 = 从未领过）。
+        // 与 `checkinAt` 同一处置：给**原始时间戳**而不是「今天领过没」的布尔 ——
+        // 自然日边界要按用户本地时区算，那个判定在界面上已有同款实现。
+        public.insert("claimAt".to_string(), Value::from(record.claim_at()));
+        public.insert(
+            "claimPlanId".to_string(),
+            Value::String(record.claim_plan_id()),
+        );
+        // 领取台账（`{planId: 毫秒}`）：界面据此**逐份**标记「今日已领」——
+        // 同一账号可能同时挂着几份可领套餐，而「已领取过」是上游按套餐判的
+        // （见 `mark_zcode_claim` 的说明），所以状态必须逐份给，不能只给一个
+        // 「今天领过了」把整颗按钮按住。
+        public.insert(
+            "claimPlans".to_string(),
+            Value::Object(record.claim_plans()),
+        );
         public.insert("priority".to_string(), Value::from(record.priority()));
         public.insert("enabled".to_string(), Value::Bool(record.enabled()));
         public.insert("addedAt".to_string(), Value::from(record.added_at()));
@@ -239,6 +255,17 @@ impl AccountStore {
         );
         public.insert("desktop".to_string(), Value::Bool(false));
         public.insert("available".to_string(), Value::Bool(available));
+        // 用哪条上游通道（`coding-plan` / `start-plan`，见 `zcode::plan`）。
+        // 缺失/认不出时**照实给默认值**而不是 null：界面上的下拉要选中当前项，
+        // 让前端自己兜默认值等于把同一个口径抄两遍
+        public.insert(
+            crate::server::core::providers::zcode::PLAN_FIELD.to_string(),
+            Value::String(
+                crate::server::core::providers::zcode::normalize_plan(&record.zcode_plan())
+                    .unwrap_or(crate::server::core::providers::zcode::PLAN_CODING)
+                    .to_string(),
+            ),
+        );
         public.insert(
             "maxConcurrent".to_string(),
             Value::from(max_concurrent_public(record.get("maxConcurrent"))),
@@ -247,6 +274,189 @@ impl AccountStore {
         // 按适配器的 `supports_chat()` 注入（与 Qoder 那份同样的处置）
         Value::Object(public)
     }
+
+    /// 取该账号的设备标识（`X-Device-Mid`）；没有（或不是 UUID 形态）就
+    /// **生成一个并落盘**，返回最终生效的那个。
+    ///
+    /// ── 为什么必须落盘而不是每次现编 ────────────────────────────
+    /// 上游把这台网关的风控建立在「设备标识稳定」上（见 `credentials.rs` 的模块头）。
+    /// 现编一个虽然也能过，但同一个账号在几天里会带着几十个不同设备标识打上游，
+    /// 那正是风控要找的形状。所以生成一次就写进记录，之后一直用它。
+    ///
+    /// ── 为什么要校验形态 ────────────────────────────────────────
+    /// 非 UUID 的值与缺失**同效**（上游回 3001，见 `claim.rs` / `balance.rs` 的
+    /// 模块头）。这种值只可能来自手工编辑或异构导入，此时换一个才是修好它；
+    /// 留着它会让「参数错误」永远修不掉。校验刻意宽松（36 字符 + 四段连字符），
+    /// 只排除明显不是 UUID 的形态 —— 太严会把上游将来可能接受的新形态拒掉。
+    ///
+    /// 返回 `None` 只在「账号不存在」或「系统随机源不可用」时发生（后者是环境
+    /// 故障，不落一条设备标识没保证的记录 —— 与匿名账号 id 同一口径）。
+    pub fn zcode_device_mid_or_create(&self, account_id: &str) -> Option<String> {
+        let guard = self.guard();
+        let Some(mut record) = self.record_by_id(&guard, account_id) else {
+            return None;
+        };
+        let existing = record.device_mid();
+        if uuid_shaped(&existing) {
+            return Some(existing.trim().to_string());
+        }
+        let generated = crate::server::core::providers::zcode::credentials::new_device_mid()?;
+        record.set_device_mid(&generated);
+        // 与 `mark_checkin` 同一条：**不**动 `updatedAt` —— 那是「记录被改过」的
+        // 时间，会显示在账号页的「更新于 …」上；补设备标识是内部自愈，不是用户改动
+        if self
+            .with_conn(&guard, |conn| sql::update_in_place(conn, &record))
+            .is_err()
+        {
+            logging::verbose(
+                "[Accounts]",
+                &format!("账号 {account_id} 的设备标识未能落盘（账号可能已被删除）"),
+            );
+        }
+        Some(generated)
+    }
+
+    /// 设置该账号走哪条上游通道（`coding-plan` / `start-plan`），返回变化描述。
+    ///
+    /// ── 为什么不塞进通用的 `apply_patch` ────────────────────────
+    /// 与 CatPaw 的 `balanceToken` 同一处境：`apply_patch` 是**八家共用**的字段
+    /// 白名单，把一个只有 ZCode 认识的键塞进去，等于让别家账号也能被写入一个
+    /// 「谁也不读」的字段。这里显式调用（`api::accounts::patch_account`），
+    /// 顺带做取值校验 —— 认不出的值直接 400，而不是落一个静默退回默认通道
+    /// 的值（那会让用户以为切换成功了）。
+    ///
+    /// 空值 = 恢复默认（`coding-plan`）：界面上的下拉给的就是这两个取值，
+    /// 从旧的记录格式（没有这个键）升级上来时也是这个口径 —— `plan_of` 读缺失
+    /// 即默认，所以「写默认值」与「不写」等价，这里选择写下去，让记录自解释。
+    ///
+    /// 与 `mark_checkin` 不同：这是**用户改动**，`updatedAt` 照常刷新。
+    pub fn update_zcode_plan(
+        &self,
+        account_id: &str,
+        patch: &Value,
+    ) -> Result<Vec<String>, AccountStoreError> {
+        use crate::server::core::providers::zcode;
+        let raw = patch
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(zcode::PLAN_CODING);
+        let Some(plan) = zcode::normalize_plan(raw) else {
+            return Err(AccountStoreError::bad_request(
+                "未知的 ZCode 套餐通道（只支持 coding-plan / start-plan）",
+            ));
+        };
+        let guard = self.guard();
+        let Some(mut record) = self.record_by_id(&guard, account_id) else {
+            return Err(AccountStoreError::not_found("账号不存在"));
+        };
+        // 已经是这条通道（且记录里写着）时不写盘：保存设置时前端只在「真的改了」
+        // 才带这个键，走到这里说明记录里本来就是目标值 —— 重写一次会让
+        // `updatedAt` 无谓地跳动
+        if zcode::plan_of(&record.to_value()) == plan && !record.zcode_plan().trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        record.set_zcode_plan(plan);
+        record.set_updated_at(logging::now_ms());
+        self.with_conn(&guard, |conn| sql::update_in_place(conn, &record))?;
+        // 账号锁先放开再动作限额表（两把锁不嵌套，见 `remove_account` 的说明）
+        drop(guard);
+        // ── 换通道顺手清掉限额标记（不做这件事的后果）────────────────
+        // 限额标记是「这个账号对某个模型在上游吃到了限额」，而**额度是按通道
+        // 算的**：编码套餐那条路被限了，不代表活动套餐那条路也被限。留着旧标记
+        // 会让用户刚切完通道、下一次请求就被选路跳过（账号页上看是「限流中」），
+        // 看起来像「切了也没用」。清掉之后下一次请求会用新通道真打一次：
+        // 真限额会再被标上，那是如实的。
+        let cleared = self.clear_all_rate_limits(account_id);
+        let mut changes = vec![format!("套餐通道 → {}", zcode::plan_label(plan))];
+        if cleared > 0 {
+            changes.push(format!("已清除 {cleared} 个模型的限额标记（换通道后旧记录不再适用）"));
+        }
+        Ok(changes)
+    }
+
+    /// 落一次领取结果（套餐 id → 时刻），返回是否写盘成功。
+    ///
+    /// 成功与「上游说已领过」都该写：后者意味着这一份套餐已经被领掉了
+    /// （可能是另一台设备领的），界面同样该显示「今日已领」——
+    /// 否则用户会一直点那颗按钮，每次都拿同一句「该账号已领取过」。
+    ///
+    /// ── 为什么记成**一张表**而不是一个「最近领过的套餐」──────────
+    /// 一个账号同时可领的套餐**可能不止一份**（活动大额包与每日包同时在列，
+    /// 用户也可以指定领哪一份），而且上游的「已领取过」是**按套餐判的**
+    /// （同一份再领回 1003，换一份照样能领）。只记最后一个的话，「领了 A 之后
+    /// B 还能不能领」就无从判断，界面只能按「今天领过了」把整颗按钮置灰 ——
+    /// 那正是用户遇到的死路。表里存「哪几份已经领了」，界面才能逐份标状态、
+    /// 只让选还没领的那些。
+    ///
+    /// 表按自然日判定（界面用本地日读它），所以老条目没有清理也读不出旧状态；
+    /// 但仍然做一次裁剪，免得记录无限长大：只留 `CLAIM_LEDGER_KEEP_DAYS` 天内的
+    /// 条目，且最多 `CLAIM_LEDGER_MAX` 条（保留最新的那些）。
+    ///
+    /// 与 `mark_checkin` 同一口径：**不**动 `updatedAt`（理由同上）。
+    pub fn mark_zcode_claim(&self, account_id: &str, plan_id: &str, at: i64) -> bool {
+        let guard = self.guard();
+        let Some(mut record) = self.record_by_id(&guard, account_id) else {
+            return false;
+        };
+        record.set_claim_at(at);
+        let plan_id = plan_id.trim();
+        if !plan_id.is_empty() {
+            record.set_claim_plan_id(plan_id);
+            let mut ledger = record.claim_plans();
+            ledger.insert(plan_id.to_string(), Value::from(at));
+            prune_claim_ledger(&mut ledger, at);
+            record.set_claim_plans(ledger);
+        }
+        self.with_conn(&guard, |conn| sql::update_in_place(conn, &record))
+            .is_ok()
+    }
+}
+
+/// 领取台账保留天数（界面只在「今天」这个粒度上用它）
+const CLAIM_LEDGER_KEEP_DAYS: i64 = 7;
+
+/// 领取台账的条数上限（一份套餐一天一条，7 天最多也就几十条；这是兜底）
+const CLAIM_LEDGER_MAX: usize = 60;
+
+/// 裁剪领取台账：先扔掉超过保留期的条目，再按时刻保留最新的若干条。
+///
+/// 之所以要裁：台账随活动期天天长（每天都可能有新 plan_id），而它跟着账号记录
+/// 落到 `accounts.data` 那一列里 —— 不加约束的话这条 JSON 会一直变大。
+fn prune_claim_ledger(ledger: &mut serde_json::Map<String, Value>, now: i64) {
+    let cutoff = now - CLAIM_LEDGER_KEEP_DAYS * 24 * 3600 * 1000;
+    ledger.retain(|_, value| value.as_i64().is_some_and(|at| at >= cutoff));
+    if ledger.len() <= CLAIM_LEDGER_MAX {
+        return;
+    }
+    // 时刻降序，砍掉尾巴（`Value::as_i64` 认不出的按 0 处理 → 排最后被砍）
+    let mut entries: Vec<(String, i64)> = ledger
+        .iter()
+        .map(|(key, value)| (key.clone(), value.as_i64().unwrap_or(0)))
+        .collect();
+    entries.sort_by(|left, right| right.1.cmp(&left.1));
+    let keep: Vec<String> = entries
+        .into_iter()
+        .take(CLAIM_LEDGER_MAX)
+        .map(|(key, _)| key)
+        .collect();
+    ledger.retain(|key, _| keep.iter().any(|kept| kept == key));
+}
+
+/// 值看起来像不像一个 UUID（`8-4-4-4-12` 的连字符形态，字符集限定十六进制）。
+///
+/// 只做形态判断，不校验版本位 —— 上游要的是「能解析成设备标识的形态」，
+/// 而 RFC 4122 与随机 hex 在它眼里都是合法输入（我们自己生成的是 v4）。
+fn uuid_shaped(value: &str) -> bool {
+    let value = value.trim();
+    let mut groups = value.split('-');
+    let lengths: Vec<usize> = groups.by_ref().map(str::len).collect();
+    if lengths != [8, 4, 4, 4, 12] {
+        return false;
+    }
+    value
+        .split('-')
+        .all(|group| group.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 /// 本家的 provider id 常量（别处按它判「是不是 ZCode」时用注册表，不写字面量）

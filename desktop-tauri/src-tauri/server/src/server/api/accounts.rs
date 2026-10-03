@@ -57,6 +57,7 @@ use crate::server::core::auth::WorkBuddyAuthError;
 use crate::server::core::billing::checkin;
 use crate::server::core::proxies::ProxyConfigError;
 use crate::server::core::providers::adapter::adapter_for;
+use crate::server::core::providers::zcode;
 use crate::server::core::providers::ProviderKind;
 use crate::server::errors::management_error;
 use crate::server::http::{ok_json, parse_body};
@@ -145,7 +146,13 @@ pub async fn accounts_entry(State(state): State<ServerState>, request: axum::ext
     dispatch(state, method, rest.as_deref(), &full_path, &query, &body).await
 }
 
-/// `/api/proxies` 与 `/api/proxies/test` 的入口（同样接受任意方法）
+/// `/api/proxies*` 的入口（同样接受任意方法）。
+///
+/// 七条已注册路径：`/api/proxies`、`/api/proxies/test`（Node 版原有的出口
+/// 能力）与 `/api/proxies/pool`、`/pool/update`、`/pool/remove`、`/pool/test`、
+/// `/pool/sync-clash`（「网络代理」页的代理池 CRUD + 测试 + Clash 同步，
+/// 见 `api::proxies` 的模块头）。池那几条的 id 走 body，不做路径段 ——
+/// 判定的写法因此还是一张 (方法, 剩余路径) 的表，与原来的两条完全同形。
 pub async fn proxies_entry(State(state): State<ServerState>, request: axum::extract::Request) -> Response {
     let method = request.method().clone();
     let full_path = request.uri().path().to_string();
@@ -163,6 +170,12 @@ pub async fn proxies_entry(State(state): State<ServerState>, request: axum::extr
     match (method.as_str(), rest.as_str()) {
         ("GET", "") => super::proxies::list_proxies(&state).await,
         ("POST", "test") => super::proxies::test_proxy(&state, &body).await,
+        ("GET", "pool") => super::proxies::pool_list(&state).await,
+        ("POST", "pool") => super::proxies::pool_create(&state, &body).await,
+        ("POST", "pool/update") => super::proxies::pool_update(&state, &body).await,
+        ("POST", "pool/remove") => super::proxies::pool_remove(&state, &body).await,
+        ("POST", "pool/test") => super::proxies::pool_test(&state, &body).await,
+        ("POST", "pool/sync-clash") => super::proxies::pool_sync_clash(&state).await,
         // 已注册路径上的其它方法：Node 的 tryHandleProxies 落到它自己的 404 信封
         _ => management_error(
             404,
@@ -248,7 +261,7 @@ pub async fn dispatch(
                 return clear_rate_limits(&state, &id, body);
             }
         }
-        // ZCode「周末套餐」：探测（只读、不要验证码）与领取（要验证码）。
+        // ZCode「限时套餐」：探测（只读、不要验证码）与领取（要验证码）。
         // 两个后缀互不包含（`/zcode-claim/preview` 不以 `/zcode-claim` 结尾），
         // 因此这里的先后不影响命中 —— 但读的时候按「先探测后领取」排列，
         // 与界面上用户的操作顺序一致。
@@ -978,6 +991,34 @@ pub async fn patch_account(state: &ServerState, id: &str, body: &Bytes) -> Respo
         }
         match state.store().update_catpaw_balance_token(&id, value) {
             Ok(changes) => balance_changes = changes,
+            Err(error) => return store_error(error),
+        }
+    }
+    // ZCode 的「用哪条上游通道」（`zcodePlan`，见 `providers::zcode::plan`）：
+    // 与上面 CatPaw 那一段同一处境 —— 只有这一家认这个键，所以不进通用
+    // `apply_patch`，在这里显式落盘并做取值校验（认不出的值 400，而不是
+    // 静默退回默认通道）。
+    if let Some(value) = patch.get(zcode::PLAN_FIELD) {
+        if state.store().zcode_account_record(&id).is_none() {
+            let known = state
+                .store()
+                .list_accounts()
+                .get("accounts")
+                .and_then(Value::as_array)
+                .map(|accounts| {
+                    accounts
+                        .iter()
+                        .any(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                })
+                .unwrap_or(false);
+            return if known {
+                management_error(400, "只有 ZCode 账号可以选「使用哪个套餐」（zcodePlan）")
+            } else {
+                store_error(AccountStoreError::new("账号不存在", 404))
+            };
+        }
+        match state.store().update_zcode_plan(&id, value) {
+            Ok(changes) => balance_changes.extend(changes),
             Err(error) => return store_error(error),
         }
     }

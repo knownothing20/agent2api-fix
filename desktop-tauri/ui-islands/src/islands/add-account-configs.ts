@@ -336,8 +336,9 @@ function zcodeForm(spec: { provider: string; label: string; site: string; planNo
     manualTitle: '填写凭证',
     manualNoteHtml: '本家有两个**互不替代**的凭证，按你要用的功能填，至少填一个：'
       + '<b>编码套餐 API Key</b> 用于转发推理（打 <code>' + site + '</code>）；'
-      + '<b>jwt</b> 用于领取套餐（打 <code>zcode.z.ai</code>，官方叫 Coding Plan JWT，'
-      + '是一串三段点分的字符串）。只填 jwt 的账号能领套餐但不能转发，反之亦然。'
+      + '<b>jwt</b> 用于领取套餐与查询余额（打 <code>zcode.z.ai</code> 的 billing 网关，'
+      + '官方叫 Coding Plan JWT，是一串三段点分的字符串）。只填 jwt 的账号能领套餐、'
+      + '能看余额但不能转发，反之亦然。'
       + `请填写 <b>${label}</b>账号的凭证 —— ${planNote}`
       + '（最容易拿到的办法：直接用上方的「网页登录」—— 它会替你把这个 API Key 换好，两个凭证一起拿到。）',
     fields: [
@@ -350,7 +351,7 @@ function zcodeForm(spec: { provider: string; label: string; site: string; planNo
         // 校验并回 401。官方客户端与「网页登录」这条链都是先换成编码套餐 API Key 再用。
         placeholder: '用于转发；形如 apiKey.secret 两段点分（不填则这个账号不能转发）',
       },
-      { key: 'jwt', label: 'Coding Plan JWT', inputKey: 'jwt', rows: 3, optional: true, placeholder: '用于领取套餐；不填则这个账号不能领取' },
+      { key: 'jwt', label: 'Coding Plan JWT', inputKey: 'jwt', rows: 3, optional: true, placeholder: '用于领取套餐与查询余额；不填则这个账号不能领取与查余额' },
       { key: 'userId', label: '用户 ID', optional: true, placeholder: '可选；用于生成账号 id 与展示名' },
       { key: 'name', label: '备注名', optional: true, placeholder: '可选，留空自动生成' },
     ],

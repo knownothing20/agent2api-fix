@@ -327,6 +327,10 @@ impl ServerState {
         // 下面日志裁剪天数与旧文件候选目录才不会用错值。
         let snapshot = config::init(db.clone());
         core::task_state::install(db.clone());
+        // 出网代理池（「网络代理」页维护的命名代理；账号按 id 引用它们）：
+        // 与任务状态同为「kv 固定键 + 整份读写」的形态，把同一个 `Db` 传进去。
+        // 它不参与启动预热，位置只要求早于任何一次 `/api/proxies/pool*` 请求。
+        core::proxy_pool::install(db.clone());
         // 模型清单的持久化缓存：把**同一个 `Db`** 传进去（与配置 / 日志库 /
         // 账号库同一形态）。各家的远程清单在进程重启后由它读回，不再回落到
         // 内置清单（见 `core::providers::catalog_cache` 的模块头）。

@@ -205,18 +205,21 @@ impl RuntimeConfig {
         &self.prompt
     }
 
-    /// 转发层要的**提示词决定**：模式 + 提示词文本的借用视图。
+    /// 转发层要的**提示词决定**：全局默认 + 各家覆盖的借用视图。
     ///
     /// 借用而不是克隆：文本可能有几百行，而本方法在**每个请求**上调用一次
     /// （`upstream::forward` 取快照），克隆一份纯属浪费。生命周期绑在
     /// `&self` 上 —— 调用方必须让快照活过整条转发链（见 `upstream::forward`
     /// 里那个 `config` 局部变量的说明）。
     pub fn prompt_plan(&self) -> crate::server::core::prompt::PromptPlan<'_> {
-        crate::server::core::prompt::PromptPlan {
-            mode: self.prompt.mode,
-            text: &self.prompt.text,
-            source: self.prompt.source,
-        }
+        crate::server::core::prompt::PromptPlan::new(
+            crate::server::core::prompt::PromptChoice {
+                mode: self.prompt.mode,
+                text: &self.prompt.text,
+                source: self.prompt.source,
+            },
+            &self.prompt.providers,
+        )
     }
 
     /// 掩码后的 API Key，格式照抄 server.mjs 920 行：前 6 后 4。
@@ -438,7 +441,7 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
 ///     文件启动不了、也不能因此拒绝转发，而原因会显示在设置页上，用户当场能改；
 ///   - 文件未指定 → 内置默认。
 fn prompt_from(raw: &Map<String, Value>) -> PromptSettings {
-    use crate::server::core::prompt::{PromptMode, PromptSource, BUILT_IN_PROMPT};
+    use crate::server::core::prompt::PromptMode;
 
     let mode = raw
         .get(KEY_PROMPT_MODE)
@@ -446,33 +449,200 @@ fn prompt_from(raw: &Map<String, Value>) -> PromptSettings {
         .and_then(PromptMode::parse)
         .unwrap_or_default();
     let file = string_field(raw, KEY_PROMPT_FILE);
-    if !matches!(mode, PromptMode::Custom | PromptMode::Append) {
-        return PromptSettings { mode, file, ..PromptSettings::default() };
+    let inline = string_field(raw, KEY_PROMPT_TEXT);
+    let base = resolve_choice(mode, file, inline);
+    PromptSettings {
+        mode: base.mode,
+        file: base.file,
+        inline: base.inline,
+        text: base.text,
+        source: base.source,
+        file_error: base.file_error,
+        providers: providers_from(raw),
+        gateway: gateway_from(raw),
+        gateway_text: gateway_text_from(raw),
     }
-    let built_in = || PromptSettings {
+}
+
+/// `promptGatewayText` 的解析：`{"<providerId>": {"identity"?, "stable"?, "dynamic"?}}`。
+///
+/// 与 `gateway_from` 同一取向的容错：项不是对象 → 跳过这一家；段值不是字符串 →
+/// 当作这段没配（用官方原文）。段名认不出（用户手写错）时**不报错也不猜** ——
+/// 它只是被忽略，官方原文照旧，排障时看得见差异在哪一段。
+fn gateway_text_from(
+    raw: &Map<String, Value>,
+) -> std::collections::BTreeMap<String, crate::server::core::prompt::GatewayBlocks> {
+    let mut table = std::collections::BTreeMap::new();
+    let Some(object) = raw.get(KEY_PROMPT_GATEWAY_TEXT).and_then(Value::as_object) else {
+        return table;
+    };
+    for (id, value) in object {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let Some(entry) = value.as_object() else { continue };
+        let mut blocks = crate::server::core::prompt::GatewayBlocks::default();
+        for field in crate::server::core::prompt::GatewayBlocks::FIELDS {
+            if let Some(text) = entry.get(field).and_then(Value::as_str) {
+                if !text.trim().is_empty() {
+                    blocks.set(field, text.to_string());
+                }
+            }
+        }
+        // 三段全空 = 用户把所有覆盖都清了：配置里不留空壳（与写侧同一口径）
+        if !blocks.is_empty() {
+            table.insert(id.to_string(), blocks);
+        }
+    }
+    table
+}
+
+/// `promptGateway` 的解析：`{"<providerId>": bool}`，只认**真正的布尔**。
+///
+/// 手改配置写成 `"false"` 这种字符串时**不猜**（`as_bool()` 只认 `true`/`false`）：
+/// 猜错的方向是「用户以为关掉了、网关照样装着发出去」，而按缺失处理只是回到默认 ——
+/// 相比之下，一个没生效的开关比一个静默生效的误读更容易被发现。
+fn gateway_from(raw: &Map<String, Value>) -> std::collections::BTreeMap<String, bool> {
+    let mut gateway = std::collections::BTreeMap::new();
+    let Some(object) = raw.get(KEY_PROMPT_GATEWAY).and_then(Value::as_object) else {
+        return gateway;
+    };
+    for (id, value) in object {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(flag) = value.as_bool() {
+            gateway.insert(id.to_string(), flag);
+        }
+    }
+    gateway
+}
+
+/// `promptProviders` 的解析：逐家按**同一口径**解析（见 [`resolve_choice`]）。
+///
+/// 手改配置时的容错取向与全局键一致（写坏回落、不报错、不影响启动）：
+///   · 项不是对象 → 跳过这一家（当作没配）；
+///   · `mode` 缺失/非法 → 按默认 `passthrough`（与全局键同一条 `.unwrap_or_default()`）；
+///   · `file` 非字符串 → 当作没配（用内置默认）；
+///   · id 不是字符串 → 跳过（注册表校验留给写侧接口，读侧不认识也照样存着 ——
+///     用户可能先写好配置、后加自定义提供商）。
+fn providers_from(raw: &Map<String, Value>) -> std::collections::BTreeMap<String, ProviderPrompt> {
+    use crate::server::core::prompt::PromptMode;
+
+    let mut providers = std::collections::BTreeMap::new();
+    let Some(object) = raw.get(KEY_PROMPT_PROVIDERS).and_then(Value::as_object) else {
+        return providers;
+    };
+    for (id, value) in object {
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let Some(entry) = value.as_object() else { continue };
+        let mode = entry
+            .get(KEY_PROMPT_MODE)
+            .and_then(Value::as_str)
+            .and_then(PromptMode::parse)
+            .unwrap_or_default();
+        let file = entry
+            .get(KEY_PROMPT_FILE)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|text| !text.trim().is_empty());
+        let inline = entry
+            .get(KEY_PROMPT_TEXT)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|text| !text.trim().is_empty());
+        let choice = resolve_choice(mode, file, inline);
+        providers.insert(
+            id.to_string(),
+            ProviderPrompt {
+                mode: choice.mode,
+                file: choice.file,
+                inline: choice.inline,
+                text: choice.text,
+                source: choice.source,
+                file_error: choice.file_error,
+            },
+        );
+    }
+    providers
+}
+
+/// 「模式 + 文件路径 + 界面正文」→ 生效文本的**唯一解析口径**（全局默认与逐家覆盖共用）。
+///
+/// 四档优先级：界面正文 > 提示词文件 > 内置默认；`passthrough` 一律不读盘（也没人
+/// 会读那份文本 —— 透传就是不动 system）。
+///
+/// `passthrough` 下**仍然把界面正文带出来**（`text` = 用户存的那份，来源仍是 `none`）：
+/// 它是用户自己写下的东西，设置页的编辑框必须看得见 —— 否则「昨天保存的正文，今天
+/// 打开是空的」看起来就是丢了。文件不在此列：透传不读盘这条不变（省一次 I/O，
+/// 也避免界面暗示「它正在生效」）。
+fn resolve_choice(
+    mode: crate::server::core::prompt::PromptMode,
+    file: Option<String>,
+    inline: Option<String>,
+) -> ResolvedChoice {
+    use crate::server::core::prompt::{PromptMode, PromptSource, BUILT_IN_PROMPT};
+
+    if !matches!(mode, PromptMode::Custom | PromptMode::Append) {
+        let stored = inline.clone().filter(|text| !text.trim().is_empty());
+        return ResolvedChoice {
+            mode,
+            file,
+            text: stored.clone().unwrap_or_default(),
+            inline: stored,
+            source: PromptSource::None,
+            file_error: None,
+        };
+    }
+    // 用户在界面上编辑过：以他那份为准（**不去读文件**，于是文件读不到也不再是
+    // 一条告警 —— 那份文件此刻确实没在用，报一个不影响任何行为的错只会误导）
+    if let Some(text) = inline.clone().filter(|text| !text.trim().is_empty()) {
+        return ResolvedChoice {
+            mode,
+            file,
+            inline: Some(text.clone()),
+            text,
+            source: PromptSource::Inline,
+            file_error: None,
+        };
+    }
+    let built_in = || ResolvedChoice {
         mode,
         file: file.clone(),
+        inline: None,
         text: BUILT_IN_PROMPT.to_string(),
         source: PromptSource::BuiltIn,
         file_error: None,
     };
-    let Some(path) = file
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    else {
+    let Some(path) = file.as_deref().map(str::trim).filter(|text| !text.is_empty()) else {
         return built_in();
     };
     match read_prompt_file(path) {
-        Ok(text) => PromptSettings {
+        Ok(text) => ResolvedChoice {
             mode,
             file,
+            inline: None,
             text,
             source: PromptSource::File,
             file_error: None,
         },
-        Err(error) => PromptSettings { file_error: Some(error), ..built_in() },
+        Err(error) => ResolvedChoice { file_error: Some(error), ..built_in() },
     }
+}
+
+/// [`resolve_choice`] 的结果（字段与 [`ProviderPrompt`] 同构，外加 mode）。
+struct ResolvedChoice {
+    mode: crate::server::core::prompt::PromptMode,
+    file: Option<String>,
+    inline: Option<String>,
+    text: String,
+    source: crate::server::core::prompt::PromptSource,
+    file_error: Option<String>,
 }
 
 /// 读提示词文件（UTF-8 文本）；`Err` 是**可直接显示给用户**的原因。
@@ -584,6 +754,45 @@ pub fn retention_settings() -> RetentionSettings {
         }
     }
     RetentionSettings::default()
+}
+
+/// 只取**某一家**的网关自带提示词开关（**不克隆整份 raw**）。
+///
+/// 为什么不走 `current().prompt_plan()`：适配器在「构造一次上游请求」时问它，
+/// 而 `current()` 每次调用都克隆整个 `raw` Map（含提示词全文那几百行）——
+/// 为读一个布尔值付这个代价没必要。语义与 `PromptPlan::gateway_prompt` 一致：
+/// **不在表里 = true（装）**，这是本开关对存量行为的全部兼容性保证。
+///
+/// 未初始化（理论上只有启动极早期）时同样给 `true`。
+pub fn gateway_prompt_enabled(provider_id: &str) -> bool {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return config
+                .prompt
+                .gateway
+                .get(provider_id.trim())
+                .copied()
+                .unwrap_or(true);
+        }
+    }
+    true
+}
+
+/// 只取**某一家**的网关自带提示词正文覆盖（**不克隆整份 raw**）。
+///
+/// 与 [`gateway_prompt_enabled`] 同一取舍：适配器在构造上游请求时问它，
+/// 而 `current()` 会克隆整个 `raw`。语义：**不在表里 = `None`（用官方原文）**，
+/// 有值时段内空白的那些段仍由调用方逐段回落到官方原文（见
+/// `core::prompt::GatewayBlocks::or`）—— 这里不做合并，只如实交出配置里存的那份。
+pub fn gateway_prompt_text(
+    provider_id: &str,
+) -> Option<crate::server::core::prompt::GatewayBlocks> {
+    if let Ok(guard) = CONFIG.read() {
+        if let Some(config) = guard.as_ref() {
+            return config.prompt.gateway_text.get(provider_id.trim()).cloned();
+        }
+    }
+    None
 }
 
 /// 只取定时任务设置的轻量读取（**不克隆整份 raw**）。
@@ -1081,20 +1290,25 @@ pub fn set_github_token_envelope(envelope: Option<String>) -> bool {
     })
 }
 
-// ─── 系统提示词（promptMode / promptFile）───────────────────────
+// ─── 系统提示词（promptMode / promptFile / promptText）──────────
 
-/// 写入系统提示词设置（模式 + 文件），并**按新值重新解析一遍生效文本**。
+/// 写入系统提示词设置（模式 + 文件 + 界面正文），并**按新值重新解析一遍生效文本**。
 ///
-/// 与 `set_sanitize_fingerprints` 同一模式，但多一步：写完两个键之后重跑一次
+/// 与 `set_sanitize_fingerprints` 同一模式，但多一步：写完键之后重跑一次
 /// [`prompt_from`]。只改字段不重解析会出现「模式换了、`text` 还是上一份」的
 /// 静默错配（`custom` 模式却拿着空文本 = 什么都不做），而重解析顺带把
 /// 「文件此刻读不到」的原因一起刷新 —— 用户改完路径立刻能在界面上看到结果。
 ///
-/// `file` 为空串/None 时**删掉这个键**（而不是写空串）：与 `set_api_key(None)`
-/// 同一语义，配置里不留下没意义的空值。
+/// `file` / `inline` 为空串/None 时**删掉对应的键**（而不是写空串）：与
+/// `set_api_key(None)` 同一语义，配置里不留下没意义的空值。两者互不影响 ——
+/// 清掉界面正文之后，提示词文件（若配了）立刻接管。
 ///
 /// 返回是否落盘成功（失败时内存仍已更新，见调用点）。
-pub fn set_prompt(mode: crate::server::core::prompt::PromptMode, file: Option<String>) -> bool {
+pub fn set_prompt(
+    mode: crate::server::core::prompt::PromptMode,
+    file: Option<String>,
+    inline: Option<String>,
+) -> bool {
     update(|config| {
         config
             .raw
@@ -1107,6 +1321,16 @@ pub fn set_prompt(mode: crate::server::core::prompt::PromptMode, file: Option<St
             }
             None => {
                 config.raw.remove(KEY_PROMPT_FILE);
+            }
+        }
+        match inline.filter(|text| !text.trim().is_empty()) {
+            Some(text) => {
+                config
+                    .raw
+                    .insert(KEY_PROMPT_TEXT.to_string(), Value::String(text));
+            }
+            None => {
+                config.raw.remove(KEY_PROMPT_TEXT);
             }
         }
         config.prompt = prompt_from(&config.raw);
@@ -1177,6 +1401,139 @@ pub fn set_scheduling_wait_seconds(seconds: u64) -> bool {
 
 // ─── 数据保存目录（logDir / requestStatsDir / debugDir）────────
 //
+/// 写入/删除**某一家**的提示词覆盖，并重跑一次解析（与 [`set_prompt`] 同一理由：
+/// 只改字段不重解析会出现「模式换了、`text` 还是上一份」的静默错配）。
+///
+/// `patch` 为 `None` = **删掉这一家**（回落全局默认，配置里不留空壳对象）；
+/// 为 `Some(ProviderPromptPatch)` = 写入这一家（`file` / `inline` 为空串/None =
+/// 用内置默认提示词；`gateway` 见那个类型的字段说明）。
+///
+/// 返回是否落盘成功（失败时内存仍已更新，见调用点）。
+pub fn set_prompt_provider(provider_id: &str, patch: Option<ProviderPromptPatch>) -> bool {
+    let id = provider_id.trim().to_string();
+    if id.is_empty() {
+        return false;
+    }
+    update(|config| {
+        // 先把这一家的旧值抹掉，再按 patch 决定写不写 —— 两条分支合成一处，
+        // 不会出现「删了键但 map 里还留着」这类不一致
+        let mut entry = config
+            .raw
+            .get(KEY_PROMPT_PROVIDERS)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        entry.remove(&id);
+        if let Some(patch) = patch {
+            let mut one = Map::new();
+            one.insert(
+                KEY_PROMPT_MODE.to_string(),
+                Value::String(patch.mode.as_str().to_string()),
+            );
+            if let Some(path) = patch.file.filter(|text| !text.trim().is_empty()) {
+                one.insert(KEY_PROMPT_FILE.to_string(), Value::String(path));
+            }
+            if let Some(text) = patch.inline.filter(|text| !text.trim().is_empty()) {
+                one.insert(KEY_PROMPT_TEXT.to_string(), Value::String(text));
+            }
+            entry.insert(id.clone(), Value::Object(one));
+        }
+        // 一家都不剩时把整个键删掉：配置里不留下没意义的空对象
+        // （与 `set_prompt` 对空文件路径的处理同一取向）
+        if entry.is_empty() {
+            config.raw.remove(KEY_PROMPT_PROVIDERS);
+        } else {
+            config
+                .raw
+                .insert(KEY_PROMPT_PROVIDERS.to_string(), Value::Object(entry));
+        }
+        config.prompt = prompt_from(&config.raw);
+    })
+}
+
+/// 写**某一家**的网关自带提示词**正文覆盖**（`None` = 删键、回到官方原文）。
+///
+/// 与 [`set_prompt_gateway`]（装不装）分开两张表：改文本与拨开关互不牵连 ——
+/// 用户在编辑框里删掉自己那段、想回到官方原文时，不该顺手把开关也拨回去。
+/// 空段**不写进配置**（读侧按「这段没配」用官方原文），于是「只改了身份句」
+/// 在配置里就是一条只带 `identity` 的项，一眼看得出改的是哪一段。
+/// 返回是否落盘成功（失败时内存仍已更新，见调用点）。
+pub fn set_prompt_gateway_text(
+    provider_id: &str,
+    blocks: Option<crate::server::core::prompt::GatewayBlocks>,
+) -> bool {
+    let id = provider_id.trim().to_string();
+    if id.is_empty() {
+        return false;
+    }
+    update(|config| {
+        let mut table = config
+            .raw
+            .get(KEY_PROMPT_GATEWAY_TEXT)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        table.remove(&id);
+        if let Some(blocks) = blocks.filter(|blocks| !blocks.is_empty()) {
+            let mut one = Map::new();
+            for field in crate::server::core::prompt::GatewayBlocks::FIELDS {
+                let text = blocks.get(field);
+                if !text.trim().is_empty() {
+                    one.insert(field.to_string(), Value::String(text.to_string()));
+                }
+            }
+            table.insert(id.clone(), Value::Object(one));
+        }
+        if table.is_empty() {
+            config.raw.remove(KEY_PROMPT_GATEWAY_TEXT);
+        } else {
+            config
+                .raw
+                .insert(KEY_PROMPT_GATEWAY_TEXT.to_string(), Value::Object(table));
+        }
+        config.prompt = prompt_from(&config.raw);
+    })
+}
+
+/// 写**某一家**的网关自带提示词开关（`None` = 删键、回到默认「装」）。
+///
+/// 与 [`set_prompt_provider`] 分开的理由见 `KEY_PROMPT_GATEWAY` 的说明：
+/// 拨一下开关不该顺带把这家的模式 / 文件钉成显式值。返回是否落盘成功
+/// （失败时内存仍已更新，见调用点）。
+pub fn set_prompt_gateway(provider_id: &str, flag: Option<bool>) -> bool {
+    let id = provider_id.trim().to_string();
+    if id.is_empty() {
+        return false;
+    }
+    update(|config| {
+        let mut table = config
+            .raw
+            .get(KEY_PROMPT_GATEWAY)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        match flag {
+            Some(value) => {
+                table.insert(id.clone(), Value::Bool(value));
+            }
+            None => {
+                table.remove(&id);
+            }
+        }
+        if table.is_empty() {
+            config.raw.remove(KEY_PROMPT_GATEWAY);
+        } else {
+            config
+                .raw
+                .insert(KEY_PROMPT_GATEWAY.to_string(), Value::Object(table));
+        }
+        // 解析复用同一入口：`gateway` 与 `providers` 一起刷新，不会出现
+        // 「一个键更新了、另一个还是上一次解析结果」的静默错配
+        config.prompt = prompt_from(&config.raw);
+    })
+}
+
+// ─── 数据保存目录（logDir / requestStatsDir / debugDir）────────//
 // ── 为什么这里**只剩读**，没有对应的写函数（T8 收尾的一处）──────
 // 三个键在数据全部进统一库之后**失去了消费方**：日志、请求统计、调试报文都
 // 落在 `{config_dir}/agent2api.db` 里，不再有「各自的保存目录」。曾经的那个

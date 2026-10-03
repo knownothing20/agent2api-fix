@@ -272,11 +272,18 @@ pub fn panel_router(state: ServerState) -> Router {
         .route("/api/accounts", any(api::accounts::accounts_entry))
         .route("/api/accounts/", any(api::accounts::accounts_entry))
         .route("/api/accounts/{*rest}", any(api::accounts::accounts_entry))
-        // ── 出网代理（Clash Verge 实时读取 + 出口连通性测试）──
-        // /api/proxies 之外（如 /api/proxies/zzz）不注册 → 落到全局 404 兜底，
-        // 与 Node 版「前缀判定不通过 → 全局兜底」一致
+        // ── 出网代理（Clash Verge 实时读取 + 出口连通性测试 + 代理池）──
+        // /api/proxies 与 /api/proxies/pool* 之外（如 /api/proxies/zzz）不注册
+        // → 落到全局 404 兜底，与 Node 版「前缀判定不通过 → 全局兜底」一致。
+        // pool 的六条都是固定路径（id 走 body / query，不用 {id} 段 ——
+        // 理由见 api::proxies 的模块头），方法判定在 proxies_entry 里。
         .route("/api/proxies", any(api::accounts::proxies_entry))
         .route("/api/proxies/test", any(api::accounts::proxies_entry))
+        .route("/api/proxies/pool", any(api::accounts::proxies_entry))
+        .route("/api/proxies/pool/update", any(api::accounts::proxies_entry))
+        .route("/api/proxies/pool/remove", any(api::accounts::proxies_entry))
+        .route("/api/proxies/pool/test", any(api::accounts::proxies_entry))
+        .route("/api/proxies/pool/sync-clash", any(api::accounts::proxies_entry))
         // ── 积分 / 签到 / 运营活动（对照 server.mjs 871-911 行）──
         // 六条都挂在 protected（Node 版每条都调了 checkApiKey），
         // 失败时的 body 是 OpenAI 风格（那几条在 server.mjs 的大 try 里）
@@ -404,6 +411,15 @@ pub fn panel_router(state: ServerState) -> Router {
         .route(
             "/api/captcha",
             get(api::captcha::get_captcha).put(api::captcha::put_captcha),
+        )
+        // ── 活动套餐通道的人机验证令牌池 ──
+        // 与上面那条**不是一回事**：上面是网关自己的登录门槛（ALTCHA），这条是
+        // 上游 ZCode 对活动套餐推理端点要求的阿里云验证码令牌（界面静默铸造、
+        // 推给转发层按请求取用），见 `api::zcode_captcha` 的模块头。
+        // 挂 protected：它是网关内部的运转状态，且写入会立即影响转发行为。
+        .route(
+            "/api/zcode/captcha",
+            get(api::zcode_captcha::get_captcha).post(api::zcode_captcha::push_captcha),
         )
         // ── 系统提示词与内容拦截降级 ──
         // 与 /api/sanitize 同为「出站内容处理」的开关，但形状不同（枚举 + 文件

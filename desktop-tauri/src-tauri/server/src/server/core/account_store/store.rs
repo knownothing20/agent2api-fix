@@ -501,7 +501,17 @@ impl AccountStore {
                 record.expires_at().unwrap_or(0.0),
             ),
         };
-        json!({
+        // ── ZCode 的三个附加键（`zcode::plan` 用）────────────────────
+        // 它家有**两条上游通道**（编码套餐走开放平台、活动套餐走 `zcode.z.ai`
+        // 的 Anthropic 端点），而适配器只能看到会话 —— 走哪条通道、用哪套凭证
+        // 都从这里读。条件是「记录属于 ZCode 系」，因此对别家的会话是**逐字
+        // 空操作**（连键都不会多）：
+        //   - `jwt`：活动套餐通道的 Bearer（与 `accessToken` 不能互相替代）；
+        //   - `deviceMid`：进请求体的 `metadata.user_id.device_id`；
+        //   - `zcodePlan`：通道名（缺失 = 编码套餐，见 `zcode::plan_of`）。
+        // 空值不写：会话里出现空串会让「有没有这条通道的凭证」的判定变成
+        // 「键在不在」，那是两个不同的问法。
+        let mut session = json!({
             "endpoint": record.endpoint().unwrap_or_else(|| edition.endpoint.to_string()),
             "prefixPath": record
                 .prefix_path()
@@ -525,7 +535,28 @@ impl AccountStore {
                 "enterpriseId": record.enterprise_id(),
                 "enterpriseName": record.enterprise_name(),
             },
-        })
+        });
+        if crate::server::core::providers::zcode::region::Region::from_provider_id(
+            &record.provider(),
+        )
+        .is_some()
+        {
+            if let Some(object) = session.as_object_mut() {
+                for (key, value) in [
+                    ("jwt", record.jwt()),
+                    ("deviceMid", record.device_mid()),
+                    (
+                        crate::server::core::providers::zcode::PLAN_FIELD,
+                        record.zcode_plan(),
+                    ),
+                ] {
+                    if !value.trim().is_empty() {
+                        object.insert(key.to_string(), Value::String(value));
+                    }
+                }
+            }
+        }
+        session
     }
 
     /// 指定账号的凭证（Node 版 getCredentialsById）；无凭证/不存在时 None

@@ -123,13 +123,14 @@ function applyZoom(percent) {
 // ─── 页面导航 ────────────────────────────────
 
 const PAGE_KEY = 'workbuddy-desktop-page';
-const PAGES = ['overview', 'accounts', 'gateway', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
+const PAGES = ['overview', 'accounts', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
 /** 页签中文名：顶栏面包屑用。overview 的用户可见名是「报表」、gateway 的是「模型管理」
  *  （内部标识保持不变：localStorage 记忆、showPage 与 CSS 的 [data-page] 选择器都依赖它） */
 const PAGE_LABELS = {
   overview: '报表',
   accounts: '账号',
   gateway: '模型管理',
+  proxies: '网络代理',
   keys: '网关 Key',
   docs: '文档',
   logs: '日志',
@@ -186,6 +187,11 @@ function showPage(name, { persist = true } = {}) {
   // 这里只转发 —— 它自己保证「切页这次刷新一定落地」。
   if (page === 'gateway') {
     void window.wbModelsPanel?.refreshAll?.();
+  }
+  // 网络代理页自持清单（代理池），切进去时拉一次最新：别的窗口 / 别的页面
+  // （账号弹窗里改过引用）都可能让它变过。面板内部保证「这次刷新一定落地」
+  if (page === 'proxies') {
+    void window.wbProxiesPanel?.load?.();
   }
   // 切到账号页时立刻补一次连接数：那条 2 秒轮询只在「当时就在账号页」时才发请求，
   // 切走的这段时间里缓存已经过期，不补一下会先看到几秒前的旧数字

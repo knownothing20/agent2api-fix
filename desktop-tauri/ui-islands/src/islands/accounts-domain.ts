@@ -44,6 +44,16 @@ type ProviderFeatures = {
   /** 有没有「领体验套餐」这个动作（只有 ZCode 两家） */
   claim?: boolean
   /**
+   * 有没有「使用哪个套餐（上游通道）」这个设置（只有 ZCode 两家）。
+   *
+   * 它回答的是「这个账号的请求走哪条上游通道」：编码套餐（自己买的订阅，
+   * 开放平台的 OpenAI 端点）还是活动套餐（官方限时发放的额度，`zcode.z.ai`
+   * 的 Anthropic 端点）。两者是**两份独立额度**，而「套餐已到期」这类拒绝
+   * 只由其中一条给出 —— 所以它是设置项而不是自动探测（见后端
+   * `providers::zcode::plan` 的模块头）。
+   */
+  planChannel?: boolean
+  /**
    * 有没有「领福利」这个动作（只有 CodeArts）。**刻意不与 ZCode 的 `claim` 合并**：
    * 那家的领取要过一次阿里云验证码、且判据看后端给的 `canClaim`（账号得带套餐令牌），
    * 本家两样都没有 —— 共用一个位会让两边的按钮判据互相污染。
@@ -90,12 +100,17 @@ const PROVIDER_FEATURES: Record<string, ProviderFeatures> = {
   // Accio 两个地区：额度可查（上游只给用量百分比）、没有签到、有地区概念
   accio: { usage: true, checkin: false, edition: true, identifier: 'userId', expiry: 'expiresAt', emailAsName: true },
   'accio-cn': { usage: true, checkin: false, edition: true, identifier: 'userId', expiry: 'expiresAt', emailAsName: true },
-  // ZCode 两个地区：**没有签到**，替代它的是「周末套餐领取」（claim 位）。
-  // usage 目前是 false —— 本家还没实现余额查询，不显示余额按钮；与「未知 provider
-  // 不假定拥有」同一口径，宁可少一个按钮，也不要一个点了必然报错的入口。
+  // ZCode 两个地区：**没有签到**，替代它的是「限时套餐领取」（claim 位）。
+  // `usage: true` 对应 providers::zcode::balance —— 余额读的是 billing 网关的
+  //   `/zcode-plan/billing/balance`，认**套餐 JWT**（与转发用的 accessToken 不是
+  //   一套凭证）。账号只粘了 accessToken 时后端回可识别的「未配置」，余额列显示成
+  //   中性提示而不是一片红，所以这颗按钮照样渲染。
+  // `claim: true` 就是那颗「领套餐」：2026-09-28 起那期（ZCode Trust Build）是
+  //   **每天一份新套餐**（plan_id 带日期段），领过之后按钮当天显示「今日已领」、
+  //   次日自动恢复 —— 见 `claimedToday`。
   // expiry 取 expiresAt 是给 add_zcode_account 的契约（落账号时要写访问令牌的过期时间）
-  zcode: { usage: false, checkin: false, claim: true, edition: true, identifier: 'userId', expiry: 'expiresAt' },
-  'zcode-intl': { usage: false, checkin: false, claim: true, edition: true, identifier: 'userId', expiry: 'expiresAt' },
+  zcode: { usage: true, checkin: false, claim: true, planChannel: true, edition: true, identifier: 'userId', expiry: 'expiresAt' },
+  'zcode-intl': { usage: true, checkin: false, claim: true, planChannel: true, edition: true, identifier: 'userId', expiry: 'expiresAt' },
   // CodeArts（华为云 AI 代码助手）。各位各有出处，别照着别家抄：
   // `usage: true` —— 余额是**两份账**（订阅统计 + 福利网关，见 providers::codearts::balance），
   //   界面上「读到 0」与「没读到」必须能分开，后端因此把失败的一侧写进 statisticsError /
@@ -272,6 +287,81 @@ export function supportsCheckin(account: AccountRecord | null | undefined): bool
 export function supportsClaim(account: AccountRecord | null | undefined): boolean {
   if (!providerFeatures(providerOf(account)).claim) return false
   return account?.canClaim !== false
+}
+
+/** ZCode 的两条上游通道取值（与后端 `providers::zcode` 的常量逐字一致） */
+export const ZCODE_PLAN_CODING = 'coding-plan'
+export const ZCODE_PLAN_START = 'start-plan'
+
+/**
+ * 这个账号能不能选「使用哪个套餐」（ZCode 独有的设置）。
+ *
+ * 判据只有能力位：**没有 jwt 也照样给这个设置** —— 那个账号只能选编码套餐，
+ * 但用户看得到「有这回事」并在换账号后回来改，比让这个设置凭空消失好。
+ * 「没有套餐登录态就别选活动套餐」由对话框里的禁用态说明（见 accounts-dialogs）。
+ */
+export function supportsPlanChannel(account: AccountRecord | null | undefined): boolean {
+  return Boolean(providerFeatures(providerOf(account)).planChannel)
+}
+
+/**
+ * 该账号当前走哪条通道（非 ZCode 账号返回空串）。
+ *
+ * 后端公开形态**总是**给这个字段（缺失时它自己就按默认给 `coding-plan`，
+ * 见 `to_zcode_public_account`），所以这里只在字段真缺失时兜默认值 ——
+ * 两处都兜同一个默认，是为了让「老版本后端 + 新版本界面」也不显示空白。
+ */
+export function zcodePlanOf(account: AccountRecord | null | undefined): string {
+  if (!supportsPlanChannel(account)) return ''
+  const raw = String(account?.zcodePlan || '').trim()
+  return raw === ZCODE_PLAN_START ? ZCODE_PLAN_START : ZCODE_PLAN_CODING
+}
+
+/**
+ * 通道的展示名（与后端 `zcode::plan_label` 同一套措辞）。
+ *
+ * 后端保存成功后会回一句「套餐通道 → 活动套餐（Start Plan）」，两处措辞若
+ * 不一致，用户会以为设置里选的与提示里说的不是同一件事。
+ */
+export function zcodePlanLabel(plan: string | undefined): string {
+  return plan === ZCODE_PLAN_START ? '活动套餐（Start Plan）' : '编码套餐（Coding Plan）'
+}
+
+/**
+ * 今天**已经领过的套餐 id**（北京时间自然日）。
+ *
+ * 读数来自后端落盘的领取台账 `claimPlans`（`{planId: 毫秒}`，见
+ * `AccountStore::mark_zcode_claim`）。**逐份**给状态是必需的：同一个账号可能
+ * 同时挂着几份可领套餐（活动大额包 + 每日包），而上游的「已领取过」又是**按套餐**
+ * 判的 —— 领了 A 之后 B 照样能领。只给一个「今天领过了」会把整颗按钮按住，
+ * 用户就再也领不了剩下那几份。
+ *
+ * 日界用北京时间，与签到 / 福利同一口径：上游的活动按中国时间换期
+ * （那期 Trust Build 的套餐 id 就带日期段，每天换一个）。
+ */
+export function claimedPlanIdsToday(account: AccountRecord | null | undefined): string[] {
+  const ledger = account?.claimPlans
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return []
+  const day = beijingDay()
+  return Object.entries(ledger as Record<string, unknown>)
+    .filter(([, at]) => Number(at) > 0 && beijingDay(Number(at)) === day)
+    .map(([planId]) => planId)
+}
+
+/**
+ * 今天是否领过至少一份。**只用于文案与悬停提示，不用来禁用按钮** ——
+ * 「还有别的套餐能领吗」只有在弹窗里逐份比对才判得准（见 `claimedPlanIdsToday`）。
+ */
+export function claimedToday(account: AccountRecord | null | undefined): boolean {
+  return claimedPlanIdsToday(account).length > 0
+}
+
+/** 「今天领过 N 份」的悬停说明：列出领过的套餐，并说清还能继续领别的 */
+export function claimDoneTitle(account: AccountRecord | null | undefined): string {
+  const planIds = claimedPlanIdsToday(account)
+  const names = planIds.length ? `（${planIds.join('、')}）` : ''
+  return `今天（北京时间 ${beijingDay()}）已领取 ${planIds.length} 份${names}；`
+    + '还有其他可领套餐时，点这里可以继续领；活动按自然日发新套餐，明天可再领'
 }
 
 /**
@@ -554,6 +644,15 @@ export function accountTags(account: AccountRecord): AccountTag[] {
     // 代理配了解析不出来时明确标出：转发会回退直连，属于需要留意的情况
     account.proxy?.error
       ? { text: '代理异常', kind: 'bad' as const, title: `${account.proxy.error}（转发时会回退直连）` }
+      : null,
+    // 走活动套餐通道时标出来：它不是默认值，而「这条请求到底花的是哪份额度」
+    // 恰恰是用户在这个页面上要回答的问题（行上的余额列也可能同时挂着两份）
+    zcodePlanOf(account) === ZCODE_PLAN_START
+      ? {
+        text: '活动套餐',
+        kind: 'plain' as const,
+        title: '转发走活动套餐通道（zcode.z.ai 的 Anthropic 端点，用账号里领到的额度）；在账号设置里可切回编码套餐',
+      }
       : null,
   ].filter((tag): tag is AccountTag => tag !== null)
 }

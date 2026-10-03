@@ -23,6 +23,8 @@ export type ProxyConfig = {
   config?: {
     source?: string
     listenerUid?: string
+    /** `source === 'pool'` 时的池条目 id（见 PoolItem） */
+    proxyId?: string
     protocol?: string
     host?: string
     port?: number
@@ -58,6 +60,8 @@ export type AccountRecord = {
   editionLabel?: string
   chatSupported?: boolean
   canClaim?: boolean
+  /** ZCode：这一行当前走哪条上游通道（`coding-plan` / `start-plan`，见 accounts-domain 的 ZCODE_PLAN_*） */
+  zcodePlan?: string
   hasRefreshToken?: boolean
   hasBalanceToken?: boolean
   maxConcurrent?: number
@@ -123,6 +127,17 @@ export type AccountsBridge = {
     skipped?: number
   } | null | undefined>
   getProxies(): Promise<{ clash?: ClashSnapshot } | null | undefined>
+  /** 代理池列表（「网络代理」页维护的命名代理）：账号代理表单的
+   *  「已保存的代理」下拉读它；写侧（增删改）只有那一页用，不在这份桥里 */
+  getProxyPool(): Promise<{ items?: PoolItem[] } | null | undefined>
+  /** 测一条池条目（账号表单里选中池引用时的「测试出口」）：
+   *  结果会记进那条代理的「上次测试」，与代理页那颗按钮同一个动作 */
+  testProxyPoolItem(id: string): Promise<{
+    success?: boolean
+    ip?: string
+    durationMs?: unknown
+    error?: string
+  } | null | undefined>
   testProxy(payload: { proxy: unknown }): Promise<{
     success?: boolean
     status?: unknown
@@ -133,6 +148,23 @@ export type AccountsBridge = {
   switchAccount(id: string): Promise<{ changed?: boolean } | null | undefined>
   refreshAccountToken(id: string): Promise<unknown>
   removeAccount(id: string): Promise<unknown>
+  /**
+   * ZCode 活动套餐通道的**验证码令牌池**概况（见后端 `providers/zcode/captcha.rs`）。
+   *
+   * 活动套餐的推理端点每条请求都要一个当次铸的阿里云验证码令牌，令牌由界面后台
+   * 静默铸造（`ui/zcode-captcha-pool.js`）。这里读的是「当前库存 / 目标 / 是否
+   * 正在缺货」—— 账号设置里选活动套餐时用它给用户一个可查的状态，
+   * 否则「转发失败但不知道为什么」只能靠日志。
+   */
+  zcodeCaptchaStats?(): Promise<{
+    ready?: number
+    target?: number
+    startPlanAccounts?: number
+    rejected?: number
+    minted?: number
+    consumed?: number
+    ttlMs?: number
+  } | null | undefined>
 }
 
 /** `/api/proxies` 里 clash 那一段（出口列表 + 可用性） */
@@ -148,6 +180,71 @@ export type ClashSnapshot = {
     enabled?: boolean
   }>
 }
+
+/**
+ * 「网络代理」页（代理池）的一条条目 —— 只列账号表单用到的字段，
+ * 完整形态见 ui-islands/src/islands/proxies-page.tsx 的 PoolItem。
+ * 账号的 proxy 可以按 id 引用它（`{source:'pool', proxyId}`）。
+ */
+export type PoolItem = {
+  id: string
+  name?: string
+  /** manual | clash（表单里按它标「手动 / Clash Verge」） */
+  source?: string
+  enabled?: boolean
+  /** 解析后的出口（Clash 条目的端口在这里是实时值）；不受控字段按 unknown 收 */
+  resolved?: { protocol?: string; host?: string; port?: number | null; label?: string } | null
+  /** 解析失败的原因（引用了已删除的 Clash 监听器等） */
+  resolveError?: string | null
+  /** 引用它的账号（后端在池列表里带的） */
+  usedBy?: Array<{ id?: string; name?: string; enabled?: boolean }>
+}
+
+/**
+ * 池条目的地址串：`HTTP 127.0.0.1:7910`（协议大写 + 主机 + 端口）。
+ *
+ * 与 OmniProxy 的名称列第二行同一口径（它的 ProxiesPage 就在名字下面写
+ * `${protocol.toUpperCase()} ${host}:${port}`）。用解析后的 host/port 而不是
+ * `resolved.label`：label 对 Clash 条目是「监控器名（:端口）」、对混合端口是
+ * 「Clash 混合端口 7892」—— 都不含主机，且形态随来源变。这里统一成同一串，
+ * 用户在下拉里能直接核对「这条连的是哪儿」。
+ *
+ * 取不到（解析失败 / 字段缺失）时回落 `resolved.label`，再没有就是空串。
+ */
+export function poolItemAddress(item: PoolItem): string {
+  const resolved = item.resolved
+  if (resolved?.protocol && resolved.host && resolved.port) {
+    return `${String(resolved.protocol).toUpperCase()} ${resolved.host}:${resolved.port}`
+  }
+  return resolved?.label || ''
+}
+
+/**
+ * 池条目在下拉里的展示名：`香港HK-A（HTTP 127.0.0.1:7909）` /
+ * `香港HK-A（HTTP 127.0.0.1:7909 · 已禁用）` / `香港HK-A（解析失败）`。
+ *
+ * 三个地方共用（账号表代理列 / 账号弹窗的代理表单 / 更新设置的出网线路）——
+ * 各写一份迟早会漂移成本次这种事（有一处忘了写地址，用户下拉里只能看到名字）。
+ * 条目的来源（手动 / Clash）不在这里标：下拉里已经有地址可比对，来源在
+ * 「网络代理」页的类型列上。
+ */
+export function poolItemLabel(item: PoolItem): string {
+  const name = item.name || item.id
+  const address = item.resolveError ? '解析失败' : poolItemAddress(item)
+  const parts = [address, item.enabled === false ? '已禁用' : ''].filter(Boolean)
+  return parts.length ? `${name}（${parts.join(' · ')}）` : name
+}
+
+/**
+ * 代理下拉里「池条目」这一类的值前缀：`pool:<proxyId>`。
+ *
+ * 为什么需要前缀而不是直接用 proxyId：同一个下拉里还列着 Clash 的出口 uid
+ * （来自 verge.yaml，形态不受我们控制，`px_...` 撞上它不是不可能），
+ * 以及几个 `__proxy_*__` 占位值。前缀把三类值域彻底分开，判定只看开头即可。
+ * 两个消费方（账号页代理列 / 更新设置的出网线路）读的是同一个常量 ——
+ * 一边改了前缀、另一边没改，症状是「选了代理池条目却报不支持」，很难查。
+ */
+export const POOL_VALUE_PREFIX = 'pool:'
 
 /**
  * window 上由别的脚本 / 别的岛挂载的共享桥。**只声明本页用到的成员**，
@@ -193,8 +290,12 @@ export type SharedWindow = {
   }
   /** 并发上限小对话框（已迁的岛，见 conc-dialog.tsx） */
   wbAccountConcDialog?: { open?: (account: AccountRecord) => void; close?: () => void }
-  /** ZCode「领套餐」流程（ui/zcode-claim.js，本页只把账号对象递过去） */
-  wbZcodeClaim?: { start?: (account: AccountRecord | undefined) => Promise<unknown> }
+  /**
+   * ZCode「领套餐」流程（ui/zcode-claim.js，本页把账号对象与「今天领过的套餐 id」
+   * 递过去）。第二个参数是**逐份**的领取状态：一个账号可能同时挂着几份可领套餐，
+   * 而上游的「已领取过」是按套餐判的 —— 弹窗据此把已领的那几份标出来、只让选没领的。
+   */
+  wbZcodeClaim?: { start?: (account: AccountRecord | undefined, claimedPlanIds?: string[]) => Promise<unknown> }
   /** CodeArts「领福利」流程（ui/codearts-welfare.js：只读探测 → 确认 → 领取 → 回读） */
   wbCodeArtsWelfare?: { start?: (account: AccountRecord | undefined) => Promise<unknown> }
   /** 「添加账号」弹窗（归另一个代理，本页只调它的 open） */

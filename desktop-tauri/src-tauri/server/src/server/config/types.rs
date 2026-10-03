@@ -21,6 +21,7 @@
 //!   - **边界**（`DEFAULT_*` / `*_MIN_*` / `*_MAX_*`）：读侧回落与写侧校验
 //!     共用同一份数字，避免「接口拒绝 60 而手改库接受它」这种两套口径。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// 默认模型：客户端未指定模型时使用（对应 Node 版 `--default-model` 默认值）
@@ -144,6 +145,84 @@ pub const SCHEDULING_WAIT_MIN: u64 = 0;
 pub const SCHEDULING_WAIT_MAX: u64 = 300;
 /// 默认等待秒数（老配置里没有这个键时用它，等于引入设置项之前的行为）。
 pub const SCHEDULING_WAIT_DEFAULT: u64 = 30;
+/// **界面里直接编辑**的系统提示词正文（config.json 键）。
+///
+/// 非空白 = **以它为准**，优先级高于 [`KEY_PROMPT_FILE`] 与内置默认；空串 /
+/// 缺失 = 回到「文件 > 内置默认」的老路径。逐家的项里也是这个名字（与
+/// `promptMode` / `promptFile` 一样，全局与逐家共用一套键名）。
+///
+/// ── 为什么要有它（与提示词文件的关系）────────────────────────
+/// 文件路径适合「我有一份自己维护的提示词」；改一个字要去编辑器里开文件、
+/// 存盘、再切回设置页，对「只想补一句『回答用中文』」这种需求太重。界面正文
+/// 是**就地编辑的那一份**，保存即生效（`set_prompt` 会重跑解析，下一个请求
+/// 就用新文本）。两者不互相替代：界面正文清空后，文件与内置默认照旧生效 ——
+/// 用户不必为了试一句话就把文件路径先删掉。
+pub const KEY_PROMPT_TEXT: &str = "promptText";
+
+/// **按提供商**覆盖系统提示词设置的键（config.json 键）。
+///
+/// 形状：`{"<providerId>": {"promptMode": "...", "promptFile": "..."}}` ——
+/// 项里的键名与全局那两个**逐字相同**（三处只有一套名字：配置、接口载荷、
+/// 接口响应），值是**稀疏**的 ——
+/// 只写想单独配置的那几家，其余一律沿用上面两个全局键。删除某家 = 把这个键从
+/// 对象里去掉（接口侧传 `null`）。
+///
+/// ── 为什么需要它（与全局键的关系）────────────────────────────
+/// 「用哪份提示词」本来就是**按上游**不同的问题：一家的内容审核按逐字指纹拦截、
+/// 另一家（ZCode 活动套餐通道）只认它自己的官方身份块，拿同一份提示词套所有家
+/// 不是过严就是过松。全局键保留为**默认值**（不写这个键时行为与改造前逐字相同），
+/// 逐家的差异写在这里。
+pub const KEY_PROMPT_PROVIDERS: &str = "promptProviders";
+
+/// **网关自带提示词**的逐家开关（config.json 键）：`{"<providerId>": false}`。
+///
+/// 上面那个键管的是**客户端 system 怎么处理**；这一项管的是**网关自己要不要装
+/// 它那段内置文本**（今天只有 ZCode 活动套餐通道的官方三段身份块，见
+/// `zcode::OFFICIAL_PROMPT_NOTE` 的实测记录）。
+///
+/// ── 为什么单独一张表，而不并进 `promptProviders` ──────────────
+/// 两者的生效条件与默认值都不一样：`promptProviders` 的项是「这家**有**自己的
+/// 模式 / 文件」（缺省 = 跟随全局），而这一项是「这家要不要装网关的内置段」
+/// （缺省 = **装**，因为那是上游当下的硬性要求）。并进同一项里，用户只想拨一下
+/// 开关就得连带把模式 / 文件一起落成显式值 —— 于是「今天关掉官方段」会顺手把
+/// 这家的模式钉死在当时的全局值上，之后改全局它不再跟随：一个动作产生两个后果，
+/// 而且第二个后果用户看不见。分表之后两者互不干扰，各自的缺省语义也说得清。
+///
+/// 值存 `true` / `false`（用户明确拨过的那一侧）；**键缺失 = 默认（装）**。
+/// 接口传 `null` = 删键、回到默认（见 `/api/prompt` 的载荷说明）—— 留着用户
+/// 拨过一次的 `true` 是有意的：配置里一眼看得出「这家被明确确认过要装」，
+/// 与「从来没动过」区分开，排障时少一次猜测。
+pub const KEY_PROMPT_GATEWAY: &str = "promptGateway";
+
+/// **网关自带提示词的正文覆盖**（config.json 键）：
+/// `{"<providerId>": {"identity": "...", "stable": "...", "dynamic": "..."}}`。
+///
+/// 上面那个键管的是「装不装」，这一项管的是「装的那段长什么样」—— 用户改过的
+/// 那一段以配置里的文本为准（逐段合并：只写改过的那几段即可，缺的段用官方原文，
+/// 见 `core::prompt::GatewayBlocks::or`）。段名就是三段的名字：身份句 / 稳定段 /
+/// 动态段 —— 三段各自成块是上游的结构要求，所以不提供「合成一整段」的编辑方式。
+///
+/// 动态段里的 `{cwd}` / `{platform}` / `{shell}` / `{os_version}` / `{git}` /
+/// `{provider}` / `{model}` 是**占位符**：发请求时才换成真实运行值（工作目录、
+/// 平台、模型名……）。官方原文里本来就带 `{provider}` / `{model}` 两个，这里只是
+/// 把 Environment 段那几行也变成同样的写法，用户想改哪一行都行、想删也可以。
+///
+/// 删掉某家 = 把这个键从对象里去掉（接口侧传 `null`）= 回到官方原文。
+pub const KEY_PROMPT_GATEWAY_TEXT: &str = "promptGatewayText";
+
+/// 写入**某一家**的提示词覆盖时的载荷（`set_prompt_provider` 的入参）。
+///
+/// 字段与 [`ProviderPrompt`] 前三项一一对应；用独立类型而不是元组，是为了
+/// 将来加字段时不必再挨个改调用点的解构。
+#[derive(Clone, Debug)]
+pub struct ProviderPromptPatch {
+    /// 模式（透传 / 替换 / 追加）
+    pub mode: crate::server::core::prompt::PromptMode,
+    /// 提示词文件（`None` / 空白 = 用内置默认提示词）
+    pub file: Option<String>,
+    /// 界面里编辑的正文（`None` / 空白 = 没有这一份，回落文件 / 内置默认）
+    pub inline: Option<String>,
+}
 
 /// 系统提示词设置（设置页「通用 → 系统提示词」）。
 ///
@@ -157,8 +236,11 @@ pub struct PromptSettings {
     pub mode: crate::server::core::prompt::PromptMode,
     /// 用户指定的提示词文件（`None` = 未指定）
     pub file: Option<String>,
-    /// **实际生效**的提示词文本：`custom` / `append` 下是文件内容或内置默认，
-    /// `passthrough` 下为空串（不加载、不读盘）
+    /// 界面里编辑的正文（`None` = 没编辑过这一份；有值时它是**生效文本的来源**）
+    pub inline: Option<String>,
+    /// **实际生效**的提示词文本：`custom` / `append` 下是界面正文 / 文件内容 /
+    /// 内置默认；`passthrough` 下**没有生效的正文**，但会把用户存下的界面正文
+    /// 带出来（设置页的编辑框要看得见它，见 `resolve_choice` 的说明）
     pub text: String,
     /// 文本来源（界面与日志要能回答「这次用的到底是哪一份」）
     pub source: crate::server::core::prompt::PromptSource,
@@ -166,6 +248,16 @@ pub struct PromptSettings {
     /// 回落成内置默认 —— 与「写坏回落」的既有取向一致：桌面应用不能因为
     /// 一个提示词文件的问题启动不了或转发不了
     pub file_error: Option<String>,
+    /// **按提供商**的覆盖（`KEY_PROMPT_PROVIDERS`）；不在这张表里的家走上面那五项。
+    /// `BTreeMap` 而不是 `HashMap`：界面与接口响应都要有稳定顺序（同一份配置
+    /// 每次渲染的行序不同，用户会以为设置被改动过）
+    pub providers: BTreeMap<String, ProviderPrompt>,
+    /// **网关自带提示词的逐家开关**（`KEY_PROMPT_GATEWAY`）：`false` = 这一家不装，
+    /// 不在表里 = 装（默认）。与 `providers` 分开的两点理由见那个键的说明。
+    pub gateway: BTreeMap<String, bool>,
+    /// **网关自带提示词的逐家正文覆盖**（`KEY_PROMPT_GATEWAY_TEXT`）：只含被改过的
+    /// 家；不在表里 = 用官方原文。与开关分两张表：改文本与拨开关是两件事。
+    pub gateway_text: BTreeMap<String, crate::server::core::prompt::GatewayBlocks>,
 }
 
 impl Default for PromptSettings {
@@ -173,11 +265,40 @@ impl Default for PromptSettings {
         Self {
             mode: crate::server::core::prompt::PromptMode::default(),
             file: None,
+            inline: None,
             text: String::new(),
             source: crate::server::core::prompt::PromptSource::None,
             file_error: None,
+            providers: BTreeMap::new(),
+            gateway: BTreeMap::new(),
+            gateway_text: BTreeMap::new(),
         }
     }
+}
+
+/// 单一提供商上的提示词覆盖（`KEY_PROMPT_PROVIDERS` 的每一项）。
+///
+/// 字段与 [`PromptSettings`] 的前六项**逐一同构**：解析口径也只有一处
+/// （`prompt_from` 里那个 `resolve_choice`），于是「全局默认怎么解析、逐家就怎么
+/// 解析」不会分叉成两套。不存在「这家没配 file 于是继承全局 file」这种半继承
+/// 语义：某家一旦出现在 map 里，它的 mode / file / inline **都**以自己这份为准
+/// （`file: None` = 用内置默认提示词）—— 半继承是最容易让用户看不懂的模式，
+/// 界面上「这家配了什么」与「实际用了什么」必须一眼对得上。
+#[derive(Clone, Debug)]
+pub struct ProviderPrompt {
+    /// 模式（透传 / 替换 / 追加）
+    pub mode: crate::server::core::prompt::PromptMode,
+    /// 用户指定的提示词文件（`None` = 未指定，用内置默认）
+    pub file: Option<String>,
+    /// 界面里编辑的正文（`None` = 没编辑过这一份）
+    pub inline: Option<String>,
+    /// **实际生效**的提示词文本（`passthrough` 下同全局那份：没有生效正文，
+    /// 但有界面正文就带出来）
+    pub text: String,
+    /// 文本来源
+    pub source: crate::server::core::prompt::PromptSource,
+    /// 指定了文件但读不到时的原因（`None` = 没这回事）
+    pub file_error: Option<String>,
 }
 
 /// 三档保留天数的默认值（缺失时用它们）

@@ -64,10 +64,10 @@ import { shared, type AccountRecord, type ColSettingsHandle } from './accounts-s
 import { checkinableAccounts, isDesktopAccount, isEnabled, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths } from './accounts-columns'
 import {
-  allAccounts, checkinAll, clearLimits, clearSelection, ensureClashOptions, getStore,
-  installAccountsApi, normalizeFilter, openBatchDialog, panelOpen, providerSummaryList, queryAllUsage,
-  rowContext, seats, segmentCounts, setAllPicked, setProviderFilter, setSegmentFilter, snapshot,
-  startConnectionsPolling, subscribe, togglePick, visibleList,
+  allAccounts, checkinAll, clearLimits, clearSelection, ensureProxyPoolOptions,
+  getStore, installAccountsApi, normalizeFilter, openBatchDialog, panelOpen, providerSummaryList,
+  queryAllUsage, rowContext, seats, segmentCounts, setAllPicked, setProviderFilter, setSegmentFilter,
+  snapshot, startConnectionsPolling, subscribe, togglePick, visibleList,
 } from './accounts-data'
 import {
   AccountCell, ActionsCell, ConnectionsCell, ExpiryCell, LimitsCell, PanelsRow, PriorityStepper,
@@ -154,9 +154,11 @@ function AccountsPage() {
 
   // 归一化与自愈都放在 effect 里（渲染期改状态会与 React 的渲染顺序打架）：
   //   · 摘要里已不存在的 provider（账号被删光）复位成「全部」；
-  //   · 代理列的 Clash 出口列表没就绪就补拉（节流 30 秒，失败不缓存）
+  //   · 代理列的选项（「网络代理」页的池条目）没就绪就补拉（节流 30 秒，
+  //     失败不缓存）。Clash 出口那一组已经不在这一页了 —— 出口统一由代理
+  //     页的「同步 Clash Verge」导入池，这里只读池（见 accounts-panels 的 ProxyCell）
   React.useEffect(() => { normalizeFilter() }, [store.version])
-  React.useEffect(() => { ensureClashOptions() })
+  React.useEffect(() => { ensureProxyPoolOptions() })
 
   // 列设置的注册必须在挂载后：按钮要插进本岛渲染出来的 `.batch-actions`，而
   // syncStaticHead 要求登记表已存在（它按 id 查配置）。用布局 effect 是为了让首屏的

@@ -218,14 +218,14 @@ impl ProviderAdapter for AutoClawAdapter {
         super::prompt::normalize(&mut out_body);
         // body 不是对象时原样透传（chat.rs 已保证是对象；这里的兜底只为不 panic，
         // 上游会自己报格式错误 —— 比在网关里编一个空对象更能说明问题）
-        Ok(ChatRequestPlan {
-            url: format!(
+        Ok(ChatRequestPlan::chat(
+            format!(
                 "{}/chat/completions",
                 credentials::upstream_base_url(self.region)
             ),
             headers,
-            body: out_body,
-        })
+            out_body,
+        ))
     }
 
     /// 上游错误分类（判定依据见下，逐条对照源实现 `forwardModelRequest`）：

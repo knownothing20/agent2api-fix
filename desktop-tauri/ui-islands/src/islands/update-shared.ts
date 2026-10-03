@@ -14,6 +14,10 @@
  */
 
 import type * as React from 'react'
+// 代理池的共享类型与值前缀与账号页共用一份 —— 两处下拉的值域必须一致
+// （`pool:<id>`），各写一份迟早会漂移。accounts-shared 是纯类型 + 常量的
+// 自包含模块（不 import 任何业务模块），这里引用它不产生循环。
+import { POOL_VALUE_PREFIX, poolItemLabel, type PoolItem } from './accounts-shared'
 
 /* ─── 类型 ─────────────────────────────────── */
 
@@ -56,23 +60,18 @@ export type DownloadTask = {
   percent?: number
 }
 
-/** Clash 出口快照（`/api/proxies` 的 clash 段，与账号页代理列同源同一形状） */
-export type ClashSnapshot = {
-  available?: boolean
-  error?: string
-  options?: Array<{ uid?: string; name?: string; port?: number }>
-}
-
 /**
  * 已存的「更新出网线路」（`/api/update/proxy` 的 proxy 字段）。
  * 与账号代理是**同一个描述形态**（label / config / error），null = 直连 ——
- * 下拉值取 `config.listenerUid`、失效标注读 `error`，口径照账号页的 ProxyCell。
+ * 下拉值取 `config.proxyId`（池条目）或落到占位项（存量里直接引用 Clash
+ * 出口 `config.listenerUid` / 自定义形状的记录）、失效标注读 `error`，
+ * 口径照账号页的 ProxyCell。
  */
 export type UpdateProxyChoice = {
   source?: string
   label?: string
   error?: string
-  config?: { source?: string; listenerUid?: string } | null
+  config?: { source?: string; listenerUid?: string; proxyId?: string } | null
 } | null
 
 /** GitHub 令牌状态（`/api/update/token` 的返回）：**没有本体**，只有有没有、来自哪 */
@@ -94,7 +93,8 @@ export type UpdateBridge = {
   getUpdateStatus(): Promise<UpdateInfo | null | undefined>
   /** 更新出网线路的当前设置（proxy 为 null = 直连） */
   getUpdateProxy(): Promise<{ proxy?: UpdateProxyChoice } | null | undefined>
-  /** 换更新出网线路：proxy 传 null = 直连、{source:'clash', listenerUid} = 指定出口 */
+  /** 换更新出网线路：null = 直连、{source:'clash', listenerUid} = 指定 Clash 出口、
+   *  {source:'pool', proxyId} = 引用「网络代理」页的池条目 */
   setUpdateProxy(payload: { proxy: unknown }): Promise<{
     proxy?: UpdateProxyChoice
     saved?: boolean
@@ -103,8 +103,8 @@ export type UpdateBridge = {
   getUpdateToken(): Promise<UpdateTokenStatus | null | undefined>
   /** 保存 / 清除 GitHub 令牌（token 传 null = 清除） */
   setUpdateToken(payload: { token: string | null }): Promise<UpdateTokenStatus | null | undefined>
-  /** Clash 出口列表（账号页代理列同款；出网代理下拉的选项来自它） */
-  getProxies(): Promise<{ clash?: ClashSnapshot } | null | undefined>
+  /** 「网络代理」页的池条目（出网代理下拉的选项只来自它，与账号页同一条链） */
+  getProxyPool(): Promise<{ items?: PoolItem[] } | null | undefined>
   downloadUpdate(payload: { url: string; name?: string }): Promise<DownloadTask | null | undefined>
   updateProgress(): Promise<DownloadTask | null | undefined>
   cancelUpdate(): Promise<{ canceled?: boolean } | null | undefined>
@@ -200,69 +200,86 @@ export function handleExternalClick(event: React.MouseEvent<HTMLElement>): void 
 /* ─── 出网代理（「更新设置」弹窗里的那一节）────── */
 
 /**
- * 下拉里代表「已设置但不是 Clash 出口」的占位值。
+ * 下拉里代表「已设置但不是池条目」的占位值。
  *
- * 弹窗的选项只有直连与 Clash 出口，但接口同时收 custom 形状（直接调
- * `/api/update/proxy` 写进来的）：那种值映射不到任何出口 uid，给一条占位项
- * 显示当前值 —— **绝不能回落成「直连」**，那会把「设置了代理」显示成「没设」。
+ * 下拉的选项只有直连与代理池条目，但存量记录里可能有两种别的形状：
+ * 直接引用 Clash 出口（`{source:'clash', listenerUid}`，出口统一走池之前的
+ * 写法）与 custom 形状（直接调 `/api/update/proxy` 写进来的）。它们映射不到
+ * 任何池条目，给一条占位项显示当前值 —— **绝不能回落成「直连」**，
+ * 那会把「设置了代理」显示成「没设」。
  */
 export const PROXY_OTHER_CURRENT = '__proxy_other__'
 
 /** 出网代理一节的全部读数（弹窗的本地状态就是它） */
 export type ProxySelection = {
   proxyChoice: UpdateProxyChoice
-  /** null = 还没读到 / 读取失败（原因在 clashError） */
-  clash: ClashSnapshot | null
-  /** 出口列表读取失败的原因（空串 = 没失败） */
-  clashError: string
+  /**
+   * 「网络代理」页的代理池条目 —— 下拉的选项**只来自它**。
+   * `null` = 还没读到（弹窗刚打开）；读到后是数组（可能是空的）。
+   *
+   * 为什么不列 Clash 的实时出口：池里已经有全部出口（「同步 Clash Verge」
+   * 把 Clash 当前的出口集合整体镜像进来，进代理页时还会自动同步一次），
+   * 两组并排就是同一批出口显示两遍、还会让「选哪个」变成一个没有答案的问题。
+   * 出口统一在代理池里配 / 命名 / 测试，这里只做「选哪一条」。
+   */
+  pool: PoolItem[] | null
+  /** 池读取失败的原因（空串 = 没失败，与「池里没条目」分开报） */
+  poolError: string
 }
 
 export const EMPTY_PROXY_SELECTION: ProxySelection = {
   proxyChoice: null,
-  clash: null,
-  clashError: '',
+  pool: null,
+  poolError: '',
 }
 
 /**
- * 读当前线路与 Clash 出口列表（每次打开弹窗都拉，不另做缓存）。
+ * 读当前线路与代理池条目（每次打开弹窗都拉，不另做缓存）。
  *
  * 两个请求互不依赖、失败互不拖累：设置读不到按「直连」显示（保存动作会把
- * 真实值带回来）；出口列表读不到与「没装 Clash」是两种处境，clashError
- * 单独记，下拉里各给一条置灰说明。
+ * 真实值带回来）；池读不到单独记原因，下拉里给一条置灰说明。
+ * 池那一项走 `getProxyPool`（与账号页同一条链）—— 它同时也让「网络代理」页
+ * 的条目集合在这里保持最新（那个接口进来时后端会顺手同步一次 Clash 出口）。
  */
 export async function fetchProxySelection(): Promise<ProxySelection> {
   const api = shared().workbuddyDesktop
   const selection: ProxySelection = { ...EMPTY_PROXY_SELECTION }
-  if (!api?.getUpdateProxy || !api?.getProxies) return selection
+  if (!api?.getUpdateProxy) return selection
   try {
     selection.proxyChoice = (await api.getUpdateProxy())?.proxy ?? null
   } catch {
     /* 设置读不到：按直连显示，保存动作会把真实值带回来 */
   }
   try {
-    const clash = (await api.getProxies())?.clash ?? null
-    // 桥异常时可能 resolve 出 undefined 而不是 reject：不校验会伪装成「没有出口」
-    if (!clash) throw new Error('代理列表响应异常')
-    selection.clash = clash
+    if (typeof api.getProxyPool !== 'function') throw new Error('桥未提供代理池方法')
+    const items = (await api.getProxyPool())?.items
+    // 桥异常时可能 resolve 出 undefined 而不是 reject：不校验会伪装成「池里一条都没有」
+    if (!Array.isArray(items)) throw new Error('代理池响应异常')
+    selection.pool = items
   } catch (error) {
-    selection.clash = null
-    selection.clashError = errorMessage(error)
+    selection.pool = []
+    selection.poolError = errorMessage(error)
   }
   return selection
 }
 
 /**
- * 切换线路：选中即保存（与账号页代理列同一交互），值只有两种 ——
- * 空串 = 直连（proxy 传 null），否则是 Clash 出口 uid。
+ * 切换线路：选中即保存（与账号页代理列同一交互）。下拉的选项只有两类值 ——
+ *   空串        = 直连（proxy 传 null）
+ *   `pool:<id>` = 引用「网络代理」页的池条目
+ * 补位项（PROXY_OTHER_CURRENT，存量里直接引用 Clash 出口或自定义形状的记录）
+ * 不是值，选它等于「维持现状」，直接忽略 —— 那种记录仍照原样转发，
+ * 想改就在这个下拉里选一条池条目或切回直连。
  *
- * 失败在内部 toast 并返回 null（下拉是受控的，界面自动回原值）；
- * 占位项不是值，选它等于「维持现状」，直接忽略。
+ * 失败在内部 toast 并返回 null（下拉是受控的，界面自动回原值）。
  */
 export async function saveProxy(value: string): Promise<{ choice: UpdateProxyChoice; saved: boolean } | null> {
   if (value === PROXY_OTHER_CURRENT) return null
   const api = shared().workbuddyDesktop
   if (!api?.setUpdateProxy) return null
-  const proxy = value ? { source: 'clash', listenerUid: value } : null
+  const proxy = value === ''
+    ? null
+    : { source: 'pool', proxyId: value.slice(POOL_VALUE_PREFIX.length) }
   try {
     const result = await api.setUpdateProxy({ proxy })
     // 以后端回报的描述形态为准（含解析失败时的 error），不从本地猜
@@ -280,9 +297,11 @@ export async function saveProxy(value: string): Promise<{ choice: UpdateProxyCho
 /**
  * 代理下拉的选项与当前值。
  *
- * 逐格照账号页 ProxyCell 的口径：直连 + 各 Clash 出口（`节点名 :端口`），
- * Clash 不可用 / 列表读取失败各给一条置灰的说明项；「当前出口已不在列表」
- * 补一条占位项（后端解析它的 label），别让已存的值在下拉里凭空消失。
+ * 选项**只有**直连 + 代理池条目（`pool:<id>`）—— 出口统一在「网络代理」页
+ * 维护（配 / 命名 / 测试 / 同步 Clash），这里只做「选哪一条」，理由见
+ * `ProxySelection.pool` 的注释。池为空 / 读取失败各给一条置灰的说明项；
+ * 「当前值不在池里」（存量里直接引用 Clash 出口或自定义形状的记录）补一条
+ * 占位项（label 是后端解析出来的），别让已存的值在下拉里凭空消失。
  */
 export function buildProxyPick(selection: ProxySelection): {
   current: string
@@ -295,34 +314,40 @@ export function buildProxyPick(selection: ProxySelection): {
   const source = proxy?.config?.source || proxy?.source
   const label = proxy?.label || (source === 'custom' ? '自定义代理' : '已设置')
   const broken = Boolean(proxy?.error)
-  const options = selection.clash?.options
-  const exits = Array.isArray(options) ? options : []
+  const poolItems = Array.isArray(selection.pool) ? selection.pool : []
 
-  // 当前值：「有线路但取不到 Clash 出口 uid」（custom / 坏形状）落到占位项
+  // 当前值映射回下拉的值域：池条目用 `pool:<id>`、其余（Clash 直引 / custom /
+  // 坏形状）落到占位项 —— 绝不能回落成「直连」
   let current = ''
-  if (source === 'clash' && proxy?.config?.listenerUid) current = String(proxy.config.listenerUid)
+  if (source === 'pool' && proxy?.config?.proxyId) current = `${POOL_VALUE_PREFIX}${proxy.config.proxyId}`
   else if (proxy) current = PROXY_OTHER_CURRENT
 
-  const staleExit = source === 'clash' && Boolean(current) && !exits.some(exit => String(exit.uid) === current)
-
   const items: Array<{ value: string; label: string; disabled?: boolean }> = [{ value: '', label: '直连' }]
-  for (const exit of exits) items.push({ value: String(exit.uid), label: `${exit.name} :${exit.port}` })
-  if (selection.clash && selection.clash.available === false) {
+  for (const item of poolItems) {
+    // 「名字（协议 主机:端口）」—— 与账号页代理列、账号弹窗的代理表单同一格式
+    items.push({ value: `${POOL_VALUE_PREFIX}${item.id}`, label: poolItemLabel(item) })
+  }
+  if (selection.pool === null) {
+    // 还没读到（弹窗刚打开、请求在途）：给一句「读取中」而不是
+    // 「还没有代理」—— 后者会让用户以为池是空的
+    items.push({ value: '__hint_pool__', label: '正在读取代理列表…', disabled: true })
+  } else if (!poolItems.length) {
     items.push({
-      value: '__hint__',
-      label: selection.clash.error ? 'Clash 配置不可用' : '未检测到 Clash Verge',
+      value: '__hint_pool__',
+      label: selection.poolError ? '代理列表读取失败' : '还没有代理（去「网络代理」页添加）',
       disabled: true,
     })
-  } else if (selection.clash && !exits.length) {
-    items.push({ value: '__hint__', label: '没有可用的 Clash 出口', disabled: true })
-  } else if (!selection.clash && selection.clashError) {
-    items.push({ value: '__hint__', label: 'Clash 出口列表读取失败', disabled: true })
   }
-  if (source === 'clash') {
-    if (staleExit) items.push({ value: current, label: `${label}${broken ? '（不可用）' : '（不在列表）'}` })
-  } else if (current === PROXY_OTHER_CURRENT) {
-    const prefix = source === 'custom' ? '自定义：' : ''
+  if (current === PROXY_OTHER_CURRENT) {
+    // 存量记录：直接引用 Clash 出口（`listenerUid`）或自定义形状。这几种值
+    // 现在没有对应的可选项（出口统一走池），但仍要显示出来 —— 它们照原样
+    // 转发，用户想改就在这里选一条池条目或切回直连
+    const prefix = source === 'clash' ? 'Clash 出口：' : source === 'custom' ? '自定义：' : ''
     items.push({ value: PROXY_OTHER_CURRENT, label: `${prefix}${label}${broken ? '（不可用）' : ''}` })
+  } else if (source === 'pool' && !poolItems.some(item => `${POOL_VALUE_PREFIX}${item.id}` === current)) {
+    // 池引用但条目已不在池里（被删 / Clash 侧删了出口）：补位显示当前值，
+    // 后端解析失败的原因在 title 里
+    items.push({ value: current, label: `${label}${broken ? '（不可用）' : ''}` })
   }
   return {
     current,
@@ -330,7 +355,7 @@ export function buildProxyPick(selection: ProxySelection): {
     selected: items.find(item => item.value === current),
     broken,
     title: broken
-      ? `当前线路不可用：${proxy?.error}；请重新选择出口或切回直连`
-      : `检查更新与下载安装包走哪条线路（当前：${proxy ? label : '直连'}）；选择即保存。直连失败时会自动借 Clash 混合端口重试一次；选定指定出口后只走该出口`,
+      ? `当前线路不可用：${proxy?.error}；请重新选择代理或切回直连`
+      : `检查更新与下载安装包走哪条线路（当前：${proxy ? label : '直连'}）；选择即保存。选项来自「网络代理」页；直连失败时会自动借 Clash 混合端口重试一次，选定指定代理后只走它`,
   }
 }

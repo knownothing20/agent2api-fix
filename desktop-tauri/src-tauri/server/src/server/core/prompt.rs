@@ -128,15 +128,21 @@ impl PromptMode {
     }
 }
 
-/// 提示词文本的来源（界面与日志要能回答「这次用的到底是哪一份」）
+/// 提示词文本的来源（界面与日志要能回答「这次用的到底是哪一份」）。
+///
+/// 优先级也是这个顺序的**解释**：界面里编辑的那份 > 提示词文件 > 内置默认
+/// （见 `config::resolve_choice`）。三档都有各自的用户故事：图省事直接改界面、
+/// 已有自己维护的提示词文件、什么都不配用内置。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptSource {
     /// 没有提示词文本（`passthrough` 模式）
     None,
-    /// 内置默认（`custom` / `append` 且未指定文件）
+    /// 内置默认（`custom` / `append` 且既没编辑正文、也没指定文件）
     BuiltIn,
     /// 用户指定的提示词文件
     File,
+    /// 用户在设置页里**直接编辑**的正文（优先级最高）
+    Inline,
 }
 
 impl PromptSource {
@@ -145,6 +151,7 @@ impl PromptSource {
             PromptSource::None => "none",
             PromptSource::BuiltIn => "builtin",
             PromptSource::File => "file",
+            PromptSource::Inline => "inline",
         }
     }
 
@@ -153,18 +160,140 @@ impl PromptSource {
             PromptSource::None => "不透传（passthrough）",
             PromptSource::BuiltIn => "内置默认提示词",
             PromptSource::File => "提示词文件",
+            PromptSource::Inline => "界面里编辑的提示词",
         }
     }
 }
 
-/// 一次请求的提示词决定（模式 + 文本的**借用**视图）。
+/// 网关自带提示词的**三段正文**：身份句 / 稳定段 / 动态段。
+///
+/// ── 为什么是三段而不是一整段 ─────────────────────────────────
+/// 上游按**结构**校验（2026-09-28 实测：三段各自成块 200、三段并成一段
+/// 405/3012，见 `providers::zcode::OFFICIAL_PROMPT_NOTE`），所以「编辑这段
+/// 提示词」在界面上就是**分别编辑三段**：合成一整段会让用户以为在编辑同一件事，
+/// 而那样编辑出来的结果上游根本不收。
+///
+/// 同一类型既表示**官方原文**（`zcode::plan` 从 `zcode_system.json` 造，
+/// 含 `{cwd}` 这类占位符），也表示**用户改过的正文**（配置里存的那份）——
+/// 两者形状一致，取值时逐段合并（[`Self::or`]），不必再造一套中间类型。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GatewayBlocks {
+    /// 第一段：身份句（官方 `You are ZCode, an interactive coding agent`）
+    pub identity: String,
+    /// 第二段：稳定段（工具用法、项目规范那一大段）
+    pub stable: String,
+    /// 第三段：动态段（沟通方式 / 上下文管理 + Environment）
+    pub dynamic: String,
+}
+
+impl GatewayBlocks {
+    /// 三个段名：就是配置与本模块的字段名，集中一处，免得各调用点手写字符串拼错
+    pub const FIELDS: [&'static str; 3] = ["identity", "stable", "dynamic"];
+
+    /// 取一段（段名见 [`Self::FIELDS`]；认不出的段名给空串，与「这段没配」同义）
+    pub fn get(&self, field: &str) -> &str {
+        match field {
+            "identity" => &self.identity,
+            "stable" => &self.stable,
+            "dynamic" => &self.dynamic,
+            _ => "",
+        }
+    }
+
+    /// 写一段（段名见 [`Self::FIELDS`]）
+    pub fn set(&mut self, field: &str, value: String) {
+        match field {
+            "identity" => self.identity = value,
+            "stable" => self.stable = value,
+            "dynamic" => self.dynamic = value,
+            _ => {}
+        }
+    }
+
+    /// 三段全空（= 没有覆盖，配置里不该留这么一个空壳）
+    pub fn is_empty(&self) -> bool {
+        Self::FIELDS.iter().all(|field| self.get(field).trim().is_empty())
+    }
+
+    /// 逐段合并：自己这一段是空白就用 `fallback` 的那一段。
+    ///
+    /// 「用户只改了一段」是常态（比如只把身份句改成自己的名字），所以合并必须是
+    /// 逐段的 —— 整份覆盖会让用户为了改一行而被迫把官方那几千字符也抄一遍。
+    pub fn or(&self, fallback: &GatewayBlocks) -> GatewayBlocks {
+        let pick = |field: &str| {
+            let mine = self.get(field);
+            if mine.trim().is_empty() {
+                fallback.get(field).to_string()
+            } else {
+                mine.to_string()
+            }
+        };
+        GatewayBlocks {
+            identity: pick("identity"),
+            stable: pick("stable"),
+            dynamic: pick("dynamic"),
+        }
+    }
+}
+
+/// 一次请求的提示词决定（全局默认 + 各家覆盖的**借用**视图）。
 ///
 /// 借用而不是克隆：本结构由 `upstream::forward` 从配置快照里取一次，随
 /// `ProviderContext` 借给整条转发链 —— 提示词可能有几百行，逐请求克隆一份
 /// 纯属浪费（`config::current()` 已经克隆了整份配置，那份克隆在本函数栈帧里
 /// 活得比 ctx 久，所以这里借得到）。
+///
+/// ── 为什么按家分派 ──────────────────────────────────────────
+/// 「用哪份提示词」是**按上游**不同的问题（见 `config::KEY_PROMPT_PROVIDERS`），
+/// 而模式语义（透传 / 替换 / 追加）是同一条加工链（[`PromptChoice::apply`]）——
+/// 所以这里只做「取哪一份」的分派，加工一个字节都不分叉。`provider_id` 在
+/// `payload::send_body` 就有，那正是「某一家即将发送之前」的时刻。
 #[derive(Clone, Copy, Debug)]
 pub struct PromptPlan<'a> {
+    /// 未单独配置的家用的那一份（对应全局的 `promptMode` / `promptFile`）
+    pub default: PromptChoice<'a>,
+    /// 逐家覆盖（借自配置快照；空表 = 所有家都用 default）
+    providers: &'a std::collections::BTreeMap<String, crate::server::config::ProviderPrompt>,
+}
+
+impl<'a> PromptPlan<'a> {
+    /// 组装一次请求的提示词决定（**唯一构造点**：`config::RuntimeConfig::prompt_plan`）。
+    ///
+    /// 逐家覆盖不对外暴露字段：它只有「按 id 取一份」这一个合法用法（见
+    /// [`Self::for_provider`]），让调用方拿到整张表迟早会有人自己写一遍查找。
+    ///
+    /// 「网关自带提示词」的开关**不在这里**：它由 `config::gateway_prompt_enabled`
+    /// 直接读（那是一条热路径上的轻量读取，见那里的说明）。两个入口读同一张表，
+    /// 各自不重复实现「缺省 = 装」的默认值，就不会有一处漏改。
+    pub fn new(
+        default: PromptChoice<'a>,
+        providers: &'a std::collections::BTreeMap<String, crate::server::config::ProviderPrompt>,
+    ) -> Self {
+        Self { default, providers }
+    }
+
+    /// 这一家实际要用的那一份（没单独配就走 `default`）。
+    ///
+    /// 返回**借用**视图而不是值：逐家覆盖里带着几百行文本，克隆一次就等于把
+    /// 「借用视图」这层设计白做了。
+    pub fn for_provider(&self, provider_id: &str) -> PromptChoice<'_> {
+        match self.providers.get(provider_id) {
+            Some(entry) => PromptChoice {
+                mode: entry.mode,
+                text: &entry.text,
+                source: entry.source,
+            },
+            None => self.default,
+        }
+    }
+}
+
+/// 单一提供商实际生效的提示词决定（模式 + 文本的借用视图）。
+///
+/// 全局默认与逐家覆盖都归一成这个形状之后，加工链（[`Self::apply`]、降级判定）
+/// 只有一份实现 ——「全局这么做、某一家那么做」这种分叉从类型上就写不出来。
+#[derive(Clone, Copy, Debug)]
+pub struct PromptChoice<'a> {
     pub mode: PromptMode,
     /// `custom` / `append` 要用的提示词文本（`passthrough` 下为空串）
     pub text: &'a str,
@@ -173,7 +302,7 @@ pub struct PromptPlan<'a> {
     pub source: PromptSource,
 }
 
-impl<'a> PromptPlan<'a> {
+impl<'a> PromptChoice<'a> {
     /// 降级期该用哪份文本：可降级的模式用中性提示词，否则用模式自己的文本
     pub fn text_for(&self, degraded: bool) -> &str {
         if degraded && self.mode.degradable() {

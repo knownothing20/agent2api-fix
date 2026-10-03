@@ -135,6 +135,45 @@ pub struct ChatRequestPlan {
     pub headers: Vec<(String, String)>,
     /// 已按 provider 规则改写过的请求体
     pub body: Value,
+    /// 上游**响应**说的是哪套协议（默认 [`UpstreamResponse::Chat`]）
+    pub response: UpstreamResponse,
+}
+
+impl ChatRequestPlan {
+    /// 标准形态：上游说 OpenAI Chat（请求体与响应帧都是 chat 形态）。
+    ///
+    /// 七家内置上游里的六家（以及自定义家）都是这一种；只有 ZCode 的活动套餐
+    /// 通道说 Anthropic（见 [`UpstreamResponse::Anthropic`]）。写成构造器而不是
+    /// 让各家手写字段，是为了「响应协议」这一个新字段不给七处调用点各留一次
+    /// 写错的机会。
+    pub fn chat(url: String, headers: Vec<(String, String)>, body: Value) -> Self {
+        Self {
+            url,
+            headers,
+            body,
+            response: UpstreamResponse::Chat,
+        }
+    }
+}
+
+/// 上游响应的协议（**请求体与响应必须同源**：这套标记由适配器在构造请求时
+/// 一并给出，编排层只按它选翻译层，不做二次推断）。
+///
+/// ── 为什么需要它 ────────────────────────────────────────────
+/// 本项目的历史前提是「所有上游都说 Chat」（见 `protocol` 的模块头），于是
+/// 无状态转发路径的下行帧一律按 chat SSE 处理。ZCode 的活动套餐通道打破了这个
+/// 前提：它的推理端点是 Anthropic Messages（`stream:true` 时吐 Anthropic 事件
+/// 流）。与其为一家新写一条「适配器自己转发」的路（那会丢掉账号轮换、限额冷却、
+/// 退避重试、usage 与取消处理，见 `upstream::provider_loop` 的有状态路径说明），
+/// 不如把「响应要说另一种协议」做成计划里的一个字段 —— 编排层只多一次分支，
+/// 其余全都共用。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum UpstreamResponse {
+    /// OpenAI Chat SSE（默认）
+    #[default]
+    Chat,
+    /// Anthropic Messages SSE：下发前折回标准 chat SSE（见 `upstream::translate`）
+    Anthropic,
 }
 
 /// 上游错误分类（架构文档 §4.2；三个动作的语义见模块头）。

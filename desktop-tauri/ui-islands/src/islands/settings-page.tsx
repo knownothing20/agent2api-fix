@@ -45,10 +45,12 @@ import {
   readThemeMode,
   readZoomPercent,
   shared,
+  type GatewayBlocks,
   type NumberField,
   type ThemeMode,
 } from './settings-model'
 import {
+  addProviderPrompt,
   addRetryCode,
   applyUnits,
   clearDegrade,
@@ -65,6 +67,7 @@ import {
   refreshSanitize,
   refreshStorage,
   refreshTimeouts,
+  removeProviderPrompt,
   removeRetryCode,
   renderDebug,
   renderPrompt,
@@ -79,6 +82,9 @@ import {
   saveDebug,
   savePromptFile,
   savePromptMode,
+  saveProviderGatewayPrompt,
+  saveProviderPromptFile,
+  saveProviderPromptMode,
   saveQueueField,
   saveRetentionField,
   saveRetryField,
@@ -94,9 +100,17 @@ import {
   type LoadStatus,
   type NumericState,
   type PromptState,
+  type ProviderPromptOption,
+  type ProviderPromptState,
   type SettingsSnapshot,
   type StorageState,
 } from './settings-state'
+import {
+  GatewayTextButton,
+  ProviderPromptTextButton,
+  PromptTextButton,
+  gatewayEditedText,
+} from './settings-prompt-editor'
 
 /**
  * Agent2API · 设置页（React 岛）。
@@ -571,11 +585,7 @@ function PromptFileRow({ prompt, locked, busy }: {
 function promptStateText(prompt: PromptState): string {
   if (prompt.status === 'loading') return STATES.appLoading
   if (prompt.status === 'unavailable') return STATES.promptUnavailable
-  const source = prompt.source === 'file'
-    ? '提示词文件'
-    : prompt.source === 'builtin'
-      ? '内置默认提示词'
-      : ''
+  const source = promptSourceText(prompt.source)
   const parts: string[] = []
   if (prompt.mode === 'passthrough') {
     parts.push('客户端 system 原样出站（只靠指纹脱敏改写模板句）。')
@@ -589,11 +599,272 @@ function promptStateText(prompt: PromptState): string {
   return parts.join('')
 }
 
+/** 正文来源的中文说法（三处状态行共用；'' = 没有正文可讲） */
+function promptSourceText(source: string): string {
+  if (source === 'inline') return '界面里编辑的正文'
+  if (source === 'file') return '提示词文件'
+  if (source === 'builtin') return '内置默认提示词'
+  return ''
+}
+
 /** 降级行的说明：只在真的处于降级期时出现（平时它是一行与用户无关的状态噪音） */
 function degradeHint(prompt: PromptState): string {
   return '已自动切换到最小中性提示词（撞了上游内容拦截，多半是 system 指纹误报），'
     + `到 ${prompt.degradeUntilText || STATES.degradeUntilFallback} 自动解除。`
     + '期间本模式自己的提示词不会发出；把提示词改好后可以立即解除。'
+}
+
+/**
+ * 提示词文件输入框（草稿机制与上面那个全局的同款，按 id 提交到对应那一家）
+ */
+function ProviderFileRow({ item, label, locked, busy }: {
+  item: ProviderPromptState
+  label: string
+  locked: boolean
+  busy: boolean
+}) {
+  const [draft, setDraft] = React.useState<string | null>(null)
+
+  async function commit(): Promise<void> {
+    const raw = draft
+    if (raw === null) return
+    try {
+      // 只在与「显示值」真的不同时才提交：这一行可能是「跟随全局」的（显示的是
+      // 全局那两份），点进去再点出来不该凭空生成一条覆盖
+      if (raw !== item.file) await saveProviderPromptFile(item, raw)
+    } finally { setDraft(null) }
+  }
+
+  return (
+    <span className='prompt-input'>
+      <Input
+        id={`settings-prompt-file-${item.id}`}
+        type='text'
+        placeholder='留空 = 用内置默认提示词'
+        aria-label={`${label} 提示词文件`}
+        value={draft !== null ? draft : item.file}
+        disabled={locked || busy}
+        onChange={event => setDraft(event.target.value)}
+        onFocus={() => setDraft(item.file)}
+        onBlur={() => void commit()}
+        onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+      />
+    </span>
+  )
+}
+
+/** 一家的状态行：模式说明 + 来源与行数 + 文件读取告警（与全局那行同一套措辞） */
+function providerStateText(item: ProviderPromptState, configured: boolean): string {
+  // 没单独配过的家（只在「有网关自带提示词」时才会被列出来）走全局那份 ——
+  // 不说这一句的话，用户会以为这一行显示的就是「这家的设置」
+  if (!configured) return `未单独配置：模式、提示词文件与正文都跟随上面的全局配置（当前「${PROMPT_MODES.find(option => option.value === item.mode)?.toastLabel ?? item.mode}」）。`
+  if (item.mode === 'passthrough') return '客户端 system 原样出站。'
+  const head = `${item.mode === 'custom' ? '替换' : '追加'}生效：上游收到的 system 来自${promptSourceText(item.source)}`
+    + `${item.lines ? `（${item.lines} 行）` : ''}。`
+  return item.fileError ? `${head} ⚠️ ${item.fileError}` : head
+}
+
+/**
+ * 一家的**网关自带提示词**那一行（只有 registry 里标了 `gatewayNote` 的家才有）。
+ *
+ * 这段文本不来自客户端、也不来自提示词文件，是网关自己装上去的（ZCode 活动套餐
+ * 通道的官方三段身份块）。它默认开、可以关，**也可以改正文** —— 关掉后还能不能跑
+ * 取决于上游当前的校验口径，所以关掉时把这一行**换成警示语气**（`tone` 为非 ok
+ * 的徽章 + 粗体），而不是留一个看起来无害的灰开关。
+ */
+function ProviderGatewayRow({ item, option, over, locked, busy }: {
+  item: ProviderPromptState
+  option: ProviderPromptOption
+  /** 这一家已存的正文覆盖（只含改过的段；缺省 = 全是官方原文） */
+  over: GatewayBlocks | undefined
+  locked: boolean
+  busy: boolean
+}) {
+  const on = item.gateway
+  const chars = option.gatewayChars
+  const size = chars ? `约 ${chars.toLocaleString('zh-CN')} 字符` : '一段内置装配'
+  const edited = gatewayEditedText(over)
+  return (
+    <div className='retention-row'>
+      <label className='prompt-gateway-label'>网关自带</label>
+      <span className='prompt-input'>
+        <SwitchRow
+          id={`settings-prompt-gateway-${item.id}`}
+          label={`装上${size}的官方身份提示词`}
+          checked={on}
+          disabled={locked || busy}
+          onCheckedChange={next => void saveProviderGatewayPrompt(item.id, next)}
+        />
+        {/* 正文编辑与开关并排：两件事（装不装 / 长什么样）在同一个可视范围里，
+            但各走各的接口字段，改一个不会动另一个（见 settings-state 两个动作） */}
+        <GatewayTextButton item={item} option={option} over={over} locked={locked} busy={busy} />
+      </span>
+      <div className={on ? 'hint' : 'hint prompt-gateway-off'}>
+        {on ? option.gatewayNote : `已关闭。${option.gatewayNote}`}
+        {edited ? ` 正文已改：${edited}（其余段用官方原文）。` : ''}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 「按提供商配置」区块：列**两类**家 ——
+ *
+ *   1. 注册表里带 `gatewayNote` 的家（有网关自带提示词可拨开关）——**默认就列**，
+ *      不需要先去「添加提供商…」：一个开关藏在添加动作后面等于没有；
+ *   2. 用户单独配过模式 / 文件的家（`promptProviders` 里有的）。
+ *
+ * 第 1 类即使没有 `promptProviders` 项也要出现在列表里，所以这里合成一行
+ * （模式 / 文件取全局默认值：`prompt` 自己那两份）。用户一动这个模式 / 文件，
+ * 后端就会为它落一条显式覆盖 —— 这正是「从默认值开始配」的自然路径。
+ */
+function ProviderPromptRows({ prompt, locked, busy }: {
+  prompt: PromptState
+  locked: boolean
+  busy: boolean
+}) {
+  const options = prompt.options
+  const configured = new Map(prompt.providers.map(item => [item.id, item]))
+  // 顺序：先按注册表顺序列出带开关的家，再补齐用户配过、但注册表里没标开关的家
+  // （自定义提供商不会出现在 options 里，它们只能靠 promptProviders 出现）
+  const rows: ProviderPromptState[] = []
+  for (const option of options) {
+    if (!option.gatewayNote) continue
+    rows.push(configured.get(option.id) ?? {
+      id: option.id,
+      // 没单独配过的行显示**生效值**（= 全局那份）：界面上一眼看不出「这行是不是
+      // 自己配过」，但显示的值必须是真的，否则「跟随默认」这句话就是空话
+      mode: prompt.mode,
+      // 显示**生效值**（= 全局那份）：这一行的模式 / 文件 / 正文都跟随全局，
+      // 输入框与编辑器里给出真实的那份；改动任何一个控件时会把当前显示的这几个值
+      // 一起落成这一家自己的覆盖（见 saveProviderPromptMode 的说明），
+      // 所以「只改模式」不会把全局的提示词文件弄丢
+      file: prompt.file,
+      text: prompt.text,
+      source: prompt.source,
+      lines: prompt.lines,
+      fileError: prompt.fileError,
+      gateway: prompt.gateway[option.id] ?? true,
+      configured: false,
+    })
+  }
+  for (const item of prompt.providers) {
+    if (rows.some(row => row.id === item.id)) continue
+    rows.push({ ...item, gateway: prompt.gateway[item.id] ?? true, configured: true })
+  }
+  const listed = new Set(rows.map(row => row.id))
+  const candidates = options.filter(item => !item.gatewayNote && !listed.has(item.id))
+  const [pending, setPending] = React.useState('')
+  const labelOf = (id: string) => options.find(item => item.id === id)?.label || id
+  const optionOf = (id: string) => options.find(item => item.id === id)
+  const noteOf = (id: string) => optionOf(id)?.gatewayNote || ''
+
+  return (
+    <>
+      {rows.map(item => {
+        const label = labelOf(item.id)
+        const modeLabel = PROMPT_MODES.find(option => option.value === item.mode)?.optionLabel ?? item.mode
+        const note = noteOf(item.id)
+        const option = optionOf(item.id)
+        return (
+          <React.Fragment key={item.id}>
+            <div className='retention-row'>
+              <label htmlFor={`settings-prompt-mode-${item.id}`}>{label}</label>
+              <span className='prompt-input'>
+                <Select
+                  value={item.mode}
+                  onValueChange={next => {
+                    // 同上：null = 没选（清空 / 取消），不是一个叫 "null" 的模式。
+                    // 模式与文件一起提交：这一行可能还在「跟随全局」，只写模式会让
+                    // 它的文件从屏幕上的路径变成内置默认（见 saveProviderPromptMode）
+                    if (next != null && String(next)) {
+                      void saveProviderPromptMode(item, String(next))
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    id={`settings-prompt-mode-${item.id}`}
+                    className='w-[240px]'
+                    disabled={locked || busy}
+                    aria-label={`${label} 的提示词模式`}
+                  >
+                    <SelectValue>{modeLabel}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROMPT_MODES.map(option => (
+                      <SelectItem key={option.value} value={option.value}>{option.optionLabel}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <ProviderFileRow item={item} label={label} locked={locked} busy={busy} />
+                <ProviderPromptTextButton item={item} label={label} locked={locked} busy={busy} />
+                {/* 「跟随默认」只在**单独配过**的行上出现：没配过的行点了它也删不掉
+                    任何东西（后端此时没有这一项），留一颗无效按钮只会让人以为点坏了 */}
+                {item.configured ? (
+                  <Button
+                    variant='outline'
+                    disabled={locked || busy}
+                    onClick={() => void removeProviderPrompt(item.id)}
+                  >
+                    跟随默认
+                  </Button>
+                ) : null}
+              </span>
+              <div className='hint'>{providerStateText(item, item.configured)}</div>
+            </div>
+            {/* 网关自带那段（只有 registry 标了 note 的家有）——单独一行开关，
+                与上面那行不是一回事：那个管客户端 system、这个管网关自己装什么 */}
+            {option && note ? (
+              <ProviderGatewayRow
+                item={item}
+                option={option}
+                over={prompt.gatewayText[item.id]}
+                locked={locked}
+                busy={busy}
+              />
+            ) : null}
+          </React.Fragment>
+        )
+      })}
+
+      <div className='retention-row'>
+        <label htmlFor='settings-prompt-provider-add'>添加提供商</label>
+        <span className='prompt-input'>
+          {/* 组件的 Select 不支持占位（必须有一个 value），所以第一个选项就是
+              「选择要配置的提供商」这个动作本身；选完立刻重置回它。
+              `next` 可能是 null（Base UI 在「清空 / 取消选择」时回调的就是它，
+              见 @base-ui 的 `onValueChange` 类型）：照 `String(next)` 走会把它
+              变成字符串 "null"，而后端会如实回一句「未知的提供商 id：null」——
+              一次「没选」不该变成一次失败的保存。 */}
+          <Select
+            value={pending}
+            onValueChange={next => {
+              setPending('')
+              const id = next == null ? '' : String(next)
+              if (id) void addProviderPrompt(id)
+            }}
+          >
+            <SelectTrigger
+              id='settings-prompt-provider-add'
+              className='w-[240px]'
+              disabled={locked || busy || candidates.length === 0}
+              aria-label='添加要单独配置的提供商'
+            >
+              <SelectValue>
+                {pending ? labelOf(pending) : (candidates.length ? '添加提供商…' : '全部已配置')}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {candidates.map(item => (
+                <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </span>
+        <div className='hint'>{NOTES.promptProviders}</div>
+      </div>
+    </>
+  )
 }
 
 function PromptPanel({ snap }: { snap: SettingsSnapshot }) {
@@ -616,6 +887,13 @@ function PromptPanel({ snap }: { snap: SettingsSnapshot }) {
       />
       <div className='panel-body'>
         <div className='retention-list'>
+          {/* 两个分组条把「默认」与「某家的例外」分开：上面那几行是所有未单独配置的
+              家共用的默认值，下面那张表是逐家的例外 —— 不分开时它们是一串同构的行，
+              用户读不出哪几行管全部、哪几行只管一家（见 page-settings.css 的 .prompt-group）。 */}
+          <div className='prompt-group'>
+            全局配置<span className='note'>所有未单独配置的提供商都用这一份</span>
+          </div>
+
           <div className='retention-row'>
             <label htmlFor='settings-prompt-mode'>模式</label>
             <span className='prompt-input'>
@@ -623,7 +901,11 @@ function PromptPanel({ snap }: { snap: SettingsSnapshot }) {
                   Select：触发器是按钮，page-settings.css 的 `.prompt-input select{width:240px}`
                   不再命中，宽度得用工具类补回（否则触发器按内容宽度缩成一团）。
                   展示文案显式给 SelectValue，不依赖 value 自动显示。 */}
-              <Select value={prompt.mode} onValueChange={next => void savePromptMode(String(next))}>
+              <Select
+                value={prompt.mode}
+                // 同「添加提供商」那条：null = 没选，不当作一个模式名（见那里的说明）
+                onValueChange={next => { if (next != null && String(next)) void savePromptMode(String(next)) }}
+              >
                 <SelectTrigger
                   id='settings-prompt-mode'
                   className='w-[240px]'
@@ -643,6 +925,29 @@ function PromptPanel({ snap }: { snap: SettingsSnapshot }) {
           </div>
 
           <PromptFileRow prompt={prompt} locked={locked} busy={busy} />
+
+          {/* 提示词正文：与文件是同一件事的两个来源（正文优先），所以紧挨着文件那一行。
+              行里只放按钮与状态 —— 几百行文本塞进行内输入框既看不清也没法编辑 */}
+          <div className='retention-row'>
+            <label htmlFor='btn-prompt-edit-body'>提示词正文</label>
+            <span className='prompt-input'>
+              <PromptTextButton prompt={prompt} locked={locked} busy={busy} />
+            </span>
+            <div className='hint'>
+              {NOTES.promptText}
+              {prompt.source === 'inline'
+                ? `（当前生效的就是这一份，${prompt.lines} 行）`
+                : prompt.text.trim()
+                  ? `（已存一份正文，${prompt.lines} 行；切成「替换 / 追加」后生效）`
+                  : ''}
+            </div>
+          </div>
+
+          <div className='prompt-group'>
+            按提供商配置<span className='note'>只列单独配置过的家，其余沿用上面的全局配置</span>
+          </div>
+
+          <ProviderPromptRows prompt={prompt} locked={locked} busy={busy} />
 
           {/* 降级行只在真的处于降级期时渲染（旧实现是切 hidden） */}
           {prompt.status === 'ready' && prompt.degradeActive ? (

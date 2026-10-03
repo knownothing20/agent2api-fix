@@ -12,7 +12,7 @@
 //! ```
 //!
 //! ── 为什么 zcode 平面两地**相同**、推理平面两地不同 ─────────
-//! 登录与「周末套餐」领取都发生在 ZCode 自己的服务端（`zcode.z.ai`），
+//! 登录、领取与余额查询都发生在 ZCode 自己的服务端（`zcode.z.ai`），
 //! 两地客户端用的是**同一个** `zcode.z.ai`（OAuth 的 `provider` 字段区分
 //! `zai` / `bigmodel`，见 `oauth.rs`）。而真正跑推理的网关是各自开放平台的
 //! 编码套餐端点：国内 `open.bigmodel.cn`、国际 `api.z.ai`。

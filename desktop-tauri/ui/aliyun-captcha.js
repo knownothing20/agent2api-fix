@@ -4,8 +4,9 @@
    这段代码最早是 AutoClaw 国际版 OAuth 登录的私有实现：那家的网页登录前面
    强制多一道风控验证码，必须先拖完滑块拿到 `verifyParam` 才能换授权地址。
 
-   ZCode 的「周末套餐领取」同样要过这道验证码（上游的领取接口强制要求
-   `X-Aliyun-Captcha-Verify-Param`），而它**与 AutoClaw 的用法只有一半相同**：
+   ZCode 的「领套餐」同样要过这道验证码（上游的领取接口要
+   `X-Aliyun-Captcha-Verify-Param`；要不要由上游那份风控配置说了算 ——
+   `enabled: false` 的那一刻前端**不该**弹滑块），而它**与 AutoClaw 的用法只有一半相同**：
 
      · AutoClaw：解验证码 → 用 verifyParam 换授权地址 → 开窗口等回调
      · ZCode：   解验证码 → 用 verifyParam 直接去领取（到此为止）
@@ -13,6 +14,14 @@
    留在原处的话，第二家只能照抄一份。这段代码的坑都在细节里（指纹要稳定、
    容器要清理、代际号要作废、取消要收尾、SDK 的配置必须在加载前设好），
    抄一份就是两份会各自漂移的坑。因此抽到这里，两家都调它。
+
+   ── 第三个调用方：静默铸造（`mintTraceless`）─────────────────
+   ZCode 的**活动套餐转发**通道（`providers::zcode::plan`）要求每条请求带一个
+   阿里云验证码令牌：上游对缺令牌的请求一律回 3007。令牌要**当次铸**（一次性、
+   两分钟寿命），而转发是后台发生的（用户没点任何按钮）—— 所以这里补一个
+   **无痕验证**入口：`startTracelessVerification()` 不弹滑块、不要用户操作，
+   SDK 自己跑完风控流程把串给回调（与参考实现在 happy-dom 里走的是同一个 API）。
+   调用方是 `ui/zcode-captcha-pool.js`（池子守卫），它把铸好的串推给网关。
 
    ── 调用契约：`request` 由调用方注入，本模块不认识任何业务字段 ──
    `solve(config, request)` 里的 `request(verifyParam)` 是**调用方的事**：
@@ -62,6 +71,8 @@
   const SCRIPT_LOAD_TIMEOUT_MS = 40000;
   const INIT_TIMEOUT_MS = 40000;
   const VERIFY_TIMEOUT_MS = 120000;
+  /** 无痕铸造的超时（见 mintTraceless：卡住就重铸，不留着等） */
+  const MINT_TIMEOUT_MS = 20000;
   /** 初始化后至少等 2.1 秒再点按钮（客户端实测：SDK 预热没完成时点击无效） */
   const MINIMUM_WARMUP_MS = 2100;
   /** 初始化结果最多复用 19 分钟（超过则重建，避免实例内部状态过期） */
@@ -431,6 +442,268 @@
     });
   }
 
+  /* ─── 静默铸造（活动套餐转发通道的令牌来源）─────────────────── */
+
+  /**
+   * 铸造用的容器 id **每次铸造都换一套**（与滑块流程的也分开）。
+   *
+   * 为什么不复用同一对 id：实测「destroy 之后在同一个容器上重新
+   * `initAliyunCaptcha`」会卡在初始化（20 秒超时），而换一套新的容器就正常 ——
+   * SDK 在容器上留了内部状态。反正铸造是一次一实例（见 `deliverMintResult`），
+   * 每次配一套新容器最省心。
+   */
+  let mintSeq = 0;
+  const mintIds = () => {
+    mintSeq += 1;
+    return {
+      elementId: `zcode-mint-captcha-element-${mintSeq}`,
+      buttonId: `zcode-mint-captcha-trigger-${mintSeq}`,
+    };
+  };
+
+  /** 当前铸造实例（与滑块那个实例并存；一次铸造后即作废） */
+  let mintInstancePromise = null;
+  let mintInstanceKey = '';
+  let mintInstanceRef = null;
+  /** 当前实例占用的容器 id（作废时连同容器一起删掉） */
+  let mintElementId = '';
+  let mintButtonId = '';
+  /** 正在等结果的那一次铸造 */
+  let mintWaiter = null;
+  let mintGeneration = 0;
+
+  /**
+   * 备好铸造用的容器与触发按钮。
+   *
+   * 放在**屏幕外**而不是隐藏（`display:none`）：阿里云 SDK 会读容器尺寸做布局，
+   * 隐藏容器在部分版本里会让实例初始化不出来（无痕模式虽然不显示 UI，SDK 仍按
+   * 容器初始化）。这与参考实现把整个 DOM 藏在无头环境里是同一个道理。
+   */
+  function ensureMintElements(elementId, buttonId) {
+    let element = document.getElementById(elementId);
+    if (!element) {
+      element = document.createElement('div');
+      element.id = elementId;
+      element.style.position = 'fixed';
+      element.style.left = '-9999px';
+      element.style.top = '0';
+      element.style.width = '360px';
+      element.style.height = '40px';
+      document.body.appendChild(element);
+    }
+    let button = document.getElementById(buttonId);
+    if (!button) {
+      button = document.createElement('button');
+      button.id = buttonId;
+      button.type = 'button';
+      button.tabIndex = -1;
+      button.setAttribute('aria-hidden', 'true');
+      button.style.position = 'fixed';
+      button.style.left = '-9999px';
+      button.style.width = '1px';
+      button.style.height = '1px';
+      button.style.opacity = '0';
+      button.style.pointerEvents = 'none';
+      document.body.appendChild(button);
+    }
+  }
+
+  /** 铸造实例作废（失败/超时后调；下一次会用新实例重来） */
+  function invalidateMintInstance() {
+    const instance = mintInstanceRef;
+    mintInstancePromise = null;
+    mintInstanceKey = '';
+    mintInstanceRef = null;
+    try { instance?.destroy?.(); } catch { /* 忽略：实例已不可用 */ }
+    // 容器一起清掉：同一个容器在 destroy 之后再 init 会卡住（见 mintIds 的说明）
+    try { document.getElementById(mintElementId)?.remove(); } catch { /* 忽略 */ }
+    try { document.getElementById(mintButtonId)?.remove(); } catch { /* 忽略 */ }
+    mintElementId = '';
+    mintButtonId = '';
+  }
+
+  /** 铸造失败：落定正在等的那次（并作废实例） */
+  function failMint(error) {
+    const waiter = mintWaiter;
+    mintWaiter = null;
+    invalidateMintInstance();
+    if (waiter) waiter.reject(error);
+  }
+
+  /**
+   * 校验并归一一个验证串。
+   *
+   * 上游只认「约 280 字符的 base64 JSON，且内含一个长 securityToken」这一种形态：
+   * 参考实现在这里做了同样的严格校验，理由是「SDK 的降级路径会给出短串，
+   * 拿它去请求必回 3007」。我们实测过另一种形态（回调模式给的裸 JSON）同样被拒，
+   * 所以宁可在这里拒绝、让上层重铸，也不要把一个注定 3007 的串推进池子 ——
+   * 那会烧掉一次请求往返，还把「库存有货」这个读数变成假的。
+   */
+  function validateVerifyParam(value) {
+    if (typeof value !== 'string' || value.trim().length < 200) {
+      throw new CaptchaError('验证码组件返回的验证串不完整（请重试）');
+    }
+    const text = value.trim();
+    try {
+      const json = JSON.parse(atob(text));
+      const token = json && (json.securityToken || json.SecurityToken);
+      if (!token || String(token).length < 50) throw new Error('no securityToken');
+    } catch {
+      throw new CaptchaError('验证码组件返回的验证串不是上游认的形态（请重试）');
+    }
+    return text;
+  }
+
+  /**
+   * SDK 的 `success` 回调：把结果交给正在等的那次铸造。
+   *
+   * 官方 SDK 在不同模式下给的值不一样（字符串 / 带 `verifyParam`、
+   * `captchaVerifyParam`、`data`、`param` 的对象），四种都取一遍再交给
+   * [`validateVerifyParam`] 把关。
+   */
+  function deliverMintResult(result) {
+    const waiter = mintWaiter;
+    if (!waiter) return;
+    let value = result;
+    if (result && typeof result === 'object') {
+      value = result.verifyParam || result.captchaVerifyParam || result.data || result.param;
+    }
+    let param = null;
+    let failure = null;
+    try {
+      param = validateVerifyParam(value);
+    } catch (error) {
+      failure = error;
+    }
+    mintWaiter = null;
+    if (failure) {
+      failMint(failure);
+      return;
+    }
+    // ── 铸完就作废实例（**一次一铸**，实测结论）────────────────────
+    // SDK 的同一个实例第二次调 `startTracelessVerification()` 必失败
+    // （2026-09-28 实测：第一次 958ms 拿到串，第二次直接走 fail 回调）。
+    // 因此每次铸造都用新实例 —— 代价约 1 秒（脚本已加载，只是重建实例），
+    // 而池子目标只有 3 个、寿命 120 秒，这点开销换「第二次必然成功」是划算的。
+    invalidateMintInstance();
+    waiter.resolve(param);
+  }
+
+  /**
+   * 静默铸一个验证串（无痕验证；不弹滑块、不需要用户操作）。
+   *
+   * ── 为什么转发链路必须用它 ─────────────────────────────────
+   * ZCode 的活动套餐推理端点**每条请求**都要一个当次铸的令牌（少它一律
+   * `400 {"code":3007}`，2026-09-28 实测：不是偶发挑战，是常规门禁）。转发发生
+   * 在后台，没有让用户拖滑块的机会 —— 无痕模式本来就是为这种场景设计的：
+   * `startTracelessVerification()` 让 SDK 自己跑完风控流程，把串交给 `success`。
+   *
+   * ── 为什么要自己的实例（而不是复用滑块那个）──────────────────
+   * 两种集成模式拿到的值不一样：滑块走的 `captchaVerifyCallback` 收到的是
+   * **裸 JSON**（`{sceneId, certifyId, deviceToken, data}`），上游拒收（实测
+   * 3007）；无痕走 `success` 才拿到上游认的那个 base64 串。两套回调没法在一个
+   * 实例上共存，所以铸造另起一个实例（元素/按钮 id 都分开）—— 与滑块那个并存，
+   * 互不干扰（滑块流程忙碌时上层会让路，见 `ui/zcode-captcha-pool.js`）。
+   *
+   * 返回值就是这个串。**一次一用**：铸好不用，两分钟后自己过期（上游拒收）。
+   */
+  async function mintTraceless(config) {
+    const instance = await ensureMintInstance(config);
+    const generation = ++mintGeneration;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        if (!mintWaiter || mintWaiter.generation !== generation) return;
+        mintWaiter = null;
+        invalidateMintInstance();
+        reject(new CaptchaError('静默铸造超时，请重试'));
+      }, MINT_TIMEOUT_MS);
+      mintWaiter = {
+        generation,
+        resolve: value => { window.clearTimeout(timer); resolve(value); },
+        reject: error => { window.clearTimeout(timer); reject(error); },
+      };
+      const start = typeof instance.startTracelessVerification === 'function'
+        ? instance.startTracelessVerification
+        : instance.show;
+      if (typeof start !== 'function') {
+        failMint(new CaptchaError('验证码组件不支持静默铸造'));
+        return;
+      }
+      try {
+        start.call(instance);
+      } catch (error) {
+        failMint(new CaptchaError((error && error.message) || '验证码组件启动失败'));
+      }
+    });
+  }
+
+  /** 备好铸造实例（同配置复用；失败/超时后由 invalidateMintInstance 作废） */
+  function ensureMintInstance(config) {
+    const language = resolveAliyunCaptchaLanguage(currentLanguage());
+    const key = config.region + ':' + config.prefix + ':' + config.sceneId + ':' + language;
+    if (mintInstancePromise && mintInstanceKey === key) return mintInstancePromise;
+    if (mintInstanceRef) invalidateMintInstance();
+    mintInstanceKey = key;
+    const pending = (async () => {
+      await loadAliyunCaptchaScript(config);
+      const ids = mintIds();
+      mintElementId = ids.elementId;
+      mintButtonId = ids.buttonId;
+      ensureMintElements(ids.elementId, ids.buttonId);
+      const initAliyunCaptcha = getInitAliyunCaptcha();
+      if (!initAliyunCaptcha) throw new CaptchaError('验证码组件不可用，请重试');
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          mintInstancePromise = null;
+          reject(new CaptchaError('验证码组件初始化超时，请重试'));
+        }, INIT_TIMEOUT_MS);
+        try {
+          initAliyunCaptcha({
+            SceneId: config.sceneId,
+            mode: 'popup',
+            region: config.region,
+            prefix: config.prefix,
+            element: '#' + ids.elementId,
+            button: '#' + ids.buttonId,
+            captchaLogoImg: '',
+            showErrorTip: false,
+            language,
+            getInstance: instance => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timer);
+              mintInstanceRef = instance;
+              resolve(instance);
+            },
+            success: result => deliverMintResult(result),
+            fail: error => failMint(new CaptchaError(
+              (error && error.message) || '验证码校验失败，请重试',
+            )),
+            onError: error => failMint(new CaptchaError(
+              (error && error.message) || '验证码组件出错，请重试',
+            )),
+          });
+        } catch (error) {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer);
+          mintInstancePromise = null;
+          reject(new CaptchaError((error && error.message) || '验证码组件初始化失败'));
+        }
+      });
+    })();
+    // 初始化失败不要把失败的 promise 缓存住（下一次要能重来）
+    pending.catch(() => {
+      mintInstancePromise = null;
+      mintInstanceKey = '';
+    });
+    mintInstancePromise = pending;
+    return pending;
+  }
+
   /** 用户取消：把等待中的那次落定成「已取消」并作废实例 */
   function cancel() {
     const pending = pendingVerification;
@@ -443,5 +716,13 @@
   /** 有没有正在等的验证码流程（调用方用它决定关闭弹窗时要不要提示） */
   const isBusy = () => pendingVerification !== null;
 
-  window.wbAliyunCaptcha = { solve, cancel, isBusy, CaptchaError, CaptchaCancelledError };
+  window.wbAliyunCaptcha = {
+    solve,
+    cancel,
+    isBusy,
+    // 静默铸串（活动套餐转发通道的令牌来源，见 mintTraceless）
+    mintTraceless,
+    CaptchaError,
+    CaptchaCancelledError,
+  };
 })();

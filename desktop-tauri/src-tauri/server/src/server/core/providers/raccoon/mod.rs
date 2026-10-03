@@ -122,11 +122,11 @@ impl ProviderAdapter for RaccoonAdapter {
             ("Accept".to_string(), "*/*".to_string()),
             ("Authorization".to_string(), format!("Bearer {token}")),
         ];
-        Ok(ChatRequestPlan {
-            url: format!("{}/chat/completions", self.llm_base_url()),
+        Ok(ChatRequestPlan::chat(
+            format!("{}/chat/completions", self.llm_base_url()),
             headers,
-            body: body.clone(),
-        })
+            body.clone(),
+        ))
     }
 
     /// 上游错误分类（判定依据见模块头）：

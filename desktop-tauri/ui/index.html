@@ -77,6 +77,12 @@
 
         <div class="nav-group-label">转发能力</div>
         <button class="nav-item" data-page="gateway" data-icon="gateway"><span class="ico"></span><span class="label">模型管理</span></button>
+        <!-- 网络代理：出网出口的管理页（代理池 CRUD + 连通性测试 + Clash 出口引用）。
+             挨着「模型管理」是因为它管的是同一个问题的另一半：模型管理决定
+             「请求发往哪家上游」，这里决定「从哪条线路出去」。账号弹窗里的
+             「出网代理」仍可用，但推荐在这里配好、账号按名字引用 ——
+             改一次地址，所有引用的账号一起生效。 -->
+        <button class="nav-item" data-page="proxies" data-icon="proxies"><span class="ico"></span><span class="label">网络代理</span></button>
         <button class="nav-item" data-page="keys" data-icon="key"><span class="ico"></span><span class="label">网关 Key</span></button>
         <!-- 文档：接口地址（Base URL / 三种对话协议 / 模型列表）与将来的使用说明。
              它原先在「网关 Key」页里，R8 按需求搬成独立一级菜单 —— 接口地址是
@@ -155,6 +161,18 @@
              表骨架（colgroup + thead 的 th[data-col]）也由岛渲染，但顺序与这里原先
              写死的完全一致，列显隐 / 顺序仍由 wbColSettings.syncStaticHead 就地重排。 -->
         <section class="page" data-page="gateway"></section>
+
+        <!-- ─── 网络代理 ───
+             出口（代理池）的配置中心：新增 / 编辑 / 删除 / 启停 / 测试连通性，
+             外加「同步 Clash Verge」—— 把 Clash 当前的出口集合整体镜像进来
+             （名称 / 端口 / 启用跟随 Clash，因此那类条目只读；进本页时也会
+             自动同步一次）。账号弹窗的「出网代理」可选「已保存的代理」，
+             引用的就是这里的条目。整页由 React 岛渲染
+             （ui-islands/src/islands/proxies-page.tsx，随 islands/ui.js 一起加载），
+             岛直接挂在这个 section 上、不套宿主 div —— 页面骨架类名照旧
+             （.panel / .panel-head / .models-table-wrap / .models-table / .panel-foot）。
+             对外契约只有 window.wbProxiesPanel = { load }（app.js 切页时调）。 -->
+        <section class="page" data-page="proxies"></section>
 
         <!-- ─── 网关 Key ───
              整页由 React 岛渲染（desktop-tauri/ui-islands/src/islands/keys-page.tsx，
@@ -425,6 +443,11 @@
        界面上那颗按钮的判据（能力位 welfare）与台账读数都在岛上，见
        ui-islands/src/islands/accounts-domain.ts 的 supportsWelfare / welfareStateOf。 -->
   <script src="codearts-welfare.js"></script>
+  <!-- ZCode 活动套餐通道的**验证码令牌池守卫**：后台循环向网关问库存，需要时用
+       无痕验证静默铸令牌（`wbAliyunCaptcha.mintTraceless`）并推回网关 —— 活动套餐
+       的推理端点每条请求都要一个这种令牌，而转发是后台发生的（没有让用户拖滑块的
+       机会）。必须排在 aliyun-captcha.js 之后：它加载完就自启，第一轮就要用那个模块。 -->
+  <script src="zcode-captcha-pool.js"></script>
   <!-- 提供商目录：provider 摘要与「作用提供商」写入的唯一前端入口。
        必须排在所有消费者（accounts-groups / logs-panel）之前 -->
   <script src="providers.js"></script>

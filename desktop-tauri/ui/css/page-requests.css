@@ -262,7 +262,8 @@
 }
 
 /* 提供商 / 账号：同格两行，提供商在上（主读数）、账号在下（次）。
-   两者都是短名词，省略号收住长名字，完整值在各自的 title 里。 */
+   两者都是短名词，省略号收住长名字（账号名可能是「ZCode 国际版 · 一长串 uuid」），
+   完整值在各自的 title 里。 */
 .req-row .req-target {
   display: flex;
   flex-direction: column;
@@ -272,7 +273,14 @@
 
 .req-row .req-provider,
 .req-row .req-acct {
+  /* 必须限住宽度：列设置会给格子带上 ta-left，而 table-col-settings.css 的
+     `.req-row > .req-target.ta-left { align-items: flex-start }` 一并取消了
+     flex 子项默认的拉伸 —— 这两行的宽度随即变成「按内容算」（nowrap 一行两百
+     多像素），顶出格子压到右边列上，列再窄也不会出现省略号。
+     这里跟 .req-usage-line / .req-model-line / .req-dur-line 用同一个写法
+     （max-width: 100%）；单写 min-width: 0 实测压不住。 */
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

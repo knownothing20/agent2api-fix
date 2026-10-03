@@ -27,6 +27,9 @@
    触发器左右内边距 + 箭头 + 间隔 ≈ 41px，见下方「代理列」一节）：固定列合计
    1115 → 1145，min-width 1077 → 1107（同一套「随列宽走」的口径）。
 
+   **本轮余额列 84 → 132**（格子从一行纯读数改成两行：套餐名 + 进度条与读数，
+   见下方「余额列」一节）：固定列合计 1145 → 1193，min-width 1107 → 1155。
+
    **勾选列 26 → 47**（本轮）：26px 的列里居中的复选框只离表格左缘 5.5px，
    看起来是「贴边」而不是居中，还与批量栏那颗「全选」错开 10.5px。
    47 = 16 + 15 + 16 让它与批量栏全选落在同一条竖轴上，算式与理由见下方 .cell-pick。
@@ -53,12 +56,14 @@
      · 提供商列：展示名与版本徽章同样竖排 —— 「WorkBuddy」（66px）
        后面再跟一枚「国内版」必然超宽，而这一列是整张表里唯一区分
        「换了一家」的线索，被省略号砍成「Work…」就失去意义了。
-     · 余额列：只剩一行摘要（查询按钮已挪走），但摘要「可用 4300 积分」
-       这类文案长度不可控，84px 下仍按省略号收口、完整值在 title 里 ——
-       这一列现在没有任何可点控件，它的全部职责就是「一眼看出还剩多少」。
+     · 余额列：改成了「主额度桶的两行形态」（套餐名一行、进度条 + 读数一行，
+       见下方 .usage-pool），因此从 84 提到 132 —— 84px 会把
+       「ZCode Trust Build」砍成「ZCode Tr…」，而用户问的第一句正是
+       「这 1 亿是哪个套餐给的」。没有桶总额的家仍是那一行纯读数
+       （「可用 4300 积分」这类文案长度不可控，按省略号收口、完整值在 title 里）。
 
-   最小窗口 820px 时（侧栏已收到 68px）可用宽度约 699px，按下面 1107px 的
-   最小宽度横向滚动约 378px。
+   最小窗口 820px 时（侧栏已收到 68px）可用宽度约 699px，按下面 1155px 的
+   最小宽度横向滚动约 426px。
 
    注意：这份「预算说明」在历史上曾与 CSS 的实际数值漂移过（注释里写 92/106，
    CSS 里是 132/132）。改动任何一列的默认宽度时**同时**改三处：
@@ -68,9 +73,9 @@
 .acct-table {
   width: 100%;
   /* 「不能再窄」的底线：跟着固定列宽一起走（新增代理列 +156 时从 900 提到
-     1056，勾选列 +21 到 1077，本轮代理列下拉化 +30 到 1107，见文件头的列宽预算）。
-     低于它时表格横向滚动，而不是压缩各列 */
-  min-width: 1107px;
+     1056，勾选列 +21 到 1077，代理列下拉化 +30 到 1107，余额列两行形态 +48
+     到 1155，见文件头的列宽预算）。低于它时表格横向滚动，而不是压缩各列 */
+  min-width: 1155px;
   border-collapse: separate;
   /* 列间距归零：border-collapse: separate 是给行首竖条留出绘制空间的
      （border-collapse: collapse 下单元格的定位上下文会被合并掉） */
@@ -172,8 +177,11 @@
 .cell-status { width: 80px; }
 .cell-limits { width: 148px; }
 .cell-expiry { width: 80px; }
-/* 余额列只剩一行摘要（查询按钮已挪到操作列，见 accounts-table.js 的 usageCell） */
-.cell-usage { width: 84px; }
+/* 余额列：主额度桶的两行形态（套餐名 + 进度条与读数）需要比纯读数宽一档 ——
+   84px 放不下「ZCode Trust Build」+「8800万 / 1亿 token」，套餐名会被省略成
+   「ZCode Tr…」而失去意义。132 与优先级列同档，是「一行塞得下套餐名」的最小值。
+   读数更长的家（可用 4300 积分）仍按省略号收口、完整值在 title 里。 */
+.cell-usage { width: 132px; }
 /* 操作列：四颗按钮的最坏情况（签到 / 已签到 / 余额 / 设置 / ⋯ 里同时出现的那四颗），
    本次改造从 250 收到 200 —— 理由见文件头的列宽预算。
    这个值是**量出来的**，不是估的：按 11.5px 字号、每颗按钮左右各 8px 内边距、
@@ -565,6 +573,47 @@
    与 `#toast.warn` / `.badge.warn` 同一语义。 */
 .usage-sum.warn { color: var(--warn); font-weight: 600; }
 
+/* ─── 余额列：主额度桶的两行形态 ───
+   第一行套餐名（用户问得最多的那句「这 1 亿是哪个活动给的」），第二行进度条 +
+   「剩余 / 总量」。只有在后端给出了**桶的总额**时才用这套（ZCode 的套餐额度），
+   其余各家仍是上面那条纯读数 —— 判据在 islands 的 `usagePool`，这里只管样子。
+
+   进度条画的是**剩余**比例：与紧挨着的读数同一方向。轨道/条体的观感由组件库的
+   Progress 自带（6px 胶囊、主色条体），这里只给它一个固定宽度（弹性布局下
+   `w-full` 的根节点会随文字挤压，固定 40px 让同一列里每行的条都一样长）。 */
+.usage-pool {
+  display: block;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-pool-name {
+  display: block;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-pool-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.usage-pool-bar { flex: 0 0 40px; }
+
+.usage-pool-view {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-pool-view.ok { color: var(--ok); font-weight: 600; }
+.usage-pool-view.warn { color: var(--warn); font-weight: 600; }
+
 /* ─── 操作列 ─── */
 
 /* 定位祖先：⋯ 菜单挂在它下面（菜单仍是「点击才插入 DOM」，见 accounts-view.js） */
@@ -707,3 +756,14 @@
 .zcode-claim-plans { margin: 8px 0 0; padding-left: 18px; }
 .zcode-claim-plans li + li { margin-top: 8px; }
 .zcode-claim-plans .muted { color: var(--text-3); }
+
+/* 多套餐时的单选形态（「领取时指定领哪个」）：去掉列表符号、把圆钮与说明并排。
+   与上面的只读列表同一档间距，只是每行多了一个可点的圆钮。
+   今天已领过的那几份：圆钮 disabled + 整行压暗 + 名字后标「（今日已领）」——
+   逐份标注是必需的，上游按套餐判「已领取过」，领了 A 不影响 B（见 zcode-claim.js）。 */
+.zcode-claim-plans.pickable { padding-left: 0; list-style: none; }
+.zcode-claim-option { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.zcode-claim-option input[type="radio"] { flex: none; margin: 2px 0 0; }
+.zcode-claim-option > span { min-width: 0; }
+.zcode-claim-option.taken { cursor: default; opacity: .55; }
+.zcode-claim-taken { color: var(--text-3); }

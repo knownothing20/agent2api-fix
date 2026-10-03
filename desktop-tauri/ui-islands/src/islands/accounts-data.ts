@@ -28,11 +28,11 @@
  */
 
 import {
-  errorMessage, shared, toast,
-  type AccountRecord, type ClashSnapshot, type PanelKind, type UsageEntry,
+  errorMessage, POOL_VALUE_PREFIX, shared, toast,
+  type AccountRecord, type ClashSnapshot, type PanelKind, type PoolItem, type UsageEntry,
 } from './accounts-shared'
 import {
-  checkinableAccounts, displayNameOf, isDesktopAccount, isEnabled, isRateLimited,
+  checkinableAccounts, claimedPlanIdsToday, displayNameOf, isDesktopAccount, isEnabled, isRateLimited,
   supportsCheckin, supportsUsage,
 } from './accounts-domain'
 import * as domain from './accounts-domain'
@@ -75,23 +75,15 @@ const checkinErrors = new Map<string, string>()
 /** 该账号上一次签到的失败原因（没有则空串）—— 行上「签到」按钮的 title 读它 */
 export const checkinErrorOf = (id: string): string => checkinErrors.get(id) || ''
 
-/* ─── Clash 出口缓存（代理列与代理表单共用）─────
- * 一次页面加载内多实例共享，避免重复请求。失败**不落缓存**（原因记进 lastClashError）
- * ——调用方按失败处理即可，下一次调用会重新读取：账号表那侧靠「没就绪就补拉 + 节流」
- * 自愈，Clash / IPC 恢复后最多半分钟列表就会补上。 */
+/* ─── Clash 出口缓存（只剩代理表单的「Clash Verge」档在用）─────
+ *
+ * 代理列不再列 Clash 出口（出口统一走代理池，见 accounts-panels 的 ProxyCell），
+ * 所以这里没有「列上没就绪就补拉」那条自愈链了 —— 唯一的消费者是账号设置
+ * 弹窗里的 **Clash 直引档**（只在账号当前就是这种存量配置时出现），
+ * 它挂载时自己拉一次、失败还有「重新读取」按钮。
+ * 缓存仍放 store（`clash` 字段）：一次弹窗打开内多实例共享，避免重复请求。 */
 
 let clashInflight: Promise<ClashSnapshot> | null = null
-let lastClashError: string | null = null
-
-/** 同步读 Clash 出口缓存（`null` = 还没读到）——代理列每格渲染都要它，不能在那里发请求 */
-export function clashSnapshot(): ClashSnapshot | null {
-  return getStore().clash
-}
-
-/** 上一次读取出错的原因（成功后清空）——代理列据此显示「读取失败」的说明项 */
-export function clashError(): string | null {
-  return lastClashError
-}
 
 /**
  * 读一次 Clash 出口列表（模块级缓存；并发调用合并成一次）。
@@ -108,11 +100,7 @@ export async function clashOptions(options: { force?: boolean } = {}): Promise<C
         if (!data || typeof data !== 'object' || !data.clash) {
           throw new Error(`代理列表响应异常（${typeof data}）`)
         }
-        lastClashError = null
         return data.clash
-      } catch (error) {
-        lastClashError = errorMessage(error)
-        throw error
       } finally {
         clashInflight = null
       }
@@ -123,35 +111,100 @@ export async function clashOptions(options: { force?: boolean } = {}): Promise<C
   return clash
 }
 
-/** 失效重读用：清掉缓存与失败记忆（下一次调用会真正重新读取） */
+/**
+ * 失效重读用：清掉缓存（下一次调用会真正重新读取）。
+ *
+ * 对外契约 `wbAccountPanel.invalidate`（app.js 在账号列表刷新后调用）。
+ * 现在唯一的读者是代理表单的 Clash 直引档：清掉之后，下一次打开账号设置
+ * 弹窗会重新读 Clash 端口 —— 那类记录的端口由 Clash 实时决定，可能刚被改过。
+ */
 export function invalidateClashCache(): void {
-  lastClashError = null
   patch({ clash: null })
 }
 
-/**
- * 代理列出口列表的自愈节流：读取失败后要等一段时间再试。没有它，「失败 → 重画 → 又拉」
- * 会变成死循环；有它，Clash / IPC 恢复后最多半分钟列表自己补上。
- */
-let clashRetryAt = 0
-let clashWarned = false
+/* ─── 代理池（「网络代理」页的命名代理，账号页的代理下拉）─── */
 
-export function ensureClashOptions(): void {
-  if (getStore().clash || Date.now() < clashRetryAt) return
-  if (typeof shared().workbuddyDesktop?.getProxies !== 'function') {
-    // 桥没挂上（加载失败等）：本页面会话内不再尝试，并告警一次 —— 别让「代理列静默地
-    // 少一批选项」成为无迹可查的现象
-    if (!clashWarned) {
-      clashWarned = true
-      console.warn('[accounts] 桥未提供 getProxies：代理列的 Clash 出口列表不可用')
+/**
+ * 代理池列表缓存。与 clash 那份（放 store 里）不同：它**只有代理表单用**
+ * （账号表的代理列读的是账号自己的 proxy 描述，不需要池），所以不进 store，
+ * 一个模块变量 + 在途 Promise 就够。
+ */
+let poolCache: PoolItem[] | null = null
+let poolInflight: Promise<PoolItem[]> | null = null
+
+/** 已缓存的池列表（`null` = 还没读过）；表单首帧用它避免下拉先空一拍 */
+export function proxyPoolSnapshot(): PoolItem[] | null {
+  return poolCache
+}
+
+/** 清掉缓存（表单里的「重新读取」用） */
+export function invalidateProxyPoolCache(): void {
+  poolCache = null
+}
+
+/**
+ * 读一次代理池（模块级缓存；并发调用合并成一次）。
+ * 与 clashOptions 同一条纪律：桥异常时可能 resolve 出 `undefined`（而不是 reject），
+ * 那种情况按失败处理 —— 不校验的话会伪装成「池里一条都没有」。
+ */
+export async function proxyPoolOptions(options: { force?: boolean } = {}): Promise<PoolItem[]> {
+  if (!options.force && poolCache) return poolCache
+  if (!poolInflight) {
+    poolInflight = (async () => {
+      try {
+        const data = await shared().workbuddyDesktop?.getProxyPool?.()
+        if (!data || typeof data !== 'object' || !Array.isArray(data.items)) {
+          throw new Error(`代理池响应异常（${typeof data}）`)
+        }
+        return data.items
+      } finally {
+        poolInflight = null
+      }
+    })()
+  }
+  const items = await poolInflight
+  poolCache = items
+  return items
+}
+
+/** 代理池读取失败的原因（成功后清空）—— 代理列据此显示「读取失败」的说明项 */
+let lastPoolError: string | null = null
+
+export function poolError(): string | null {
+  return lastPoolError
+}
+
+/**
+ * 代理列的池条目自愈：没读到就补拉（节流 30 秒，与 `ensureClashOptions` 同一套
+ * 理由 —— 没有它，「失败 → 重画 → 又拉」会变成死循环；有它，网络 / 桥恢复后
+ * 最多半分钟自己补上）。
+ */
+let poolRetryAt = 0
+let poolWarned = false
+
+export function ensureProxyPoolOptions(): void {
+  if (poolCache || Date.now() < poolRetryAt) return
+  if (typeof shared().workbuddyDesktop?.getProxyPool !== 'function') {
+    // 桥没挂上（加载失败等）：本页面会话内不再尝试，并告警一次
+    if (!poolWarned) {
+      poolWarned = true
+      console.warn('[accounts] 桥未提供 getProxyPool：代理列的「已保存的代理」选项不可用')
     }
-    clashRetryAt = Infinity
+    poolRetryAt = Infinity
     return
   }
-  clashRetryAt = Date.now() + 30_000
-  void clashOptions()
-    .then(() => { clashRetryAt = 0 })
-    .catch(() => { /* 失败保持节流：界面上会画出「读取失败（重试中）」那一项 */ })
+  poolRetryAt = Date.now() + 30_000
+  void proxyPoolOptions()
+    .then(() => {
+      poolRetryAt = 0
+      lastPoolError = null
+      // 读到了要重画一次：这一格渲染时读的是同步快照，没有订阅者通知它
+      bump()
+    })
+    .catch(error => {
+      lastPoolError = errorMessage(error)
+      bump()
+    })
 }
 
 /* ─── 弹窗 ─────────────────────────────────── */
@@ -554,9 +607,13 @@ export async function queryUsageOnce(id: string): Promise<void> {
 }
 
 /**
- * 签到后的余额刷新：**签到会改变余额读数**（小浣熊与 AutoClaw 的签到直接发积分、
- * Qoder 的签到发权益），而余额列读的是缓存里的旧读数 —— 不刷新的话，用户要再点一次
- * 「余额」才看得到刚领到的那笔。所以签到一结束就把读数重新拉一遍。
+ * 动作之后的余额刷新：**这些动作会改变余额读数**（小浣熊与 AutoClaw 的签到直接
+ * 发积分、Qoder 的签到发权益、ZCode 的「领套餐」领到的就是 token 额度），
+ * 而余额列读的是缓存里的旧读数 —— 不刷新的话，用户要再点一次「余额」才看得到
+ * 刚领到的那笔。所以动作一结束就把读数重新拉一遍。
+ *
+ * 名字里的 checkin 是历史（这条链最早只服务签到）；领套餐那条也走它，
+ * 差别只在「刷哪一行」由调用方给定 `id`。
  *
  * ── 为什么静默（不 toast、也不复用 queryUsageOnce / queryAllUsage 的播报）──
  * toast 是单例，后一条会把前一条**顶掉**：签到结果才是用户刚点那个动作的结果，
@@ -686,6 +743,16 @@ export async function clearLimits(id: string, model?: string): Promise<void> {
  * 原选中，再打开账号设置弹窗（完整代理表单在那里）。成功后用后端回报的变更说明播报，
  * 与后端文案保持一份事实。
  */
+/**
+ * 代理列选中即保存（`value` 是下拉的值）。下拉的选项只有三类：
+ *   ''                     → 直连（proxy = null）
+ *   `pool:<proxyId>`       → 引用「网络代理」页的池条目
+ *   两个 `__proxy_*__` 占位值 → 「当前值的显示项」与「打开设置弹窗」，
+ *                             都不是一次修改（在前两个分支里拦掉）
+ *
+ * 出口统一走代理池之后，这里**不再**产生 `{source:'clash'}` —— 存量里那种
+ * 记录仍照原样转发，用户在这个下拉里选一条池条目或切回直连就会改写它。
+ */
 export async function applyProxyPick(id: string, value: string, fallback: string): Promise<void> {
   if (value === PROXY_CUSTOM_EDIT) {
     // 动作项：开弹窗（下拉的原值由调用方在渲染层恢复 —— 它是受控的，重绘即回原值）
@@ -696,7 +763,9 @@ export async function applyProxyPick(id: string, value: string, fallback: string
   if (value === PROXY_CUSTOM_CURRENT) return
   if (value === fallback) return
   try {
-    const proxy = value ? { source: 'clash', listenerUid: value } : null
+    const proxy = value === ''
+      ? null
+      : { source: 'pool', proxyId: value.slice(POOL_VALUE_PREFIX.length) }
     const result = await shared().workbuddyDesktop?.updateAccount?.(id, { proxy })
     const changes = result?.changes
     const change = Array.isArray(changes) && changes.length ? changes[0] : '代理已更新'
@@ -713,9 +782,38 @@ export async function applyProxyPick(id: string, value: string, fallback: string
 export const PROXY_CUSTOM_CURRENT = '__proxy_custom__'
 export const PROXY_CUSTOM_EDIT = '__proxy_custom_edit__'
 
-/** 行上「领套餐」：整条流程在 ui/zcode-claim.js，这里只把账号对象递过去 */
+/**
+ * 行上「领套餐」：整条流程（探测 → 确认 → 验证码 → 领取）在 ui/zcode-claim.js，
+ * 这里负责发起与**收尾**。
+ *
+ * ── 为什么要把「今天领过的套餐」传给脚本 ──────────────────────
+ * 一个账号可能同时挂着几份可领套餐，上游的「已领取过」是**按套餐**判的
+ * （见 `claimedPlanIdsToday`）。台账在本页（账号记录的 `claimPlans`），
+ * 判定规则在域层，脚本只负责把它们画进弹窗、并只让选还没领的那几份 ——
+ * 日界的算法因此仍然只有域层一处。
+ *
+ * ── 收尾为什么在本文件而不是那支 legacy 脚本里 ────────────────
+ * 领到的是 token 额度：余额列的读数立刻就变了，而那颗按钮的悬停提示也跟着变
+ * （后端落的领取台账由重拉账号拿到）。两件事都是本页的 store / 动作
+ * （legacy 脚本拿不到），所以脚本只把结果交回来，由这里刷新 ——
+ * 与 CodeArts 那条（脚本自己调 `wbApp.refresh()`）不同，是因为这条还得顺带刷余额。
+ *
+ * `already_claimed` 同样算「已领」：上游说这份套餐已经被领掉了（可能是另一台
+ * 设备领的），台账该补上它，否则用户会一直点它、每次拿回同一句话。
+ */
 export async function startZcodeClaim(id: string): Promise<void> {
-  await shared().wbZcodeClaim?.start?.(findAccount(id) || undefined)
+  const account = findAccount(id) || undefined
+  const result = (await shared().wbZcodeClaim?.start?.(
+    account,
+    claimedPlanIdsToday(account),
+  )) as { ok?: boolean; failure?: string } | undefined
+  const settled = result?.ok === true || result?.failure === 'already_claimed'
+  if (!settled) return
+  // 余额静默刷新（不 await、不播报：领取结果那条 toast 不能被顶掉，
+  // 理由见 refreshUsageAfterCheckin）
+  void refreshUsageAfterCheckin(id)
+  // 重拉账号状态：领取台账是后端落盘的，弹窗与悬停提示据此更新「哪几份已领」
+  void shared().wbApp?.refresh?.()
 }
 
 /**

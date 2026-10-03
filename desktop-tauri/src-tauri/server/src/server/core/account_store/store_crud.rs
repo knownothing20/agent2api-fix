@@ -351,23 +351,43 @@ impl AccountStore {
     /// `conversationId` 属于**上游账号上下文**：账号没了，它建立的会话再也不能
     /// 续接（续接会打到别人的会话或直接报错）。原项目在账号切换时整表清
     /// （`notifySwitch` → `clearClientToolSessions`），这里按账号精细作废。
-    /// provider 要在**删除之前**取好：记录删掉之后回读只能得到 None。
+    /// ── 删除必须留痕 ─────────────────────────────────────────
+    /// 单账号删除曾是**唯一**不写日志的删除路径：批量删除有「🗑️ 批量删除」、
+    /// 退出登录有「[Auth] 已清除当前登录态」，只有它删完什么都不说 —— 出事后
+    /// 时间与来源都无从追溯（2026-09-28 的一次误删就是这样查不出痕迹的）。
+    /// 文案与批量删除对齐，并带上 **id**：名字会改、也可能重名，id 才是能对上
+    /// 请求与记录的那个键。
+    ///
+    /// provider 与备注名都要在**删除之前**取好：记录删掉之后回读只能得到 None。
     pub fn remove_account(&self, id: &str) -> Result<(), AccountStoreError> {
         if let Some(reason) = self.protected_from_removal(id) {
             return Err(AccountStoreError::new(reason, 400));
         }
         let _guard = self.guard();
-        // provider 要在**删除之前**取好（记录删掉之后回读只能得到 None）
-        let provider = self
-            .record_by_id(&_guard, id)
+        // provider 与备注名都要在**删除之前**取好（记录删掉之后回读只能得到 None）：
+        // 前者给 `invalidate_catpaw_sessions`，后者给下面那条删除日志
+        let record = self.record_by_id(&_guard, id);
+        let provider = record
+            .as_ref()
             .map(|record| record.provider())
             .unwrap_or_default();
+        // 备注名为空时用 id 顶替：宁可日志难看，也不要写成「账号已删除: （user-…）」
+        let name = record
+            .as_ref()
+            .map(|record| record.name())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| id.to_string());
         // 单行删除，`false` 表示本来就没有这一行 → 404（与旧实现数数组长度的
         // 判据等价：删之前找不到这个 id）
         let removed = self.with_conn(&_guard, |conn| sql::delete(conn, id))?;
         if !removed {
             return Err(AccountStoreError::not_found("账号不存在"));
         }
+        // 落库之后立刻记一笔（与批量删除同一格式）
+        logging::log(
+            "[Accounts]",
+            &format!("🗑️  账号已删除: {name}（{id}，{provider}）"),
+        );
         // 落库已完成，账号锁在这里放开：注册表作废是另一把锁的操作，
         // 两者不必（也不该）嵌套（见 `invalidate_catpaw_sessions` 的说明）
         drop(_guard);

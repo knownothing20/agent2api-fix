@@ -38,10 +38,18 @@ import {
   SelectValue,
   Switch,
 } from '@ui'
-import { errorMessage, esc, shared, toast, type AccountRecord, type ClashSnapshot } from './accounts-shared'
+import {
+  errorMessage, esc, poolItemLabel, shared, toast,
+  type AccountRecord, type ClashSnapshot, type PoolItem,
+} from './accounts-shared'
 import { clampPriority, priorityOf, PRIORITY_MAX, PRIORITY_MIN } from './accounts-columns'
-import { providerOf } from './accounts-domain'
-import { allAccounts, clashOptions, closeDialog, findAccount, getStore } from './accounts-data'
+import {
+  providerOf, supportsPlanChannel, zcodePlanLabel, zcodePlanOf,
+  ZCODE_PLAN_CODING, ZCODE_PLAN_START,
+} from './accounts-domain'
+import {
+  allAccounts, clashOptions, closeDialog, findAccount, getStore, proxyPoolOptions,
+} from './accounts-data'
 
 /** 名称长度上限，与后端 custom_providers::MAX_NAME_CHARS 一致（前端先挡一次） */
 const MAX_PROVIDER_NAME_CHARS = 64
@@ -62,11 +70,14 @@ function labelOf(account: AccountLike | null | undefined): string {
 
 export type ProxyPayload =
   | null
+  | { source: 'pool'; proxyId: string }
   | { source: 'clash'; listenerUid: string }
   | { source: 'custom'; protocol: 'http' | 'socks5'; host: string; port: number; username: string; password: string }
 
 export type ProxyDraft = {
-  mode: 'none' | 'clash' | 'custom'
+  mode: 'none' | 'pool' | 'clash' | 'custom'
+  /** 池条目 id（mode === 'pool'） */
+  proxyId: string
   listenerUid: string
   protocol: 'http' | 'socks5'
   host: string
@@ -80,7 +91,8 @@ export function draftOfProxy(proxy: AccountRecord['proxy']): ProxyDraft {
   const source = proxy?.config?.source || proxy?.source
   const config = proxy?.config || null
   return {
-    mode: source === 'clash' ? 'clash' : source === 'custom' ? 'custom' : 'none',
+    mode: source === 'pool' ? 'pool' : source === 'clash' ? 'clash' : source === 'custom' ? 'custom' : 'none',
+    proxyId: source === 'pool' ? String(config?.proxyId || '') : '',
     listenerUid: config?.source === 'clash' || source === 'clash' ? String(config?.listenerUid || '') : '',
     protocol: config?.protocol === 'socks5' ? 'socks5' : 'http',
     host: config?.host || '',
@@ -93,6 +105,10 @@ export function draftOfProxy(proxy: AccountRecord['proxy']): ProxyDraft {
 /** 草稿 → 接口 payload；非法输入抛出「面向用户」的错误（消息直接进 toast / 弹窗状态行） */
 export function readProxyDraft(draft: ProxyDraft): ProxyPayload {
   if (draft.mode === 'none') return null
+  if (draft.mode === 'pool') {
+    if (!draft.proxyId) throw new Error('请先选择已保存的代理')
+    return { source: 'pool', proxyId: draft.proxyId }
+  }
   if (draft.mode === 'clash') {
     if (!draft.listenerUid) throw new Error('请先选择 Clash Verge 出口')
     return { source: 'clash', listenerUid: draft.listenerUid }
@@ -120,6 +136,16 @@ function clashOptionLabel(option: NonNullable<ClashSnapshot['options']>[number])
 /**
  * 出网代理表单（账号设置与批量改代理共用）。刻意**不带** `data-island-input`：
  * 那是输入框岛（就地升级）的钩子，两个岛同时挂一个输入框会打架。
+ *
+ * 档位：
+ *   · 无代理（直连）/ 自定义 —— 与改造前一致；
+ *   · **已保存的代理** —— 引用「网络代理」页的池条目（推荐路径：出口在那里
+ *     配一次、测一次，所有引用它的账号一起生效）。选项文案是
+ *     「名字（协议 主机:端口）」，与账号页代理列同一格式（见 poolItemLabel）；
+ *   · **Clash Verge** —— **只在账号当前就是直接引用 Clash 出口时出现**：
+ *     那种存量记录要能改（切到别的档就消失，因为出口统一走池之后不再提供
+ *     「新建一条 Clash 直引」的入口；想引用 Clash 出口请先到「网络代理」页
+ *     点「同步 Clash Verge」，再从上面那一档选）。
  */
 export function ProxyForm({
   draft,
@@ -133,16 +159,65 @@ export function ProxyForm({
   const store = getStore()
   const clash = store.clash
   const options = Array.isArray(clash?.options) ? clash.options : []
+  /** Clash 直引档的可见性：见函数说明（存量记录专用） */
+  const showClashMode = draft.mode === 'clash'
   const [testing, setTesting] = React.useState(false)
   const [testResult, setTestResult] = React.useState<React.ReactNode>(null)
+  /** 池列表：「已保存的代理」那一档的选项（模块级缓存，见 accounts-data） */
+  const [pool, setPool] = React.useState<PoolItem[] | null>(null)
+  const [poolError, setPoolError] = React.useState('')
   const set = (patch: Partial<ProxyDraft>): void => onChange({ ...draft, ...patch })
 
-  // 出口列表没就绪就补拉一次（与账号表的代理列同一条自愈链，缓存共用）
-  React.useEffect(() => { void clashOptions().catch(() => { /* 画成「不可用」那一支 */ }) }, [])
+  // 出口列表只在 Clash 直引档出现时才需要（存量记录的下拉）—— 别的档不为它
+  // 打这次请求
+  React.useEffect(() => {
+    if (showClashMode) void clashOptions().catch(() => { /* 画成「不可用」那一支 */ })
+  }, [showClashMode])
+
+  /** 读一次代理池（表单里两个入口：首次挂载与「重新读取」） */
+  const loadPool = React.useCallback((force = false): void => {
+    setPoolError('')
+    void proxyPoolOptions({ force })
+      .then(items => setPool(items))
+      .catch(error => {
+        setPool([])
+        setPoolError(errorMessage(error))
+      })
+  }, [])
+  // 只有选中（或初始就是）池引用时才真正去读 —— 其余三档的用户不必为一次多余的
+  // 请求买单；读完缓存住，切到这一档不会再打网络
+  React.useEffect(() => { if (draft.mode === 'pool' && pool === null) loadPool() }, [draft.mode, pool, loadPool])
 
   /** 用当前表单内容测试出口连通性 */
   async function test(): Promise<void> {
     if (testing) return
+    // 池引用：测的是**那条已保存的条目**（testProxyPoolItem 会把结果记进它的
+    // 「上次测试」，与代理页那一颗按钮同一个动作）—— 未选条目时给出提示
+    if (draft.mode === 'pool') {
+      if (!draft.proxyId) {
+        toast('请先选择已保存的代理', 'err')
+        return
+      }
+      setTesting(true)
+      setTestResult('正在连接上游…')
+      try {
+        const data = await shared().workbuddyDesktop?.testProxyPoolItem?.(draft.proxyId)
+        setTestResult(data?.success
+          ? (
+              <span className='text-success'>
+                ✅ 出口可用
+                {data.ip ? `　出口 IP ${esc(data.ip)}` : ''}
+                {data.durationMs !== undefined && data.durationMs !== '' ? `　${esc(String(data.durationMs))}ms` : ''}
+              </span>
+            )
+          : <span className='text-destructive'>❌ {esc(data?.error || '连接失败')}</span>)
+      } catch (error) {
+        setTestResult(<span className='text-destructive'>❌ {esc(errorMessage(error))}</span>)
+      } finally {
+        setTesting(false)
+      }
+      return
+    }
     let proxy: ProxyPayload
     try {
       proxy = readProxyDraft(draft)
@@ -176,17 +251,61 @@ export function ProxyForm({
   return (
     <div className='flex flex-col'>
       <RadioGroup value={draft.mode} onValueChange={value => set({ mode: value as ProxyDraft['mode'] })}
-        className='flex-row items-center gap-5' aria-label='代理方式'>
+        className='flex-row flex-wrap items-center gap-5' aria-label='代理方式'>
         <Label className='inline-flex cursor-pointer items-center gap-2 font-normal'>
           <RadioGroupItem value='none' />无代理（直连）
         </Label>
         <Label className='inline-flex cursor-pointer items-center gap-2 font-normal'>
-          <RadioGroupItem value='clash' />Clash Verge
+          <RadioGroupItem value='pool' />已保存的代理
         </Label>
+        {/* Clash 直引档只对**已经是这种配置**的账号出现（见函数说明）：
+            出口统一走代理池之后不再提供新建入口 */}
+        {showClashMode ? (
+          <Label className='inline-flex cursor-pointer items-center gap-2 font-normal'>
+            <RadioGroupItem value='clash' />Clash Verge
+          </Label>
+        ) : null}
         <Label className='inline-flex cursor-pointer items-center gap-2 font-normal'>
           <RadioGroupItem value='custom' />自定义
         </Label>
       </RadioGroup>
+
+      {draft.mode === 'pool' ? (
+        <div className='mt-3'>
+          <div className='field-row'>
+            <label htmlFor={`${idPrefix}-pool-exit`}>代理</label>
+            {/* value 恒为字符串（空串 = 还没选）：受控值从 undefined 切到字符串会被 Base UI
+                当成「非受控 → 受控」的切换，所以不给 undefined */}
+            <Select value={draft.proxyId} disabled={!pool?.length}
+              onValueChange={value => set({ proxyId: String(value) })}>
+              <SelectTrigger id={`${idPrefix}-pool-exit`} className='min-w-[220px]'>
+                <SelectValue>
+                  {pool?.find(item => item.id === draft.proxyId)
+                    ? poolItemLabel(pool.find(item => item.id === draft.proxyId)!)
+                    : (pool === null ? '正在读取…' : pool.length ? '请选择代理' : '还没有保存的代理')}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {(pool ?? []).map(item => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {poolItemLabel(item)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant='outline' size='sm' onClick={() => loadPool(true)}>重新读取</Button>
+          </div>
+          <div className='detail mt-1.5'>
+            {poolError
+              ? `读取失败：${poolError}`
+              : pool === null
+                ? '正在读取代理列表…'
+                : pool.length
+                  ? '地址与端口由「网络代理」页管理：那边改一次、测一次，所有引用它的账号一起生效'
+                  : '「网络代理」页还没有出口 —— 去那里新增，或点「同步 Clash Verge」把 Clash 的出口导进来'}
+          </div>
+        </div>
+      ) : null}
 
       {draft.mode === 'clash' ? (
         <div className='mt-3'>
@@ -226,6 +345,11 @@ export function ProxyForm({
                   ? `读取自 ${clash.dir || 'Clash Verge'}；端口由 Clash Verge 管理，这里实时同步`
                   : 'Clash Verge 里还没有配置混合监听器或节点端口'}
           </div>
+          <p className='detail mt-1.5'>
+            这是既有配置（直接引用 Clash 出口，不经过代理池）。推荐改用上面的
+            <b>「已保存的代理」</b>：到「网络代理」页点「同步 Clash Verge」把出口
+            导进池后即可选 —— 那样能集中测试、也能被多个账号共用。
+          </p>
         </div>
       ) : null}
 
@@ -271,6 +395,70 @@ export function ProxyForm({
 }
 
 /* ─── 账号设置弹窗 ───────────────────────────── */
+
+/**
+ * 「使用哪个套餐」：**只有 ZCode 账号有这一项**（见 accounts-domain 的
+ * `supportsPlanChannel`），因此按能力位条件渲染。
+ *
+ * 两条通道是**两份独立的额度**，上游对「套餐已到期」的拒绝只由其中一条给出，
+ * 所以这里必须由用户明确指定走哪条（详见后端 `providers::zcode::plan` 的模块头）。
+ * 没有套餐登录态（jwt）时活动套餐那一项**仍可选中**但带一句说明 —— 禁用选项
+ * 会让用户以为「这个功能不存在」，而实际问题是他需要重新登录一次。
+ */
+function PlanChannelField({
+  plan, hasJwt, onChange,
+}: {
+  plan: string
+  hasJwt: boolean
+  onChange: (next: string) => void
+}) {
+  const current = zcodePlanLabel(plan)
+  const [pool, setPool] = React.useState<{ ready?: number; target?: number } | null>(null)
+  // 只在真的要用活动套餐时才盯着令牌池：编码套餐那条路不需要验证码令牌。
+  // 5 秒一轮（与后台铸造器同一量级），弹窗关掉就停
+  React.useEffect(() => {
+    if (plan !== ZCODE_PLAN_START) return () => { /* 不需要轮询 */ }
+    let alive = true
+    const tick = () => {
+      void Promise.resolve(shared().workbuddyDesktop?.zcodeCaptchaStats?.())
+        .then(stats => { if (alive && stats) setPool({ ready: Number(stats.ready) || 0, target: Number(stats.target) || 0 }) })
+        .catch(() => { /* 桥不可用时不给状态，不报错 */ })
+    }
+    tick()
+    const timer = window.setInterval(tick, 5000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [plan])
+  return (
+    <div className='field-row mt-2.5'>
+      <label htmlFor='account-plan-channel'>使用套餐</label>
+      <Select value={plan} onValueChange={value => onChange(String(value))}>
+        <SelectTrigger id='account-plan-channel' className='min-w-[220px]'>
+          {/* 显式传当前项的展示文案（不依赖 value 自动显示，见工程约定） */}
+          <SelectValue>{current}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ZCODE_PLAN_CODING}>
+            编码套餐（Coding Plan）— 走开放平台端点，用自己订阅的额度
+          </SelectItem>
+          <SelectItem value={ZCODE_PLAN_START}>
+            活动套餐（Start Plan）— 走官方活动端点，用活动里领到的额度
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      {plan === ZCODE_PLAN_START && !hasJwt ? (
+        <span className='detail text-destructive'>
+          该账号没有套餐登录态（jwt），活动套餐会失败：请重新登录该账号
+        </span>
+      ) : null}
+      {plan === ZCODE_PLAN_START ? (
+        <span className='detail' title='活动套餐的推理端点要求每条请求带一个阿里云验证码令牌；令牌由本应用在后台静默铸造，界面关闭时无法铸造'>
+          验证码令牌：{pool ? `${pool.ready} / ${pool.target || 3}` : '读取中…'}
+          {pool && pool.ready === 0 ? '（库存为空，正在补；补不上时转发会失败）' : ''}
+        </span>
+      ) : null}
+    </div>
+  )
+}
 
 /** 余额凭证行：**只有 CatPaw 账号有这一项**，所以按 provider 条件渲染 */
 function BalanceTokenField({
@@ -364,6 +552,8 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
   const [name, setName] = React.useState(account?.name || '')
   const [proxyDraft, setProxyDraft] = React.useState<ProxyDraft>(() => draftOfProxy(account?.proxy))
   const [balanceToken, setBalanceToken] = React.useState('')
+  // ZCode 的「使用哪个套餐」草稿（非 ZCode 账号恒为空串，那一段也不渲染）
+  const [planChannel, setPlanChannel] = React.useState(() => zcodePlanOf(account))
   const [busy, setBusy] = React.useState(false)
   const [status, setStatus] = React.useState<React.ReactNode>('')
   const [provider, setProvider] = React.useState<{ id: string; name?: string; protocol?: string; baseUrl?: string } | null>(null)
@@ -469,12 +659,19 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
       // 输入框永远是空的；若把「空」解释成清除，用户每次保存设置都会把配好的凭证删掉）。
       // 清除走上面那个显式按钮。
       const balancePatch = isCatpaw && balanceToken.trim() ? { balanceToken: balanceToken.trim() } : {}
+      // 套餐通道：只在**真的改了**时才带上（取值与后端 `zcode::normalize_plan`
+      // 逐字一致）。带一个没变的键不会出错，但会让后端那句「套餐通道 → …」的
+      // 变更提示在每次保存设置时都出现一次，看起来像刚改过
+      const planPatch = supportsPlanChannel(target) && planChannel !== zcodePlanOf(target)
+        ? { zcodePlan: planChannel }
+        : {}
       await shared().workbuddyDesktop?.updateAccount?.(id, {
         name: name.trim() || target.name,
         priority: clamped,
         enabled,
         proxy,
         ...balancePatch,
+        ...planPatch,
       })
       // 提供商那一段排在账号之后（账号是本弹窗的主角，先落库）。它失败时账号已经存下了，
       // 所以留在弹窗里把那句话说清楚 —— 笼统报成「保存失败」会把两件事混成一件
@@ -549,6 +746,10 @@ export function AccountSettingsDialog({ id, onClose }: { id: string; onClose: ()
               <BalanceTokenField configured={account.hasBalanceToken === true} value={balanceToken}
                 onChange={setBalanceToken} clearBusy={busy}
                 onClear={() => void clearBalanceToken()} />
+            ) : null}
+            {supportsPlanChannel(target) ? (
+              <PlanChannelField plan={planChannel} hasJwt={account.canClaim === true}
+                onChange={setPlanChannel} />
             ) : null}
           </DialogSection>
 

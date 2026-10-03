@@ -17,6 +17,7 @@
 //!   request.rs      传输层：请求发送、上游错误解析、追踪 id（**不认识 provider**）
 //!   sse.rs          SSE reasoning 帧合并（跨 chunk 半行缓冲）+ usage 旁路提取
 //!   aggregate.rs    非流式聚合（SSE → 完整 chat.completion）+ usage 旁路提取
+//!   translate.rs    上游响应协议翻译（Anthropic SSE → chat SSE；ZCode 活动套餐）
 //!   usage.rs        usage 旁路槽：token 用量 / 承载 provider+账号 / 尝试次数
 //!
 //! ── provider 差异去哪了（Agent2API 改造 W2b-T3）───────────────
@@ -53,6 +54,7 @@ mod provider_loop;
 mod rotate;
 pub mod sse;
 pub mod stall;
+pub mod translate;
 pub mod usage;
 
 use std::collections::HashMap;

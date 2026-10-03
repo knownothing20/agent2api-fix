@@ -27,6 +27,7 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
+  Progress,
   Select,
   SelectContent,
   SelectItem,
@@ -35,19 +36,19 @@ import {
   Switch,
   cn,
 } from '@ui'
-import { formatTime, shared, type AccountRecord, type UsageEntry } from './accounts-shared'
+import { formatTime, poolItemLabel, POOL_VALUE_PREFIX, shared, type AccountRecord, type UsageEntry } from './accounts-shared'
 import {
-  accountTags, activeLimits, checkedInToday, checkinDoneTitle,
+  accountTags, activeLimits, checkedInToday, checkinDoneTitle, claimDoneTitle, claimedToday,
   displayNameOf, editionSuffix, formatResetText, identifierOf, isDesktopAccount, isEnabled,
   providerFeatures, providerOf, RESET_UNKNOWN, supportsCheckin, supportsClaim, supportsUsage,
   supportsWelfare, welfareDoneTitle, welfareStateOf, welfareTodoTitle,
 } from './accounts-domain'
 import { PRIORITY_MAX, PRIORITY_MIN, priorityOf } from './accounts-columns'
 import {
-  PROXY_CUSTOM_CURRENT, PROXY_CUSTOM_EDIT, applyProxyPick, checkinErrorOf, clashError, clashSnapshot,
-  commitPriority, connectionsOf, maskName, moveAccount, openSettingsDialog, queryUsageOnce, runCheckin,
-  setAccountEnabled, setPanelOpen, startCodeArtsWelfare, startZcodeClaim, toggleNamesHidden,
-  usageEntries, usageFailureOf,
+  PROXY_CUSTOM_CURRENT, PROXY_CUSTOM_EDIT, applyProxyPick, checkinErrorOf,
+  commitPriority, connectionsOf, maskName, moveAccount, openSettingsDialog, poolError,
+  proxyPoolSnapshot, queryUsageOnce, runCheckin, setAccountEnabled, setPanelOpen,
+  startCodeArtsWelfare, startZcodeClaim, toggleNamesHidden, usageEntries, usageFailureOf,
 } from './accounts-data'
 /** 图标（icons.js 的内联 SVG 串）：整站共用一份图标集，这里只做注入 */
 function iconHtml(name: string, size: number): string {
@@ -304,7 +305,12 @@ function usageSummary(entry: UsageEntry): { text: string; kind: string; title: s
         + `${wallet?.balanceView ? String(wallet.balanceView) : numberText(wallet?.balance)}`)
       .join(' · ')
     const subscription = subscriptionText(data.subscription)
-    const available = `可用 ${numberText(data.available)} ${unit}`
+    // 展示串优先：ZCode 的额度单位是 token（1 亿 = 9 位数字），而余额列只有几十
+    // 像素宽 —— 后端因此给了 `availableView`（`1亿 token` 这类紧凑串）。没有这个
+    // 字段的家（其余全部）走的仍是「数值 + 单位」那条老路，行为一字未变。
+    const available = data.availableView
+      ? String(data.availableView)
+      : `可用 ${numberText(data.available)} ${unit}`
     // ── 部分失败：一份账读到了、另一份没读到 ────────────────────
     // CodeArts 的余额是**两台网关**（订阅统计 + 福利网关，见后端
     // `providers::codearts::balance` 的模块头），后端把失败的一侧写进
@@ -334,17 +340,92 @@ function usageSummary(entry: UsageEntry): { text: string; kind: string; title: s
 }
 
 /**
+ * 余额里的「主额度桶」：界面用它画套餐名与进度条（`UsageCell` 的两行形态）。
+ *
+ * ── 为什么取「总量最大的那个桶」──────────────────────────────
+ * 一个账号常常同时挂着好几份额度：活动发的大额包（ZCode Trust Build 的 1 亿）
+ * 与每天续发的小额包（Start Plan 的 300 万）。用户点开这一列想看的是**大额那份**
+ * 还剩多少，而「总量最大」正是它 —— 也顺带避开了每日桶在一天之内反复回满
+ * 导致进度条乱跳。总量缺一个都不参与比较（没有总量就画不出进度），
+ * 于是没有结构化验数据的家（其余全部）自然退回上面那套纯读数呈现。
+ *
+ * ── 缺失一律当「不知道」─────────────────────────────────────
+ * `remainingPercent` 缺失时**不画进度条**（但名字与读数照给），
+ * 不拿 0 或 100 冒充 —— 一条满格的进度条与一条空进度条读起来是相反的意思，
+ * 而它们都可能是错的。
+ */
+function usagePool(entry: UsageEntry): { planName: string; text: string; percent: number | null } | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+  const data = entry as Record<string, unknown>
+  const wallets = Array.isArray(data.wallets) ? data.wallets as Array<Record<string, unknown>> : []
+  let lead: Record<string, unknown> | null = null
+  for (const wallet of wallets) {
+    const total = Number(wallet?.total)
+    if (!Number.isFinite(total) || total <= 0) continue
+    if (!lead || total > Number(lead.total)) lead = wallet
+  }
+  if (!lead) return null
+  const subscription = (data.subscription && typeof data.subscription === 'object'
+    ? data.subscription
+    : {}) as Record<string, unknown>
+  // 套餐名优先取这个桶自己的（`wallet.planName`），退回账号级那份 ——
+  // 桶认不出归属时（上游没给 plan_id）至少还有订阅里的名字可显示
+  const planName = String(lead.planName || subscription.planName || '')
+  const percent = numberOrNull(lead.remainingPercent)
+  return {
+    planName,
+    text: String(lead.balanceView || numberText(lead.balance)),
+    percent: percent === null ? null : Math.max(0, Math.min(100, percent)),
+  }
+}
+
+/**
+ * 数值字段 → number 或 null。
+ *
+ * 必须显式判 null/undefined/空串：`Number(null)` 是 0（不是 NaN），照直转换会把
+ * 「上游没给这个数」变成「这个数是 0」—— 进度条会画成一条空条，与「剩余 0%」
+ * 读起来一模一样，而那是两件事（见 `usagePool` 的缺失口径）。
+ */
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
  * 余额列：**只放读数**（不可点）—— 查询按钮住在操作列，这一列纯粹是
  * 「一眼看出还剩多少」。刻意不换成组件库的 Badge：它是读数而不是状态徽章，
  * 样式全在 `.usage-sum` 里（四档语义色：ok / bad / muted / warn —— `warn` 是
  * 「读到了但不完整」那一档，见上面 `usageSummary` 的半次失败分支）。
+ *
+ * ── 两行形态（有声明的总额度桶时）───────────────────────────
+ * 第一行是套餐名（用户问得最多的一句是「这 1 亿是哪个活动给的」），
+ * 第二行是进度条 + 「剩余 / 总量」。进度条画的是**剩余**比例 ——
+ * 与相邻的读数同一方向，否则「条快满了」与「剩 8800 万」会互相打架。
+ * 完整明细（每个桶、到期、可用合计）仍在悬停提示里，这里只抢最基本的两个问题：
+ * 哪个套餐、还剩多少。
  */
 export function UsageCell({ account }: { account: AccountRecord }) {
   if (!supportsUsage(account)) {
     return <span className='muted' title='该提供商没有余额查询'>—</span>
   }
-  const summary = usageSummary(usageEntries().get(account.id))
-  return <span className={`usage-sum ${summary.kind}`} title={summary.title}>{summary.text}</span>
+  const entry = usageEntries().get(account.id)
+  const summary = usageSummary(entry)
+  // 失败 / 未配置那些档不画进度条：读数本身就不是「还剩多少」，
+  // 给它配个进度条会把一句错误装饰成一条可信的读数
+  const pool = summary.kind === 'ok' || summary.kind === 'warn' ? usagePool(entry) : null
+  if (!pool) {
+    return <span className={`usage-sum ${summary.kind}`} title={summary.title}>{summary.text}</span>
+  }
+  return (
+    <span className='usage-pool' title={summary.title}>
+      {pool.planName ? <span className='usage-pool-name'>{pool.planName}</span> : null}
+      <span className='usage-pool-line'>
+        {pool.percent !== null ? <Progress value={pool.percent} className='usage-pool-bar' /> : null}
+        <span className={`usage-pool-view ${summary.kind}`}>{pool.text}</span>
+      </span>
+    </span>
+  )
 }
 
 /* ─── 账号 / 提供商 / 代理列 ─────────────────── */
@@ -421,53 +502,67 @@ export function ProviderCell({ account }: { account: AccountRecord }) {
 /**
  * 代理：这个账号出网走哪条线路。一格一个下拉，**选中即保存**。
  *
- * 选项： 「直连」→ 清掉代理（null）；每个 Clash Verge 出口一项（`节点名 :端口`）；
- * 「自定义代理…」是**动作项**（不是一种配置）—— 选中它打开账号设置弹窗，下拉随即
- * 恢复原值（它是受控的，重绘即回原值）。
- * 出口列表来自 accounts-data 的模块级缓存（同步读，纯渲染不发请求）；没就绪时先只有
- * 「直连 + 当前值 + 自定义…」，页面的自愈 effect 补拉一次再重画。
+ * 选项**只有**直连 + 「网络代理」页的代理池条目（值是 `pool:<proxyId>`）——
+ * 出口统一在那一页配 / 命名 / 测试（Clash 的出口由「同步 Clash Verge」整体
+ * 镜像进池），这里只做「选哪一条」。「自定义代理…」是**动作项**（不是一种
+ * 配置）—— 选中它打开账号设置弹窗，下拉随即恢复原值（它是受控的，重绘即回原值）。
+ * 池列表来自 accounts-data 的模块级缓存（同步读，纯渲染不发请求）；没就绪时
+ * 先只有「直连 + 当前值 + 自定义…」，页面的自愈 effect 补拉一次再重画。
+ *
+ * 存量记录（直接引用 Clash 出口的 `{source:'clash', listenerUid}`、或自定义
+ * 形状）在这里显示为**补位项**（带来源前缀），照原样转发；用户在这个下拉里
+ * 选一条池条目或切回直连就会改写它。
  */
 export function ProxyCell({ account }: { account: AccountRecord }) {
   const proxy = account.proxy
   const source = proxy?.config?.source || proxy?.source
   const label = proxy?.label || (source === 'custom' ? '自定义代理' : '已设置')
   const broken = proxy?.error
-  const clash = clashSnapshot()
-  const exits = Array.isArray(clash?.options) ? clash.options : []
+  const pool = proxyPoolSnapshot()
+  const poolItems = Array.isArray(pool) ? pool : []
 
-  // 当前值：「有代理但取不到 Clash 出口 uid」（自定义 / 坏形状）都落到自定义项 ——
-  // 绝不能回落成「直连」：那会把「配置坏了」显示成「没配」
+  // 当前值映射回下拉的值域：池条目用 `pool:<id>`、其余（Clash 直引 / custom /
+  // 坏形状）落到补位项 —— 绝不能回落成「直连」：那会把「配置坏了」显示成「没配」
   let current = ''
-  if (source === 'clash' && proxy?.config?.listenerUid) current = String(proxy.config.listenerUid)
+  if (source === 'pool' && proxy?.config?.proxyId) current = `${POOL_VALUE_PREFIX}${proxy.config.proxyId}`
   else if (proxy) current = PROXY_CUSTOM_CURRENT
 
-  // 「当前出口已不在列表」（被删 / 换了订阅）：补位项 + title 提示各担一半
-  const staleExit = source === 'clash' && Boolean(current) && !exits.some(exit => String(exit.uid) === current)
-
   const items: Array<{ value: string; label: string; disabled?: boolean }> = [{ value: '', label: '直连' }]
-  for (const exit of exits) items.push({ value: String(exit.uid), label: `${exit.name} :${exit.port}` })
-  if (clash && clash.available === false) {
-    items.push({ value: '__hint__', label: clash.error ? 'Clash 配置不可用' : '未检测到 Clash Verge', disabled: true })
-  } else if (clash && !exits.length) {
-    items.push({ value: '__hint__', label: '没有可用的 Clash 出口', disabled: true })
-  } else if (!clash && clashError()) {
-    // 列表读取失败（页面侧在节流重试）：把「为什么少一批选项」说出来 ——
-    // 与「没装 Clash」是两种不同的处境，不能都静默成两项
-    items.push({ value: '__hint__', label: 'Clash 出口列表读取失败（重试中）', disabled: true })
+  for (const item of poolItems) {
+    // 文案是「名字（协议 主机:端口）」—— 名字是用户在「网络代理」页起的，
+    // 地址是后端解析出来的实时值（见 poolItemLabel）。同一格里多条目同名时
+    // 地址是唯一能分辨它们的读数，不能只写名字
+    items.push({ value: `${POOL_VALUE_PREFIX}${item.id}`, label: poolItemLabel(item) })
   }
-  if (source === 'clash') {
-    if (staleExit) items.push({ value: current, label: `${label}${broken ? '（不可用）' : '（不在列表）'}` })
-  } else if (current === PROXY_CUSTOM_CURRENT) {
-    const prefix = source === 'custom' ? '自定义：' : ''
+  if (pool === null) {
+    // 还没读到（首帧 / 自愈 effect 尚未跑完）：给一句「读取中」而不是
+    // 「还没有代理」—— 后者会让用户以为池是空的
+    items.push({ value: '__hint_pool__', label: '正在读取代理列表…', disabled: true })
+  } else if (!poolItems.length) {
+    // 池为空 / 读取失败各说明一句：后者是故障（页面侧在节流重试），前者是
+    // 「还没配」—— 两种都不该静默成「只有直连」
+    items.push({
+      value: '__hint_pool__',
+      label: poolError() ? '代理列表读取失败（重试中）' : '还没有代理（去「网络代理」页添加）',
+      disabled: true,
+    })
+  }
+  if (current === PROXY_CUSTOM_CURRENT) {
+    // 补位项：不带动任何写操作（PROXY_CUSTOM_CURRENT 在 applyProxyPick 里被忽略），
+    // 只是把当前值原样显示出来
+    const prefix = source === 'clash' ? 'Clash 出口：' : source === 'custom' ? '自定义：' : ''
     items.push({ value: PROXY_CUSTOM_CURRENT, label: `${prefix}${label}${broken ? '（不可用）' : ''}` })
+  } else if (source === 'pool' && !poolItems.some(item => `${POOL_VALUE_PREFIX}${item.id}` === current)) {
+    // 池引用但条目已不在池里（被删 / Clash 侧删了出口）：补位显示当前值
+    items.push({ value: current, label: `${label}${broken ? '（不可用）' : ''}` })
   }
   items.push({ value: PROXY_CUSTOM_EDIT, label: '自定义代理…' })
 
   const title = broken
     ? `代理不可用：${proxy?.error}（转发时会回退直连）；选「自定义代理…」去修改`
-    : staleExit
-      ? `「${label}」已不在 Clash 的当前配置里（转发时会回退直连）；选择即保存，「自定义代理…」重新设置`
-      : `当前：${proxy ? label : '直连'}；选择即保存，「自定义代理…」打开完整设置`
+    : source === 'clash' || source === 'custom'
+      ? `当前：${label}（未经过代理池 —— 可在「网络代理」页把出口同步进池后来这里改选）`
+      : `当前：${proxy ? label : '直连'}；选项来自「网络代理」页；「自定义代理…」打开完整设置`
   const selected = items.find(item => item.value === current)
 
   return (
@@ -551,8 +646,14 @@ export function ActionsCell({ account, atFront }: { account: AccountRecord; atFr
         )
       ) : null}
       {canClaim ? (
+        // 按钮**不因「今天领过」置灰**：同一个账号可能同时挂着几份可领套餐
+        // （活动大额包 + 每日包），而上游的「已领取过」是按套餐判的 —— 领了 A
+        // 之后 B 照样能领。今天领过没落在悬停提示里，逐份的状态（哪几份已领、
+        // 还能选哪份）由弹窗给出，见 ui/zcode-claim.js。
         <Button variant='outline' size='xs' disabled={claimBusy}
-          title='探测并领取官方的限时体验套餐（需要过一次人机验证）'
+          title={claimedToday(account)
+            ? claimDoneTitle(account)
+            : '探测并领取官方限时体验套餐（每天一期，需要过一次人机验证）'}
           onClick={() => void claim()}>领套餐</Button>
       ) : null}
       {/* CodeArts 的「领福利」：与上面那颗「领套餐」是**两件事**（判据位不同、流程也不同

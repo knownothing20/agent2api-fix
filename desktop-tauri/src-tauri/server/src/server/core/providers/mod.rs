@@ -238,7 +238,7 @@ pub enum ProviderKind {
     /// 账号管理 **加推理转发**（OpenAI 兼容、Bearer 鉴权、无状态）。
     ///
     /// ── 这一家的特别之处：zcode 平面两地相同、推理平面两地不同 ──
-    /// 登录与「周末套餐」领取都在 ZCode 自己的服务端（`zcode.z.ai`），两地
+    /// 登录与「限时套餐」领取都在 ZCode 自己的服务端（`zcode.z.ai`），两地
     /// 客户端用的是同一个域；真正跑推理的是各自开放平台的编码套餐端点
     /// （国内 `open.bigmodel.cn` / 国际 `api.z.ai`）。所以「地区」在这一家
     /// 只影响推理平面与账号归属 —— 与 AutoClaw（两地各一整套域名）不同。
@@ -258,9 +258,10 @@ pub enum ProviderKind {
     /// 把地区做成「一家的一个字段」的后果那三次已经各说过一遍：地区成了**账号
     /// 的属性**，界面上混在一起、无法按地区隔离账号记录。
     ///
-    /// ── 本家**没有签到**，接的是「周末套餐领取」────────────────
+    /// ── 本家**没有签到**，接的是「限时套餐领取」────────────────
     /// 其余各家都在 `core::auto_checkin` 的提供商清单里，本家不在 ——
-    /// 它没有签到活动，运营玩法是限时发放的体验套餐（见 `zcode::claim`）。
+    /// 它没有签到活动，运营玩法是限时发放的体验套餐（2026-09-28 那期是
+    /// 每天一份新套餐，见 `zcode::claim` 的模块头）。
     ZcodeIntl,
     /// CodeArts（华为云 AI 代码助手 / snap-access）。适配实现在 `codearts/`：
     /// 请求要华为云 SDK-HMAC-SHA256 签名、对话是有状态的（每账号只允许 3 路
@@ -483,6 +484,54 @@ pub fn label_of(id: &str) -> String {
     match kind_from_id(id) {
         Some(kind) => meta(kind).label.to_string(),
         None => id.to_string(),
+    }
+}
+
+/// 「这家有一段**网关自带**的提示词」的说明（`None` = 这家没有这回事）。
+///
+/// 消费者只有一个：设置页「系统提示词 → 按提供商」那张表。它的存在同时决定
+/// **界面上这一家默认就出现在列表里**（有内置段的家不需要用户先去「添加」才
+/// 看得见那个开关 —— 否则这个开关等于藏起来了）。返回的文本是**说明**而不是
+/// 「不可改」的宣告：开关本身可以关，这段文字负责讲清「关掉意味着什么、
+/// 依据是哪次实测」（ZCode 的记录见 `zcode::OFFICIAL_PROMPT_NOTE`）。
+///
+/// 放在注册表这一层是因为它**就是**一条 provider 能力（与 `is_stateful` /
+/// `usage` 同类），而实现由那家自己给 —— 别处不要另写
+/// `match id { "zcode" => ... }`。
+pub fn gateway_prompt_note(id: &str) -> Option<&'static str> {
+    match kind_from_id(id)? {
+        // 国内版 / 国际版是同一条通道形态（活动套餐端点两地相同），要求一致
+        ProviderKind::Zcode | ProviderKind::ZcodeIntl => Some(zcode::OFFICIAL_PROMPT_NOTE),
+        _ => None,
+    }
+}
+
+/// 这家自带提示词的**装配规模**（字符数）—— 界面把它显示成只读子行的
+/// 「约 N 字符」，让用户对「关掉的是什么」有量化概念。
+///
+/// 与 [`gateway_prompt_note`] 一样按家分派；不认识的家、以及算不出规模的家
+/// （内置资源解析失败时是 0）都给 `None` —— 界面此时不显示那一行，
+/// 而不是显示一个 0 或一个假数字。
+pub fn gateway_prompt_chars(id: &str) -> Option<usize> {
+    match kind_from_id(id)? {
+        ProviderKind::Zcode | ProviderKind::ZcodeIntl => {
+            Some(zcode::official_prompt_approx_chars()).filter(|chars| *chars > 0)
+        }
+        _ => None,
+    }
+}
+
+/// 这家自带提示词的**正文模板**（三段；`None` = 这家没有自带段、或资源坏了）。
+///
+/// 与上面两个函数同一分派口径，消费者是 `/api/prompt` 的响应：设置页的编辑器拿
+/// 它当「官方原文」显示（`{cwd}` 这类占位符保持原样，编辑时看得见哪些值由运行时
+/// 填），用户改过的段存在配置里、发请求时逐段合并（见
+/// `core::prompt::GatewayBlocks::or`）。资源坏了给 `None` 而不是空文本 ——
+/// 一份空文本放上界面，用户一保存就等于把官方原文清空了。
+pub fn gateway_prompt_blocks(id: &str) -> Option<crate::server::core::prompt::GatewayBlocks> {
+    match kind_from_id(id)? {
+        ProviderKind::Zcode | ProviderKind::ZcodeIntl => zcode::official_prompt_blocks(),
+        _ => None,
     }
 }
 

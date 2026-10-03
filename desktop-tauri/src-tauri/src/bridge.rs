@@ -203,7 +203,7 @@ const BRIDGE_JS: &str = r#"
         vendor: String(vendor || ''),
         captchaVerifyParam: String(captchaVerifyParam || ''),
       }),
-    // ── ZCode「周末套餐」领取（三个薄封装，直接打账号子路径接口）──────
+    // ── ZCode 限时套餐领取（三个薄封装，直接打账号子路径接口）──────
     // 与上面 AutoClaw 那三个方法同一形态，**两处必须成对存在**：本文件是
     // 桌面壳的桥接，`server/src/web_shim.rs` 是 headless 面板的桥接 ——
     // 只加一边时，另一形态下的界面会报「当前环境不支持领取（桥接方法缺失）」
@@ -214,8 +214,10 @@ const BRIDGE_JS: &str = r#"
     //     返回 `{enabled:false}` 表示上游此刻不要验证码 —— 前端**不该**弹滑块；
     //   · preview 只读探测，返回 `{plans:[...], deployed}`；
     //     `deployed:false` = 活动接口尚未部署（开抢前的正常状态，不是错误）；
-    //   · claim 真正领取；**业务失败也走 200**，由 `ok:false` + `failure`
-    //     表达（前端据此选提示文案）。
+    //   · claim 真正领取；`captchaVerifyParam` **可以为空**（上游此刻不要验证码
+    //     时就不带那个头，见 `claim::claim` 的注释）。**业务失败也走 200**，
+    //     由 `ok:false` + `failure` 表达（前端据此选提示文案）；返回里的
+    //     `claimedAt` 是领取状态的落库时刻，前端拿它把按钮切成「今日已领」。
     zcodeClaimCaptchaConfig: accountId =>
       call('POST', `/api/accounts/${encodeURIComponent(String(accountId || ''))}/zcode-claim/captcha-config`),
     zcodeClaimPreview: accountId =>
@@ -226,6 +228,14 @@ const BRIDGE_JS: &str = r#"
         captchaVerifyParam: String(captchaVerifyParam || ''),
         captchaRegion: captchaRegion ? String(captchaRegion) : '',
       }),
+    // ── ZCode 活动套餐通道的验证码令牌池（见 core/providers/zcode/captcha.rs）──
+    // 它与上面三条**不是一回事**：那三条服务「领套餐」（用户动作，拖滑块拿串）；
+    // 这两条服务**转发** —— 活动套餐的推理端点每条请求都要一个当次铸的令牌，而
+    // 转发在后台发生，令牌只能由界面静默铸造后推进池子（唯一调用方是
+    // ui/zcode-captcha-pool.js）。响应形状见 `api::zcode_captcha`。
+    zcodeCaptchaStats: () => call('GET', '/api/zcode/captcha'),
+    pushZcodeCaptchaTokens: tokens =>
+      call('POST', '/api/zcode/captcha', { tokens: Array.isArray(tokens) ? tokens : [] }),
     onLoginState: callback => on('login:state', callback),
     refreshSession: async () => {
       await call('POST', '/api/session/refresh', {});
@@ -324,6 +334,28 @@ const BRIDGE_JS: &str = r#"
       }
       return call('POST', '/api/proxies/test', body);
     },
+    // ── 代理池（「网络代理」页）──
+    // 与 `server/src/web_shim.rs` 的同名方法成对存在（那个文件是 headless
+    // 面板的桥）：只加一边时，另一形态下的页面会报「桥接方法缺失」——
+    // 标题栏那一族方法有同样的教训，见 zcode-claim 那段的说明。
+    // 契约（详见 `api::proxies` 的模块头）：
+    //   · getProxyPool           列表 `{items, clash}`；item 带 `usedBy`
+    //                            （引用它的账号）与 `lastTest`（上次测试结果）。
+    //                            **进来时后端会自动同步一次 Clash 出口**
+    //   · create/update/remove   写操作都返回同一份最新列表（就地替换）；
+    //                            Clash 同步来的条目是只读镜像，update/remove
+    //                            会被后端拒绝（400 + 一句可读的中文）
+    //   · testProxyPoolItem      测一条并把结果记进条目；测试失败也是**成功响应**
+    //                            （`success:false` + error 文案）
+    //   · syncClashToProxyPool   手动同步 Clash Verge 出口，返回里多一个
+    //                            `changes`（本次变更数）与 `syncError`
+    //                            （Clash 不可用时的原因；那不算失败）
+    getProxyPool: () => call('GET', '/api/proxies/pool'),
+    createProxyPoolItem: payload => call('POST', '/api/proxies/pool', payload || {}),
+    updateProxyPoolItem: payload => call('POST', '/api/proxies/pool/update', payload || {}),
+    removeProxyPoolItem: id => call('POST', '/api/proxies/pool/remove', { id: String(id || '') }),
+    testProxyPoolItem: id => call('POST', '/api/proxies/pool/test', { id: String(id || '') }),
+    syncClashToProxyPool: () => call('POST', '/api/proxies/pool/sync-clash', {}),
 
     // ── 积分 / 签到 ──
     getUsage: () => call('GET', '/api/usage'),
@@ -432,6 +464,18 @@ const BRIDGE_JS: &str = r#"
       call('PUT', '/api/prompt', {
         promptMode: payload && payload.promptMode != null ? String(payload.promptMode) : null,
         promptFile: payload && payload.promptFile != null ? String(payload.promptFile) : null,
+        // 界面里编辑的提示词正文（空串 = 清除这一份、回落文件 / 内置默认；
+        // null = 这一项不改）。正文原样送过去，桥接层不做任何裁剪或换行归一。
+        promptText: payload && payload.promptText != null ? String(payload.promptText) : null,
+        // 按提供商的覆盖：整张稀疏表原样透传（值是对象，或 null = 删掉这一家）。
+        // 这里**不**做字段级归一 —— 那张表的语义（部分更新 / null 表示删除）由
+        // 后端定，桥接层再实现一遍只会多一处可能与后端分叉的解析。
+        promptProviders: payload && payload.promptProviders != null ? payload.promptProviders : null,
+        // 网关自带提示词的逐家开关（另一维，值是布尔或 null）—— 同样原样透传
+        promptGateway: payload && payload.promptGateway != null ? payload.promptGateway : null,
+        // 网关自带提示词的正文覆盖（`{"<id>": {identity?, stable?, dynamic?} | null}`）：
+        // 同样是原样透传，段名与部分更新的语义都由后端定
+        promptGatewayText: payload && payload.promptGatewayText != null ? payload.promptGatewayText : null,
         clearDegrade: !!(payload && payload.clearDegrade),
       }),
 

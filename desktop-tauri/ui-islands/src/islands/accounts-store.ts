@@ -39,7 +39,8 @@ export type AccountsStore = {
   selected: ReadonlySet<string>
   panels: ReadonlyMap<string, ReadonlySet<PanelKind>>
   connections: ReadonlyMap<string, number>
-  /** Clash 出口列表缓存（`null` = 还没读到）；代理列与代理表单共用 */
+  /** Clash 出口列表缓存（`null` = 还没读到）；**只有代理表单的 Clash 直引档用**
+   *  （存量配置专用）—— 账号页的代理下拉列的是「网络代理」页的池条目 */
   clash: ClashSnapshot | null
   dialog: AccountsDialog
   namesHidden: boolean

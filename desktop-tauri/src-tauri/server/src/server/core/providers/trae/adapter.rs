@@ -99,11 +99,11 @@ impl ProviderAdapter for TraeAdapter {
         // 也恒 `text/event-stream`；`resolved_model` 传空 = 用 body 自带的模型名
         // （本家 M3 前不广告模型，也就没有"映射后的上游名"要覆盖）。
         let headers = solo_headers(&identity, true);
-        Ok(ChatRequestPlan {
-            url: format!("{AGENT_BASE_URL}{CHAT_PATH}"),
-            headers: headers.into_iter().collect(),
-            body: payload::prepare_body(body, credential.variant(), ""),
-        })
+        Ok(ChatRequestPlan::chat(
+            format!("{AGENT_BASE_URL}{CHAT_PATH}"),
+            headers.into_iter().collect(),
+            payload::prepare_body(body, credential.variant(), ""),
+        ))
     }
 
     /// 上游错误分类。

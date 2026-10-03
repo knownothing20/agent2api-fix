@@ -53,6 +53,7 @@ import {
   shared,
   toast,
   type AppSettings,
+  type GatewayBlocks,
   type NumberField,
   type PromptPatch,
 } from './settings-model'
@@ -109,12 +110,57 @@ export type PromptState = {
   status: LoadStatus
   mode: string
   file: string
-  /** 后端给的来源：'file' | 'builtin' | ''（文案在视图层映射） */
+  /** **生效正文**（`passthrough` 下是空串）：界面直接编辑这一段 */
+  text: string
+  /** 后端给的来源：'file' | 'builtin' | 'inline' | ''（文案在视图层映射） */
   source: string
   lines: number
   fileError: string
   degradeActive: boolean
   degradeUntilText: string
+  /** **按提供商**的覆盖（只含已单独配置的家，后端已按 id 排好序） */
+  providers: ProviderPromptState[]
+  /** **网关自带提示词**的逐家开关：只含被明确拨过的家（键缺失 = 默认装） */
+  gateway: Record<string, boolean>
+  /** **网关自带提示词的正文覆盖**：只含改过的家与段（缺的段 = 官方原文） */
+  gatewayText: Record<string, GatewayBlocks>
+  /** 可配置的家（下拉用）：注册表全量，含网关自带提示词的说明、规模与正文模板 */
+  options: ProviderPromptOption[]
+}
+
+/** 单一提供商的提示词覆盖（字段与全局那份同构，同一套渲染逻辑） */
+export type ProviderPromptState = {
+  id: string
+  mode: string
+  file: string
+  /** **生效正文**（同上；`passthrough` 下是空串） */
+  text: string
+  source: string
+  lines: number
+  fileError: string
+  /** 这一家的**网关自带提示词**是否装上（缺省 true；只有带 `gatewayNote` 的家有意义） */
+  gateway: boolean
+  /** 是否**单独配过**（false = 这一行是按「有网关自带提示词」补出来的，各项跟随全局） */
+  configured: boolean
+}
+
+/**
+ * 可配置的家。
+ *
+ * `gatewayNote` 非空 = 这家有一段**网关自带**的提示词（ZCode 活动套餐通道的
+ * 官方三段）。它同时决定这一家**默认就出现在列表里** —— 有开关可拨的家不该
+ * 藏在一个「添加提供商…」后面。
+ * `gatewayChars` 是那段装配的字符数（只读子行的「约 N 字符」；0 / 缺失不显示）。
+ * `gatewayBlocks` 是那段装配的**正文模板**（三段，Environment 段带占位符）：
+ * 编辑器拿它当初始值，也是「恢复官方原文」的目标 —— 资源坏了时是 null，
+ * 此时界面不提供编辑入口（免得用户拿一份空文本把官方原文清掉）。
+ */
+export type ProviderPromptOption = {
+  id: string
+  label: string
+  gatewayNote: string
+  gatewayChars: number
+  gatewayBlocks: GatewayBlocks | null
 }
 
 export type StorageState = {
@@ -189,11 +235,16 @@ const INITIAL: SettingsSnapshot = {
     status: 'loading',
     mode: 'passthrough',
     file: '',
+    text: '',
     source: '',
     lines: 0,
     fileError: '',
     degradeActive: false,
     degradeUntilText: '',
+    providers: [],
+    gateway: {},
+    gatewayText: {},
+    options: [],
   },
   storage: {
     status: 'loading',
@@ -972,18 +1023,129 @@ export function renderPrompt(data?: unknown): void {
     return
   }
   const record = data as Record<string, unknown>
+  const gateway = gatewayPrompts(record.promptGateway)
   publish({
     prompt: {
       status: 'ready',
       mode: String(record.promptMode || 'passthrough'),
       file: String(record.promptFile || ''),
+      text: String(record.promptText || ''),
       source: String(record.promptSource || ''),
       lines: Number(record.promptLines) || 0,
       fileError: String(record.promptFileError || ''),
       degradeActive: record.degradeActive === true,
       degradeUntilText: String(record.degradeUntilText || ''),
+      providers: providerPrompts(record.promptProviders, gateway),
+      gateway,
+      gatewayText: gatewayTexts(record.promptGatewayText),
+      options: providerOptions(record.promptProviderOptions),
     },
   })
+}
+
+/**
+ * 逐家覆盖的归一化：
+ * `{"<id>": {mode, promptFile, promptText, promptSource, promptLines, promptFileError}}`。
+ *
+ * 缺项一律给「中性默认」而不是 undefined：视图层对着这些字段直接渲染，
+ * 少一个字段就少一行提示，而那正是用户排查「这家到底生效了没有」的依据。
+ *
+ * `gateway` 从**另一张表**（`promptGateway`）取，键缺失 = 默认装 —— 两张表在
+ * 后端也是分开的（见 `KEY_PROMPT_GATEWAY`），这里保持同样的边界：
+ * 「客户端 system 怎么处理」与「网关自己装什么」互不牵连。
+ */
+function providerPrompts(raw: unknown, gateway: Record<string, boolean>): ProviderPromptState[] {
+  if (!raw || typeof raw !== 'object') return []
+  return Object.entries(raw as Record<string, unknown>)
+    .filter(([id, value]) => !!id && !!value && typeof value === 'object')
+    .map(([id, value]) => {
+      const entry = value as Record<string, unknown>
+      return {
+        id,
+        mode: String(entry.promptMode || 'passthrough'),
+        file: String(entry.promptFile || ''),
+        text: String(entry.promptText || ''),
+        source: String(entry.promptSource || ''),
+        lines: Number(entry.promptLines) || 0,
+        fileError: String(entry.promptFileError || ''),
+        gateway: gateway[id] ?? true,
+        configured: true,
+      }
+    })
+    // 后端已按 id 排序（BTreeMap），这里保持原序：前端再排一次只会多一套顺序规则
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** 可配置的家的清单（后端给什么就是什么，认不出的项直接丢掉 —— 宁缺勿错） */
+function providerOptions(raw: unknown): ProviderPromptOption[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter(item => !!item && typeof item === 'object' && String((item as Record<string, unknown>).id || ''))
+    .map(item => {
+      const entry = item as Record<string, unknown>
+      return {
+        id: String(entry.id),
+        label: String(entry.label || entry.id),
+        gatewayNote: String(entry.gatewayNote || ''),
+        gatewayChars: Number(entry.gatewayChars) || 0,
+        gatewayBlocks: gatewayBlocks(entry.gatewayBlocks),
+      }
+    })
+}
+
+/**
+ * 网关自带提示词的开关表归一化：`{"<id>": true|false}`；认不出的项丢掉。
+ *
+ * 键**缺失 = 默认装**：表里只出现被明确拨过的家，界面按 `[id] ?? true` 取。
+ */
+function gatewayPrompts(raw: unknown): Record<string, boolean> {
+  if (!raw || typeof raw !== 'object') return {}
+  const flags: Record<string, boolean> = {}
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const key = String(id || '').trim()
+    if (!key || typeof value !== 'boolean') continue
+    flags[key] = value
+  }
+  return flags
+}
+
+/**
+ * 网关自带提示词的**正文覆盖**归一化：`{"<id>": {identity?, stable?, dynamic?}}`。
+ *
+ * 只保留**真给了文本的段**：缺的段由视图层用官方原文补齐（后端也是这个口径 ——
+ * 「没写这一段」就是「这段用官方原文」）。三段的段名只在这里出现一次，
+ * 与后端的 `GatewayBlocks::FIELDS` 逐字对齐。
+ */
+function gatewayTexts(raw: unknown): Record<string, GatewayBlocks> {
+  if (!raw || typeof raw !== 'object') return {}
+  const table: Record<string, GatewayBlocks> = {}
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const key = String(id || '').trim()
+    if (!key || !value || typeof value !== 'object') continue
+    const entry = value as Record<string, unknown>
+    const blocks: GatewayBlocks = { identity: '', stable: '', dynamic: '' }
+    let any = false
+    for (const field of ['identity', 'stable', 'dynamic'] as const) {
+      const text = String(entry[field] || '')
+      blocks[field] = text
+      if (text.trim()) any = true
+    }
+    if (any) table[key] = blocks
+  }
+  return table
+}
+
+/** 三段正文（配置 / 模板）的归一化；三段都没给就给 null */
+function gatewayBlocks(raw: unknown): GatewayBlocks | null {
+  if (!raw || typeof raw !== 'object') return null
+  const entry = raw as Record<string, unknown>
+  const blocks: GatewayBlocks = {
+    identity: String(entry.identity || ''),
+    stable: String(entry.stable || ''),
+    dynamic: String(entry.dynamic || ''),
+  }
+  if (!blocks.identity.trim() && !blocks.stable.trim() && !blocks.dynamic.trim()) return null
+  return blocks
 }
 
 async function loadPrompt(): Promise<void> {
@@ -996,24 +1158,29 @@ async function loadPrompt(): Promise<void> {
 }
 
 /**
- * 保存一个字段（模式 / 文件）。与旧实现的一处**有意偏差**：只传变化的那一项。
+ * 保存一个字段（模式 / 文件 / 正文）。与旧实现的一处**有意偏差**：只传变化的那一项。
  * 旧实现把两个控件的 DOM 值都带上（那是它唯一能读到「当前值」的地方）；React 这边未提交的
  * 编辑留在各自控件的草稿里，而失焦提交先于点击另一控件发生，所以不存在「漏带」，
  * 后端本来就允许部分字段（未出现的项保持原值）。
+ *
+ * 返回值 = 这次写入是否成功：编辑器（提示词正文那个弹窗）据此决定关不关窗 ——
+ * 保存失败时留在原地，用户不必重新把整段文本再敲一遍。
  */
-async function savePromptField(label: string, patch: PromptPatch): Promise<void> {
+async function savePromptField(label: string, patch: PromptPatch): Promise<boolean> {
   if (busyScope) {
     await loadPrompt() // 有别的操作在跑：把界面拉回后端真实值，别让用户以为改了
-    return
+    return false
   }
   beginBusy('prompt')
   try {
     const saved = await shared().workbuddyDesktop?.savePrompt(patch)
     renderPrompt(saved)
     toast(`✅ 已保存：${label}`)
+    return true
   } catch (error) {
     toast(`保存失败: ${errorMessage(error)}`, 'err')
     await loadPrompt() // 回滚到后端的真实值
+    return false
   } finally {
     endBusy()
   }
@@ -1028,6 +1195,219 @@ export async function savePromptFile(raw: string): Promise<void> {
   await savePromptField(
     raw.trim() ? '提示词文件已更新' : '已改回内置默认提示词',
     { promptFile: raw },
+  )
+}
+
+/**
+ * 保存**全局提示词正文**（界面里编辑的那一份）。空文本 = 清除这一份、
+ * 回落提示词文件 / 内置默认（`savePrompt` 的空串语义）。
+ *
+ * 保存成功返回 true，供编辑器决定是否关窗。
+ */
+export async function savePromptText(text: string): Promise<boolean> {
+  const empty = !text.trim()
+  return savePromptField(
+    empty ? '已清掉界面编辑的提示词（回落文件 / 内置默认）' : '提示词正文已更新',
+    { promptText: empty ? '' : text },
+  )
+}
+
+/* ─── 系统提示词：按提供商 ─────────────────────── */
+
+/** 这一家在界面上的名字（清单里查不到就回显 id —— 与后端的兜底同一取向） */
+export function promptProviderLabel(prompt: PromptState, id: string): string {
+  return prompt.options.find(item => item.id === id)?.label || id
+}
+
+/**
+ * 校验一家 id 是否**登记在清单里**，认不出就返回空串（调用方直接什么都不做）。
+ *
+ * 两层防线里的第二层。第一层在视图（下拉的 `onValueChange` 刨掉 null）：Base UI
+ * 的 Select 在「清空 / 取消选择」时回调 `null`，而 `String(null)` 是**字面量
+ * "null"** —— 那会被当成一家叫 `null` 的提供商发给后端，后端如实回一句
+ * 「未知的提供商 id：null」，用户看到的就是一次莫名其妙的保存失败。
+ * 这一层则保证：不管 id 从哪儿来（旧响应、手改的数据、以后新增的调用点），
+ * 未登记的家**永远发不出去** —— 与后端 `is_known_provider_id` 同一口径。
+ */
+function knownProviderId(id: unknown): string {
+  const text = id == null ? '' : String(id).trim()
+  if (!text) return ''
+  return snapshot.prompt.options.some(item => item.id === text) ? text : ''
+}
+
+/** 写一家（`patch` 里未给的字段由后端保持原值） */
+async function saveProviderPrompt(
+  label: string,
+  id: string,
+  patch: { promptMode?: string; promptFile?: string; promptText?: string } | null,
+): Promise<boolean> {
+  return savePromptField(label, { promptProviders: { [id]: patch } })
+}
+
+/**
+ * 「这一行屏幕上显示的那几个值」→ 这一家自己的覆盖（**所见即所存**）。
+ *
+ * 模式与文件一起落：这一行可能原本「跟随全局」（界面上显示的是全局那份），只改
+ * 一个值时，另一个若不带就落到「内置默认」—— 一次改动，两个后果，第二个还看不见
+ * （`saveProviderPromptMode` 早先就为这件事这么做了）。
+ *
+ * **正文**只在一种情况下一起落：这一行原本跟随全局、且全局那份正文本身就是
+ * 「界面里编辑的」。否则给空串（= 这一家没有自己的正文）：它自己的文件 / 内置默认
+ * 接管，渲染出来的仍是屏幕上那段文本（文件路径刚被一起落下来了）。反过来，若无条件
+ * 把屏幕上的文本落成这一家的正文，就会把**文件内容复制进配置** —— 之后改文件不再生效，
+ * 而配置里多出几百行看不出缘由的文本。
+ */
+function providerPatch(
+  prompt: PromptState,
+  item: ProviderPromptState,
+): { promptMode: string; promptFile: string; promptText: string } {
+  const followGlobal = !item.configured
+  return {
+    promptMode: item.mode,
+    promptFile: item.file,
+    promptText: followGlobal && prompt.source === 'inline' ? prompt.text : '',
+  }
+}
+
+/** 给这一家加一条覆盖（初始值 = 全局那份：屏幕上显示的几项都照抄当前的全局值） */
+export async function addProviderPrompt(rawId: string): Promise<void> {
+  const id = knownProviderId(rawId)
+  if (!id) return
+  const prompt = snapshot.prompt
+  await saveProviderPrompt(
+    `已为「${promptProviderLabel(prompt, id)}」单独配置提示词`,
+    id,
+    providerPatch(prompt, {
+      id,
+      mode: prompt.mode,
+      file: prompt.file,
+      text: prompt.text,
+      source: prompt.source,
+      lines: prompt.lines,
+      fileError: prompt.fileError,
+      gateway: prompt.gateway[id] ?? true,
+      configured: false,
+    }),
+  )
+}
+
+export async function saveProviderPromptMode(item: ProviderPromptState, mode: string): Promise<void> {
+  const id = knownProviderId(item.id)
+  if (!id || !PROMPT_MODES.some(option => option.value === mode)) return
+  const option = PROMPT_MODES.find(candidate => candidate.value === mode)
+  await saveProviderPrompt(
+    `「${promptProviderLabel(snapshot.prompt, id)}」的模式改为「${option?.toastLabel ?? mode}」`,
+    id,
+    { ...providerPatch(snapshot.prompt, item), promptMode: mode },
+  )
+}
+
+export async function saveProviderPromptFile(item: ProviderPromptState, raw: string): Promise<void> {
+  const id = knownProviderId(item.id)
+  if (!id) return
+  await saveProviderPrompt(
+    raw.trim()
+      ? `「${promptProviderLabel(snapshot.prompt, id)}」的提示词文件已更新`
+      : `「${promptProviderLabel(snapshot.prompt, id)}」改用内置默认提示词`,
+    id,
+    // 同上：与文件一起把当前显示的模式落定，避免「改文件把模式改回去」
+    { ...providerPatch(snapshot.prompt, item), promptFile: raw },
+  )
+}
+
+/**
+ * 保存**某一家**的提示词正文（界面里编辑的那一份）。空文本 = 这一家清掉正文、
+ * 回落它自己的文件 / 内置默认。
+ *
+ * 与上面两个动作同一套「所见即所存」：一次保存把这行显示的模式 / 文件 / 正文
+ * 三个值一起落定，免得改正文时把另两项改回去。
+ */
+export async function saveProviderPromptText(
+  item: ProviderPromptState,
+  text: string,
+): Promise<boolean> {
+  const id = knownProviderId(item.id)
+  if (!id) return false
+  const empty = !text.trim()
+  const label = promptProviderLabel(snapshot.prompt, id)
+  return saveProviderPrompt(
+    empty ? `已清掉「${label}」界面编辑的正文` : `「${label}」的提示词正文已更新`,
+    id,
+    { ...providerPatch(snapshot.prompt, item), promptText: empty ? '' : text },
+  )
+}
+
+/** 删掉这一家的覆盖（回落全局设置；传 null 是后端的「删除这一家」语义） */
+export async function removeProviderPrompt(rawId: string): Promise<void> {
+  const id = knownProviderId(rawId)
+  if (!id) return
+  await saveProviderPrompt(
+    `已取消「${promptProviderLabel(snapshot.prompt, id)}」的单独配置`,
+    id,
+    null,
+  )
+}
+
+/**
+ * 拨动**网关自带提示词**的开关（这一家要不要装官方那段装配）。
+ *
+ * 与模式 / 文件走**另一维**（`promptGateway`），理由见后端
+ * `KEY_PROMPT_GATEWAY`：拨一下开关不该把这家的模式钉成显式值。
+ *
+ * 关掉是「用户主动放弃上游要求」的动作：只在明确关掉时提示后果，打开时
+ * 提示语是普通的中性文案 —— 对着一件恢复正常的事喊警告只会让人脱敏。
+ */
+export async function saveProviderGatewayPrompt(rawId: string, enabled: boolean): Promise<void> {
+  const id = knownProviderId(rawId)
+  if (!id) return
+  const label = promptProviderLabel(snapshot.prompt, id)
+  if (busyScope) {
+    await loadPrompt()
+    return
+  }
+  beginBusy('prompt')
+  try {
+    const saved = await shared().workbuddyDesktop?.savePrompt({ promptGateway: { [id]: enabled } })
+    renderPrompt(saved)
+    toast(
+      enabled
+        ? `✅ 已为「${label}」装上网关自带提示词`
+        : `已关闭「${label}」的网关自带提示词：能否通过上游校验取决于上游当前口径`,
+      enabled ? 'ok' : 'err',
+    )
+  } catch (error) {
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+    await loadPrompt() // 回滚到后端的真实值
+  } finally {
+    endBusy()
+  }
+}
+
+/**
+ * 保存**某一家**的网关自带提示词**正文**（三段一起提交；`null` = 回到官方原文）。
+ *
+ * 与开关（`saveProviderGatewayPrompt`）走**另一维**（`promptGatewayText`）：
+ * 改文本不该顺带把开关拨回去 —— 用户在编辑框里清掉自己那段、想回到官方原文时，
+ * 更不该连「装不装」也一起变。
+ *
+ * 三段一起传是有意的：它们是一个整体（上游认的是「三段各自成块」这个形状），
+ * 编辑器里也是三段并排显示，保存时按屏幕上看到的那份原样落下来。
+ * 保存成功返回 true，供编辑器决定是否关窗。
+ */
+export async function saveProviderGatewayText(
+  rawId: string,
+  blocks: GatewayBlocks | null,
+): Promise<boolean> {
+  const id = knownProviderId(rawId)
+  if (!id) return false
+  const label = promptProviderLabel(snapshot.prompt, id)
+  // 三段全空白 = 没有覆盖（后端也是这个口径：空段不落盘、三段全空就把这家删掉）。
+  // 归一成 `null` 只是为了提示语说得准：用户清空了三段，看到的是「已改回官方原文」。
+  const emptied = !blocks
+    || !(blocks.identity.trim() || blocks.stable.trim() || blocks.dynamic.trim())
+  return savePromptField(
+    emptied ? `「${label}」的网关自带提示词已改回官方原文` : `「${label}」的网关自带提示词正文已更新`,
+    { promptGatewayText: { [id]: emptied ? null : blocks } },
   )
 }
 

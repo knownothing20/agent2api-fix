@@ -361,20 +361,67 @@
 }
 .tag-input .tag-input-field:disabled { background: transparent; }
 
-/* ─── 系统提示词（模式下拉 + 文件路径）───
+/* ─── 系统提示词（模式下拉 + 文件路径 + 正文按钮）───
    版式复用 .retention-row 的两列（定宽标签 + 输入），但输入不是「窄数字框」，
    所以单独给宽度：模式下拉够放下最长选项；路径框吃满剩余宽度（路径可能很长，
-   靠 flex 收缩 + min-width:0 随面板自适应，不会撑出横向滚动）。 */
+   靠 flex 收缩 + min-width:0 随面板自适应，不会撑出横向滚动）。
+   允许换行（flex-wrap）：逐家那一行有四个控件（下拉 240 + 文件框 + 编辑正文 +
+   跟随默认），窗口窄时宁可折成两行 —— 文件框是 flex 项，不换行时它会一路缩到
+   只剩几像素宽，路径完全看不见。 */
 .prompt-input {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .prompt-input select { flex: 0 0 auto; width: 240px; }
 
 .prompt-input input[type="text"] { width: 100%; }
+
+/* 分组条：「全局配置」与「按提供商配置」是两件相关但**作用范围不同**的事，
+   不分组时它们是一串同构的行，读不出「哪几行是默认、哪几行是某家的例外」。
+   形态照 page-gateway 的 .ep-group（通栏条 + 11.5px 字重 650 + 右侧一句 muted
+   说明），底色改用 --surface-2：承载它的 .retention-list 本身已经是
+   --surface-inset，再用 inset 就与背景同色、等于没有这条分组条 —— 这是它与
+   .ep-group 唯一的不同。负外边距抵消 .retention-list 的 14px 内边距，底色通到框边。 */
+.prompt-group {
+  margin: 0 -14px;
+  padding: 7px 14px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: .03em;
+}
+
+.prompt-group .note {
+  margin-left: 8px;
+  color: var(--text-3);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* 「网关自带」那一行的标签：比普通行标签轻一档（它是同一家的**第二行**，
+   不是又一个并列的设置项），前缀一个竖线让它看起来挂在上面的家名下。
+   选择器写成 `.retention-row > label.prompt-gateway-label`：不与全局那条
+   `label` 规则比 `!important`，而是靠多一级类选择器拿到更高优先级。 */
+.retention-row > label.prompt-gateway-label {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+/* 关掉网关自带提示词时的说明行：**警示**语气，不是普通小字 ——
+   关掉是一个会让这家随时被上游拒的动作（实测 405/3012），
+   用户以后排障时该在这页上一眼看到自己关过它。配色取 warn 令牌，深浅主题都成立。 */
+.prompt-gateway-off {
+  color: var(--warn);
+  font-weight: 500;
+}
 
 /* ─── 数据存储（只读展示）───
    复用 .retention-row 的两列版式；第二列是路径：路径是主体，可能很长，

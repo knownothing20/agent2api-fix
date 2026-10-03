@@ -1,32 +1,41 @@
-//! ZCode 的**周末套餐领取**（manual claim / weekend plan）。
+//! ZCode 的**限时套餐领取**（manual claim / start plan）。
 //!
 //! ── 这个功能替代了本家的「签到」────────────────────────────
 //! 其余各家都有每日签到（`core::auto_checkin` 的提供商清单），ZCode 没有签到
-//! 活动 —— 它的运营玩法是**限时发放的体验套餐**（周末套餐 / start-plan），
-//! 用户在客户端里点一下就领，领到的额度在一段时间内可用。因此本家接进定时
-//! 任务框架的是「领取」而不是「签到」，两者的调度形状相同、协议完全不同。
+//! 活动 —— 它的运营玩法是**限时发放的体验套餐**（周末套餐 / Global Build /
+//! ZCode Trust Build），用户在客户端里点一下就领，领到的额度在一段时间内可用。
 //!
-//! ── 上游协议（两个接口，抄自 ZCode 3.12.3 客户端）────────────
-//! 参考实现：`Acankao/zcode-api` 的 `src/claim/client.ts`，本模块是它的移植。
+//! ── 「每天领一次」是**套餐 id 实现的**，不是上游的每日签到 ────
+//! 2026-09-28 那期（ZCode Trust Build，9/28–11/7）公告写的是「每天登录领 1 亿」，
+//! 而上游没有单独的「每日领取」接口：`preview` 每天返回一个**带日期段的新套餐**
+//! （`zcode-v3-start-plan-trust-0928` → `…-0929`），于是「今天领过没」等价于
+//! 「今天这个 plan_id 领过没」（同一期再领回 `1003 already claimed`）。
+//! 本家的界面据此按自然日落一次状态（`claimAt`），见
+//! `core::account_store::StoredAccount::claim_at`。
+//!
+//! ── 上游协议（两个接口，抄自 ZCode 客户端的 `manualClaimPlan`）──
+//! 参考实现：`Acankao/zcode-api` 的 `src/claim/client.ts`，本模块是它的移植；
+//! 字段与失败语义另有官方仓库（`zai-org/ZCode`）可对照。
 //!
 //! ```text
 //!   探测  GET  {zcode}/api/v1/zcode-plan/billing/preview?app_version=&platform=
 //!   领取  POST {zcode}/api/v1/zcode-plan/billing/claim   body {"plan_id": "..."}
 //! ```
 //!
-//! ── 头集合是「极简 + 两处例外」，别照抄别家 ──────────────────
-//! preview 只带 `Authorization: Bearer {jwt}`（匿名时**一个头都不带**）；
-//! claim 带 Authorization / Content-Type / 验证码参数 / 版本 / 平台。
-//! 参考实现为此留了一条很长的注记：3.12.3 的客户端就是极简集合，早先版本
-//! 发过整套身份头（`X-Device-Mid` 等），两者在不同活动期都出现过。
+//! ── 头集合是「极简 + 一处硬要求」─────────────────────────────
+//! preview 与 claim 都只必要地带 `Authorization: Bearer {jwt}`（探测允许匿名），
+//! claim 另加 Content-Type 与验证码参数。早先版本发过整套身份头（`X-Device-Mid`
+//! 等），两者在不同活动期都出现过。
 //!
-//! **一处必须保留的例外**：`X-Device-Mid`（UUID 形态）。参考实现实测记录：
-//! 2026-09-18 那一期活动，极简头会被网关以 biz 3001「参数错误」拒掉，
-//! 加上这个头立刻 200；只加验证码头无效。因此当调用方提供了 device_mid 时，
-//! **两个接口都要追加它**（位置在最后，与客户端的身份头顺序一致）。
+//! **`X-Device-Mid` 现在是硬要求**（2026-09-28 实测）：缺它、或值不是 UUID 形态，
+//! 网关一律回 `400 {"code":3001,"msg":"parameter error"}` —— 连**匿名探测**也一样
+//! （只带版本头/平台头都不管用，只加验证码头也无效）。设备标识还必须**跨请求
+//! 稳定**（风控据此关联同一设备的请求），因此它随凭证落盘、缺失时由
+//! `AccountStore::zcode_device_mid_or_create` 生成一次后长期复用，
+//! **不要**在调用点现编一个。
 //!
 //! ── 验证码为什么是**参数**而不是本模块自己求解 ───────────────
-//! claim 必须带 `X-Aliyun-Captcha-Verify-Param`（阿里云无痕验证）。
+//! claim 通常要带 `X-Aliyun-Captcha-Verify-Param`（阿里云无痕验证）。
 //! 参考实现在进程内用 happy-dom 跑阿里云官方混淆 SDK 求解 —— 那是 Node/Bun
 //! 生态的产物（需要 DOM 桩、canvas/WebGL/Worker 垫片、同步 XHR 的 worker 变通），
 //! 本网关是纯 Rust 且零 Node 依赖，**不重复实现那套求解器**。
@@ -36,6 +45,8 @@
 //! 后端**（见 `ui/autoclaw-oauth.js` 与 `api::session::login_oauth_captcha_config`）。
 //! 领取走同一条路：前端解出参数 → 调后端的领取接口 → 本模块把它原样转发给上游。
 //! 于是本模块的签名里 `captcha` 是**入参**，本模块只负责「带上它去领取」。
+//! 代价是**领取无法全自动**：定时任务里没有可用的验证码，这一点在
+//! `api::zcode_claim` 的模块头有说明（所以不接自动领取）。
 //!
 //! ── 失败分类（biz code → 语义）──────────────────────────────
 //! 与客户端 `$vt` 映射器逐条对齐（参考实现 `src/claim/types.ts`）：
@@ -225,7 +236,7 @@ pub struct ClaimablePlan {
     pub description: String,
     /// 优先级（同一批多个套餐时，取最大的那个）
     pub priority: i64,
-    /// 生效时间（unix 秒；周末套餐常常是「先领、稍后生效」，因此可能缺失）
+    /// 生效时间（unix 秒；有些期次的活动套餐是「先领、稍后生效」，因此可能缺失）
     pub starts_at: Option<i64>,
     /// 失效时间（unix 秒）
     pub ends_at: Option<i64>,
@@ -242,6 +253,12 @@ pub struct PlanEntitlement {
     pub unit_type: String,
     /// 授予量（`0` = 上游没给数字）
     pub grant_units: i64,
+    /// 周期（`one_time` = 一次性发放，`daily` = 每天续发）。
+    ///
+    /// 界面拿它区分「活动送的一次性额度」与「每日额度」（Start Plan 的两条权益
+    /// 就是 `daily`）—— 2026-09-28 那期 Trust Build 是一次性 1 亿，
+    /// 每天一个新套餐，所以两者都可能在同一天出现。
+    pub period: String,
     /// 生效时间（unix 秒；缺失表示随套餐立即生效）
     pub effective_at: Option<i64>,
 }
@@ -250,14 +267,14 @@ pub struct PlanEntitlement {
 ///
 /// ── 为什么 404 要单独成一档（这是最容易漏的一处）─────────────
 /// 参考实现在 `scheduler.ts` 里明确写着：**404 是「活动还没上线」的正常状态**
-/// （周末套餐开抢前，活动接口尚未部署），要按**正常节奏**轮询而不是走错误退避。
+/// （活动开抢前，接口尚未部署），要按**正常节奏**轮询而不是走错误退避。
 /// 若把 404 当失败处理，退避会让轮询节奏越来越慢，恰好错过开抢那一刻 ——
 /// 这个功能的价值全在「上新瞬间抢到」，慢一拍就没意义了。
 #[derive(Clone, Debug)]
 pub enum PreviewOutcome {
     /// 拿到了可领取的套餐（可能是空列表：接口通了但当前没有可领的）
     Plans(Vec<ClaimablePlan>),
-    /// 404：活动接口尚未部署（周末套餐开抢前的预期状态）
+    /// 404：活动接口尚未部署（开抢前的预期状态）
     NotDeployed,
 }
 
@@ -391,9 +408,15 @@ pub fn outcome_hold(outcome: &ClaimOutcome) -> NextAttempt {
 
 /// 探测当前可领取的套餐。
 ///
-/// `jwt` 为空时按上游语义发**匿名探测**（参考实现：匿名 preview 一个头都不带）。
+/// `jwt` 为空时按上游语义发**匿名探测**（参考实现：匿名 preview 不带头）。
 /// 匿名也能看到「有没有活动」，因此调度可以在登录态失效时继续探测；
 /// 但真正领取必须有 JWT（见 [`claim`]）。
+///
+/// `device_mid` **事实上是必需的**（2026-09-28 起上游这么要求，见模块头）：
+/// 调用方（`api::zcode_claim`）保证传进来的一定是 UUID 形态的稳定标识，
+/// 这里只在真的没有时才省略那个头 —— 那种情况会稳定拿到 3001，
+/// 而那正是「谁漏了这一步」的信号，不该由本函数偷偷补一个随机值（现编的值
+/// 每次都不一样，风控看到的是「同一个账号天天换设备」）。
 pub async fn preview(
     region: Region,
     jwt: &str,
@@ -608,6 +631,12 @@ fn parse_plan(raw: &Value) -> Option<ClaimablePlan> {
                             .trim()
                             .to_string(),
                         grant_units: item.get("grant_units").and_then(Value::as_i64).unwrap_or(0),
+                        period: item
+                            .get("period")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
                         effective_at: item.get("effective_at").and_then(Value::as_i64),
                     })
                 })

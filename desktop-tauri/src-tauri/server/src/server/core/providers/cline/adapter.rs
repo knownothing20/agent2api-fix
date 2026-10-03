@@ -179,11 +179,11 @@ impl ProviderAdapter for ClineAdapter {
             ("HTTP-Referer".to_string(), "https://cline.bot".to_string()),
             ("X-Title".to_string(), "Cline".to_string()),
         ];
-        Ok(ChatRequestPlan {
-            url: format!("{}/chat/completions", credentials::API_BASE_URL),
+        Ok(ChatRequestPlan::chat(
+            format!("{}/chat/completions", credentials::API_BASE_URL),
             headers,
-            body: body.clone(),
-        })
+            body.clone(),
+        ))
     }
 
     /// 上游错误分类（判定依据全部来自实测，见模块头）。

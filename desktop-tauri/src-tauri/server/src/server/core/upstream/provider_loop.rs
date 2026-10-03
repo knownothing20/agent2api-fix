@@ -436,13 +436,16 @@ async fn attempt_queue(
     let switch_total = settings.switch_budget();
     let mut switches_left = switch_total;
     // ── 系统提示词的降级标记（对应参考项目的 `degradedApplied`）────────
-    // `true` = 本请求的出站提示词已切到**中性提示词**：进入本请求时降级期已经
-    // 生效（状态机在别的请求里被触发过），或本请求撞了内容拦截后由下面
-    // 「动作 0」置位。置位后不再重复触发 —— 一次请求最多补救一次。
+    // `true` = **降级期已生效**：进入本请求时降级期已经开着（状态机在别的请求
+    // 里被触发过），或本请求撞了内容拦截后由下面「动作 0」置位。置位后不再重复
+    // 触发 —— 一次请求最多补救一次。
     //
-    // `custom` 模式不可降级（system 已由网关接管，内容拦截不再指向 system
-    // 指纹），这里并进判定：后面「动作 0」与发送体计算读的都是它。
-    let mut degraded = crate::server::core::degrade::active() && ctx.prompt.mode.degradable();
+    // 这里只读「降级期开着没有」，**不**再并进模式判定：模式现在可以**按家**
+    // 不同（`config::KEY_PROMPT_PROVIDERS`），而此刻还没选到哪一家。真正决定
+    // 「这一家要不要换成中性提示词」的是 `PromptChoice::text_for`（那家的模式
+    // 不可降级时它照样返回自己的文本），下面「动作 0」的重试条件同理按**当次
+    // 承载家**判定。
+    let mut degraded = crate::server::core::degrade::active();
     // 各家的发送体：某一家即将发送前按作用范围决定一次，换到**同一家同池**的
     // 另一个账号时复用（不重复处理、不重复统计）。键带账号的池（Cline 的账号
     // 记录有 `free`/`pass`）：发送名跟着实际承载的账号所在池走
@@ -773,7 +776,9 @@ async fn attempt_queue(
         // ——不存在「一直重发」的路径。
         let started_at = logging::now_ms();
         let mut refreshed = false;
-        let (response, wire_model) = loop {
+        // 第三个元素是上游响应的协议（适配器在构造请求时给出）：chat 之外
+        // 还要在下面套一层响应翻译，见 `UpstreamResponse` 的说明
+        let (response, wire_model, response_protocol) = loop {
             // 发送体在这一轮发送前取一次（同一家同池同降级状态下复用缓存项）：
             // 借用在本次迭代内有效，`continue`（401 刷新 / 内容拦截补救）时
             // 重新取 —— 于是「换了 body 的那次重试」拿到的一定是新的一份。
@@ -880,7 +885,7 @@ async fn attempt_queue(
                     // 口径，见 `RequestEntry::is_success` 的说明。
                     ctx.telemetry
                         .finish_last_attempt(Some(i64::from(response.status().as_u16())), None);
-                    break (response, wire_model);
+                    break (response, wire_model, plan.response);
                 }
                 Err(failure) => {
                     // ── 手动终止优先于一切重试动作 ────────────────────────
@@ -911,18 +916,21 @@ async fn attempt_queue(
                     // 也不换账号 —— 换一份最小中性提示词再发一次才有意义
                     // （照搬参考项目的 `ErrContentBlocked` 处理）。
                     //
-                    // 只在「还没换过 + 这个模式可降级」时走：`custom` 模式的 system
-                    // 已由网关接管，再撞拦截多半是用户内容本身触发审核，换提示词
-                    // 解决不了（那类情况落到下面按普通错误收尾）。
+                    // 只在「还没换过 + **当次承载家**的模式可降级」时走：`custom`
+                    // 模式的 system 已由网关接管，再撞拦截多半是用户内容本身触发
+                    // 审核，换提示词解决不了（那类情况落到下面按普通错误收尾）。
+                    // 模式按家取值（`ctx.prompt.for_provider`）—— 这一次撞拦截的是
+                    // 这一家，判定就该用这一家的配置。
                     //
                     // 与 401 刷新重试同一性质（同一个账号、同一条尝试明细，
                     // 换的是 body 不是账号）：所以它也**不**在这里给明细定稿，
                     // 重试成功时这一轮的结局就是成功。`degraded` 置位后不再重复
                     // 触发，一次请求最多补救一次。
+                    let attempt_prompt = ctx.prompt.for_provider(provider_id);
                     if matches!(failure.class, UpstreamErrorClass::ContentBlocked { .. })
                         && !named_switch
                         && !degraded
-                        && ctx.prompt.mode.degradable()
+                        && attempt_prompt.mode.degradable()
                     {
                         degraded = true;
                         // 触发状态机（已在降级期内则不续期，返回原来的截止时刻）
@@ -930,8 +938,9 @@ async fn attempt_queue(
                         let until_text = crate::server::core::degrade::until_text();
                         let reason = format!(
                             "内容策略拦截（疑似 system 指纹误报），换中性提示词重试一次；\
-                             降级持续到 {until_text}（届时恢复「{}」）",
-                            ctx.prompt.mode.label(),
+                             降级持续到 {until_text}（届时恢复「{}/{}」）",
+                            attempt_prompt.mode.label(),
+                            provider_id,
                         );
                         ctx.telemetry.note_attempt_retry(
                             &reason,
@@ -1223,6 +1232,48 @@ async fn attempt_queue(
         // 采集器（见 `ForwardStream` / `aggregate_sse_completion`）。
         if let Some(capture) = ctx.telemetry.capture() {
             capture.attach_response(response.status().as_u16(), response.headers());
+        }
+
+        // ── 上游响应协议（适配器在构造请求时一并给出）──────────────────
+        // 绝大多数上游说 chat SSE（`ForwardStream` / 聚合器的默认输入）；
+        // ZCode 的活动套餐通道说 Anthropic，先过一层翻译折成 chat 帧
+        // （见 `upstream::translate` 与 `providers::zcode::plan`）。
+        // 翻译在**两处出口之前**做，于是流式与非流式共用同一条下行语义：
+        // reasoning 合并、usage 提取、model 回写、取消处理全都不需要第二套。
+        if response_protocol
+            == crate::server::core::providers::adapter::UpstreamResponse::Anthropic
+        {
+            // 状态码要在 consume response 之前取（与 chat 路径同一时机）
+            let status = response.status().as_u16();
+            let translated: futures::stream::BoxStream<
+                'static,
+                Result<bytes::Bytes, std::io::Error>,
+            > = Box::pin(super::translate::AnthropicToChatStream::new(
+                response,
+                &wire_model,
+                ctx.telemetry,
+            ));
+            if ctx.stream {
+                return Ok(ForwardOutcome::Stream {
+                    status,
+                    stream: Box::new(super::ForwardStream::from_translated(
+                        translated,
+                        slot.take(),
+                        connections.handoff(),
+                        ctx.telemetry.clone(),
+                        model_rewrite_of(adapter, &model),
+                    )),
+                });
+            }
+            let aggregated = super::aggregate::aggregate_frame_stream(
+                translated,
+                ctx.telemetry.clone(),
+                model_rewrite_of(adapter, &model),
+            )
+            .await?;
+            return Ok(ForwardOutcome::Completion {
+                body: aggregated.body,
+            });
         }
 
         if ctx.stream {

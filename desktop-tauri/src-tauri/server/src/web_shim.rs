@@ -458,7 +458,7 @@ pub fn shim_js() -> &'static str {
         captchaVerifyParam: String(captchaVerifyParam || ''),
       });
     },
-    // ── ZCode「周末套餐」领取（三个薄封装，直接打账号子路径接口）──────
+    // ── ZCode 限时套餐领取（三个薄封装，直接打账号子路径接口）──────
     // 与上面的 AutoClaw 三个方法同一形态：界面只管传参，路径与请求体形状
     // 由这里对着后端 `api::zcode_claim` 的三个处理器写死一处。
     //
@@ -467,8 +467,10 @@ pub fn shim_js() -> &'static str {
     //     返回 `{enabled:false}` 表示上游此刻不要验证码 —— 前端**不该**弹滑块；
     //   · preview 只读探测，返回 `{plans:[...], deployed}`；
     //     `deployed:false` = 活动接口尚未部署（开抢前的正常状态，不是错误）；
-    //   · claim 真正领取，必须带 captchaVerifyParam；**业务失败也走 200**，
-    //     由 `ok:false` + `failure` 表达（前端据此选提示文案）。
+    //   · claim 真正领取。`captchaVerifyParam` **可以为空**：上游此刻不要验证码
+    //     时它就不带那个头（发空头会被当成无效验证串，见 `claim::claim` 的注释）。
+    //     **业务失败也走 200**，由 `ok:false` + `failure` 表达（前端据此选提示
+    //     文案）；`claimedAt` 是领取状态的落库时刻，前端拿它把按钮切成「今日已领」。
     zcodeClaimCaptchaConfig: function (accountId) {
       return call('POST', '/api/accounts/' + encodeURIComponent(String(accountId || ''))
         + '/zcode-claim/captcha-config');
@@ -570,6 +572,15 @@ pub fn shim_js() -> &'static str {
       }
       return call('POST', '/api/proxies/test', body);
     },
+    // 代理池（「网络代理」页；与桌面壳 bridge.rs 的同名方法成对存在，
+    // 契约见 api::proxies 的模块头 —— 只加一边时另一形态下的页面会报
+    // 「桥接方法缺失」，标题栏那一族有同样的教训）
+    getProxyPool: function () { return call('GET', '/api/proxies/pool'); },
+    createProxyPoolItem: function (payload) { return call('POST', '/api/proxies/pool', payload || {}); },
+    updateProxyPoolItem: function (payload) { return call('POST', '/api/proxies/pool/update', payload || {}); },
+    removeProxyPoolItem: function (id) { return call('POST', '/api/proxies/pool/remove', { id: String(id || '') }); },
+    testProxyPoolItem: function (id) { return call('POST', '/api/proxies/pool/test', { id: String(id || '') }); },
+    syncClashToProxyPool: function () { return call('POST', '/api/proxies/pool/sync-clash', {}); },
 
     // ── 积分 / 签到 ──
     getUsage: function () { return call('GET', '/api/usage'); },
@@ -648,6 +659,15 @@ pub fn shim_js() -> &'static str {
       return call('PUT', '/api/prompt', {
         promptMode: payload.promptMode != null ? String(payload.promptMode) : null,
         promptFile: payload.promptFile != null ? String(payload.promptFile) : null,
+        // 界面里编辑的提示词正文（空串 = 清除这一份、回落文件 / 内置默认）
+        promptText: payload.promptText != null ? String(payload.promptText) : null,
+        // 按提供商的覆盖：整张稀疏表原样透传（值是对象，或 null = 删掉这一家）。
+        // 语义由 /api/prompt 定 —— 这里再解析一遍只会多一处可能与后端分叉的实现
+        promptProviders: payload.promptProviders != null ? payload.promptProviders : null,
+        // 网关自带提示词的逐家开关（另一维，值是布尔或 null）—— 同样原样透传
+        promptGateway: payload.promptGateway != null ? payload.promptGateway : null,
+        // 网关自带提示词的正文覆盖（`{"<id>": {identity?, stable?, dynamic?} | null}`）
+        promptGatewayText: payload.promptGatewayText != null ? payload.promptGatewayText : null,
         clearDegrade: !!payload.clearDegrade,
       });
     },

@@ -1,4 +1,4 @@
-//! ZCode「周末套餐」的领取接口（探测 + 领取）。
+//! ZCode 限时套餐的领取接口（探测 + 领取）。
 //!
 //! ── 为什么单独成文件（不在 `api::accounts` 里）────────────────
 //! `api::accounts` 已经是账号 CRUD + 十来个动作的入口（接近 550 行），
@@ -6,22 +6,31 @@
 //! 验证码由前端解），塞进去会让那个文件同时承担「账号簿记」与「套餐协议」
 //! 两件事。与 `api::accounts_usage`（余额查询单独拆出去）同一处置。
 //!
-//! ── 两个接口 ────────────────────────────────────────────────
+//! ── 三个接口 ────────────────────────────────────────────────
 //! ```text
 //!   POST /api/accounts/{id}/zcode-claim/preview   探测可领套餐（**不要验证码**）
+//!   POST /api/accounts/{id}/zcode-claim/captcha-config 取风控配置（滑块要不要弹）
 //!   POST /api/accounts/{id}/zcode-claim           领取（**要**验证码参数）
 //! ```
-//! 拆成两个而不是「一个接口两段」的理由：探测是幂等的只读动作，可以放心由
-//! 定时任务反复跑、也可以在界面上随便刷新；领取是有副作用的写动作，且必须
-//! 等前端把验证码解出来才能发。两者的调用时机与失败语义完全不同。
+//! 拆成两个而不是「一个接口两段」的理由：探测是幂等的只读动作，可以放心反复跑、
+//! 也可以在界面上随便刷新；领取是有副作用的写动作，且必须等前端把验证码解出来
+//! 才能发。两者的调用时机与失败语义完全不同。
 //!
-//! ── 验证码为什么是**请求体里的参数** ─────────────────────────
-//! 上游要求 `X-Aliyun-Captcha-Verify-Param`，而解它的唯一可行方式是在
-//! webview 里跑阿里云官方 SDK（见 `providers::zcode::claim` 的模块头：
-//! 参考实现在进程内跑 happy-dom，本网关是纯 Rust、不引 JS 引擎）。
-//! 因此本接口把 `captchaVerifyParam` 当**入参**收，原样转给上游 ——
-//! 与 AutoClaw 的 OAuth 登录同一条思路（那边是
-//! `/api/session/login/oauth/start` 收 `captchaVerifyParam`）。
+//! ── 「每天领一次」与「今天已领」的落点 ──────────────────────
+//! 2026-09-28 起的那期活动（ZCode Trust Build）是**每天一个新套餐**
+//! （`plan_id` 带日期段），所以领取这件事天然按自然日重复（见
+//! `providers::zcode::claim` 的模块头）。本文件负责把结果写进账号记录
+//! （`claimAt` / `claimPlanId`，见 `mark_zcode_claim`）：
+//!   - **成功**要写；
+//!   - **`already_claimed` 也要写** —— 上游说这一期的套餐已经领掉了
+//!     （可能是另一台设备领的），界面同样该显示「今日已领」，
+//!     否则用户会一直点那颗按钮、每次拿回同一句「该账号已领取过」。
+//! 响应里带上落库后的状态，前端不必为了刷新那颗按钮再拉一次账号列表。
+//!
+//! ── 为什么**不接自动领取**（定时任务里没有这一条）──────────────
+//! 领取通常要过阿里云无痕验证（`3007` 那档），而解它的唯一可行方式是 webview
+//! 里跑官方 SDK（见 `providers::zcode::claim` 的模块头）。定时任务没有那个环境，
+//! 硬发只会稳定拿回「验证码校验未通过」—— 不如如实不做，由用户在界面上点。
 //!
 //! ── 出口要不要挂账号代理：**要**（与「余额查询直连」相反）────────
 //! 小浣熊的余额查询刻意直连（照抄源实现的裸 fetch），本家**不照抄那个决定**：
@@ -53,7 +62,7 @@ struct ClaimTarget {
     region: Region,
     /// 套餐令牌（领取的必要条件）
     jwt: String,
-    /// 设备标识（活动期要求，见 `credentials.rs` 的模块头）
+    /// 设备标识（上游硬要求，UUID 形态；缺失时已由存储层生成并落盘）
     device_mid: Option<String>,
     /// 账号展示名（日志与错误文案用）
     name: String,
@@ -62,6 +71,12 @@ struct ClaimTarget {
 /// 载入目标账号；缺账号或缺 jwt 时返回一句给用户的话
 ///
 /// 状态码用 `i32`（与 `management_error` 同型），避免在每个调用点反复转换。
+///
+/// ── 设备标识为什么在这里「补齐」而不是报错 ────────────────────
+/// 上游把它当**硬参数**（缺了就是 3001，见 `providers::zcode::claim` 的模块头），
+/// 而手工粘贴凭证建的老账号可能没有这个字段。这不是用户能自己修的东西
+/// （他不知道该填什么，也不该被要求填一个 UUID），所以由存储层生成一次并落盘
+/// （`zcode_device_mid_or_create`），此后一直复用同一个值。
 fn load_target(state: &ServerState, account_id: &str) -> Result<ClaimTarget, (i32, String)> {
     let record = state
         .store()
@@ -95,13 +110,15 @@ fn load_target(state: &ServerState, account_id: &str) -> Result<ClaimTarget, (i3
             ),
         ));
     }
+    let id = text("id");
+    let device_mid = state
+        .store()
+        .zcode_device_mid_or_create(if id.is_empty() { account_id } else { &id })
+        .filter(|value| !value.trim().is_empty());
     Ok(ClaimTarget {
         region,
         jwt,
-        device_mid: {
-            let value = text("deviceMid");
-            (!value.is_empty()).then_some(value)
-        },
+        device_mid,
         name,
     })
 }
@@ -121,7 +138,7 @@ fn account_proxy(state: &ServerState, account_id: &str) -> Option<crate::server:
 ///   "deployed": true }
 /// ```
 /// `deployed: false` 表示上游活动接口尚未部署（404）—— **这不是错误**，
-/// 是周末套餐开抢前的正常状态（见 `providers::zcode::claim` 的模块头）。
+/// 是活动开抢前的正常状态（见 `providers::zcode::claim` 的模块头）。
 /// 前端应当据此显示「当前没有可领套餐」而不是报错。
 pub async fn preview(state: &ServerState, account_id: &str) -> axum::response::Response {
     let target = match load_target(state, account_id) {
@@ -286,11 +303,13 @@ pub async fn claim_plan(
                     target.name
                 ),
             );
+            let claimed_at = record_claim(state, account_id, &plan_id);
             ok_json(json!({
                 "ok": true,
                 "planId": plan_id,
                 "startsAt": starts_at,
                 "endsAt": ends_at,
+                "claimedAt": claimed_at,
             }))
         }
         Ok(ClaimOutcome::Failed { plan_id, failure, code, message, failure_ends_at }) => {
@@ -305,6 +324,14 @@ pub async fn claim_plan(
                     failure.label()
                 ),
             );
+            // 「上游说已领过」也是「今天领到了」：落一次状态，界面从此显示
+            // 「今日已领」而不是让用户反复点（见模块头）。其余失败不落 ——
+            // 验证码没过、额度耗尽这些都不意味着这一期的套餐已经到手。
+            let claimed_at = if failure == ClaimFailure::AlreadyClaimed {
+                record_claim(state, account_id, &plan_id)
+            } else {
+                0
+            };
             ok_json(json!({
                 "ok": false,
                 "planId": plan_id,
@@ -313,8 +340,26 @@ pub async fn claim_plan(
                 "code": code,
                 "message": message,
                 "failureEndsAt": failure_ends_at,
+                "claimedAt": claimed_at,
             }))
         }
+    }
+}
+
+/// 落一次领取状态，返回落库的时刻（毫秒；0 = 没落成，界面按「未领取」处理）。
+///
+/// 写盘失败只记日志、不改领取结果：额度在上游已经到账，因为一次落盘失败把
+/// 成功的领取报成失败是本末倒置（与 `billing::checkin::run_checkin` 同一口径）。
+fn record_claim(state: &ServerState, account_id: &str, plan_id: &str) -> i64 {
+    let at = crate::server::logging::now_ms();
+    if state.store().mark_zcode_claim(account_id, plan_id, at) {
+        at
+    } else {
+        crate::server::logging::verbose(
+            "[Claim]",
+            &format!("账号 {account_id} 的领取时间未能落盘（账号可能已被删除）"),
+        );
+        0
     }
 }
 
@@ -334,6 +379,7 @@ fn plan_to_json(plan: &claim::ClaimablePlan) -> Value {
                 "showName": item.show_name,
                 "unitType": item.unit_type,
                 "grantUnits": item.grant_units,
+                "period": item.period,
                 "effectiveAt": item.effective_at,
             }))
             .collect::<Vec<Value>>(),
