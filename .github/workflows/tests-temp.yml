@@ -7,7 +7,12 @@
 # ⚠️ 合并到 main 之前应当删掉本文件（或者把它并入 docker.yml 成为一个正式步骤）。
 name: tests-temp
 
+# 注意：GitHub 只允许 dispatch「默认分支上已存在」的工作流，所以这条**靠 push 触发**
+# （推本分支即跑），而不是 workflow_dispatch。
 on:
+  push:
+    branches:
+      - upstream-2.9.0-port
   workflow_dispatch:
 
 env:
