@@ -74,6 +74,15 @@ export type SharedWindow = {
     readonly platform?: string
     startLogin(edition: string, mode: string, provider: string, socialRestore?: boolean): Promise<unknown>
     cancelLogin?(): Promise<unknown>
+    /**
+     * 提交一次**登录回调**（`{state, callbackUrl}` → `/api/session/login/callback`）。
+     *
+     * 只有**网页端**有这个方法：桌面壳的内嵌窗口自己就能拦下自定义协议导航并转交
+     * 网关，不需要界面帮忙；网页端没有那个窗口，只能让用户把地址粘回来（见
+     * `add-account-configs` 的 `PasteCallbackConfig`）。所以这里是可选方法 ——
+     * 桌面形态下 `undefined`，调用方要判存在。
+     */
+    submitLoginCallback?(state: string, callbackUrl: string): Promise<unknown>
   }
   wbApp?: {
     toast?: (message: string, kind?: 'err' | 'ok' | 'warn') => void
@@ -94,6 +103,8 @@ export type SharedWindow = {
     }): WebLoginController | null | undefined
     refresh?: () => Promise<unknown>
     cancelIfActive?: (provider: string) => Promise<boolean>
+    /** 是否有登录流程在等待（粘贴回调那条路据此决定要不要自己收尾） */
+    isActive?: () => boolean
   }
   /** 手机验证码引擎（sms-login.js）：只调 create，交互全在引擎里 */
   wbSmsLogin?: {
@@ -262,4 +273,53 @@ export const loginPrefs: { edition: Edition; loginMode: LoginMode; socialRestore
   edition: 'cn',
   loginMode: 'embedded',
   socialRestore: false,
+}
+
+/* ─── 网页端的「粘贴回调地址」（回调是自定义协议时用，见 add-account-configs）─── */
+
+/**
+ * 从用户粘回来的回调地址里取出 `state`。
+ *
+ * 为什么在前端解析：网关那条接口的契约就是 `{state, callbackUrl}` 两项
+ * （桌面壳侧本来就能分别拿到 state 与原文），保持它不动最省事；而 `state`
+ * 本来就在回调地址里（后端也要用它比对任务），所以从地址里抠出来即可。
+ *
+ * 宽松两级：先按完整 URL 解（`office-raccoon://auth/callback?…` 在浏览器里
+ * `new URL()` 能解，scheme/host/path/search 都在），解不出再退到正则 ——
+ * 用户从地址栏复制时可能只复制到 `?` 之后那一段，也可能带上前后空格。
+ */
+export function loginStateOfCallbackUrl(text: string): string {
+  const raw = text.trim()
+  if (!raw) return ''
+  try {
+    const state = new URL(raw).searchParams.get('state')
+    if (state && state.trim()) return state.trim()
+  } catch {
+    // 不是完整 URL → 落到下面的正则兜底
+  }
+  const match = /[?&]state=([^&\s#]+)/.exec(raw)
+  return match ? decodeURIComponent(match[1]).trim() : ''
+}
+
+/**
+ * 把粘回来的回调地址交给网关换凭证（成功即账号入列，那次 `/wait` 也随之落定）。
+ *
+ * 失败一律抛出可读文案：`state` 解析不出来、当前形态没有这个桥（桌面版）都
+ * 属于「用户看得懂且能自己改」的情况，界面直接把 message 显示出来。
+ */
+export async function submitLoginCallback(callbackUrl: string): Promise<void> {
+  const url = callbackUrl.trim()
+  if (!url) throw new Error('请先粘贴回调地址')
+  const state = loginStateOfCallbackUrl(url)
+  if (!state) {
+    throw new Error(
+      '这段地址里没有 state 参数。请把浏览器地址栏里以 office-raccoon:// 开头的'
+      + '那一整段（含 ? 后面的内容）完整复制过来',
+    )
+  }
+  const api = shared().workbuddyDesktop
+  if (!api?.submitLoginCallback) {
+    throw new Error('当前形态不支持提交登录回调（桌面版由内嵌窗口自动完成）')
+  }
+  await api.submitLoginCallback(state, url)
 }

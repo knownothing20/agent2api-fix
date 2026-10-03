@@ -60,6 +60,7 @@ import {
   postAccount,
   readField,
   shared,
+  submitLoginCallback,
   toast,
   type AccountRecord,
   type Edition,
@@ -286,6 +287,36 @@ function WebLoginSection({
   modeRef.current = mode
   regionRef.current = region
 
+  // 网页端（浏览器）才需要「粘贴回调地址」：桌面壳的内嵌窗口能自己拦下自定义协议
+  // 导航并转交网关，浏览器不能（见 add-account-configs 的 PasteCallbackConfig）。
+  // 平台标识不会中途变化，所以只在首帧读一次即可。
+  const isWeb = shared().workbuddyDesktop?.platform === 'web'
+  const [pasteDraft, setPasteDraft] = React.useState('')
+  const [pasteBusy, setPasteBusy] = React.useState(false)
+
+  /** 把粘回来的回调地址交给网关换凭证（成功即账号入列） */
+  async function submitPaste(): Promise<void> {
+    if (pasteBusy) return
+    setPasteBusy(true)
+    try {
+      await submitLoginCallback(pasteDraft)
+      setPasteDraft('')
+      // 引擎还在等这次回调时，收尾（关弹窗 / 刷新 / 提示）由它负责 —— 那次
+      // `/wait` 会因回调落定而返回，走 web-login.js 的 onSuccess。这里再收一次
+      // 会出两条 toast、还可能在弹窗关闭后重新打开它。只有引擎已经不在等
+      // （比如那次 /wait 已超时）时才由本组件兜底。
+      if (!shared().wbWebLogin?.isActive?.()) {
+        closeAddModals()
+        await shared().wbApp?.refresh?.()
+        toast(`✅ ${config.label}账号已添加`)
+      }
+    } catch (error) {
+      toast(describeError(error), 'err')
+    } finally {
+      setPasteBusy(false)
+    }
+  }
+
   React.useEffect(() => {
     const engine = shared().wbWebLogin
     if (!engine || !web) return
@@ -299,6 +330,12 @@ function WebLoginSection({
       hintId: `${prefix}-web-hint`,
       busyText: web.busyText,
       texts: () => {
+        // 网页端 + 回调是自定义协议时，引擎那句 hint 是给内嵌窗口写的（「关窗即取消
+        // 等待」），换成「打开页面 → 复制地址 → 粘回来」那套说明 —— 否则用户根本
+        // 不知道要粘什么，只会一直等。
+        if (isWeb && web.pasteCallback?.webHint) {
+          return { button: web.button, hint: web.pasteCallback.webHint }
+        }
         const active = modes?.find(item => item.value === modeRef.current)
         return { button: web.button, hint: active?.hint || web.hint || '' }
       },
@@ -358,6 +395,33 @@ function WebLoginSection({
           {web.hint || web.modes?.[0]?.hint || ''}
         </span>
       </div>
+      {/* 回调是自定义协议的家（当前只有小浣熊）在**网页端**多一块粘贴框：
+          浏览器无法把 office-raccoon:// 交给网关，只能让用户把那段地址粘回来。
+          桌面版不显示（内嵌窗口自己就能完成）。 */}
+      {isWeb && web.pasteCallback ? (
+        <div className='flex flex-col gap-2.5 border-l-2 border-border pl-[11px]'>
+          <label className='text-[12.5px] text-subtle' htmlFor={`${prefix}-paste-callback`}>
+            {web.pasteCallback.label}
+          </label>
+          <div className='flex items-center gap-2'>
+            <Input
+              id={`${prefix}-paste-callback`}
+              className='min-w-[260px] flex-1'
+              placeholder={web.pasteCallback.placeholder}
+              value={pasteDraft}
+              onChange={event => setPasteDraft(event.target.value)}
+            />
+            <Button
+              variant='outline'
+              disabled={pasteBusy || !pasteDraft.trim()}
+              onClick={() => void submitPaste()}
+            >
+              {pasteBusy ? '提交中…' : web.pasteCallback.button}
+            </Button>
+          </div>
+          <span className='detail'>{web.pasteCallback.hint}</span>
+        </div>
+      ) : null}
     </DialogSection>
   )
 }

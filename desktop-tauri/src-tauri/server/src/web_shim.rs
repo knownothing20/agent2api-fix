@@ -431,6 +431,15 @@ pub fn shim_js() -> &'static str {
         provider: target,
       }));
     },
+    // 提交一次登录回调（**网页端专用**：桌面壳的内嵌窗口自己就能拦下自定义协议
+    // 导航并转交网关，不需要界面帮忙）。回调地址里的 state 由界面侧解析
+    // （见 add-account-bridge 的 loginStateOfCallbackUrl），这里只做转发。
+    submitLoginCallback: function (state, callbackUrl) {
+      return call('POST', '/api/session/login/callback', {
+        state: String(state || ''),
+        callbackUrl: String(callbackUrl || ''),
+      });
+    },
     getLoginState: function () {
       return Promise.resolve({ active: loginActive, provider: loginProvider });
     },

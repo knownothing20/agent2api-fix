@@ -36,6 +36,29 @@ export type FieldSpec = {
 export type RegionOption = { value: string; label: string }
 export type MethodMode = { value: string; label: string; hint?: string }
 
+/**
+ * 回调是**自定义协议深链**时的网页端兜底（当前只有小浣熊）。
+ *
+ * ── 为什么需要它 ────────────────────────────────────────────
+ * 小浣熊的授权回调是 `office-raccoon://auth/callback?code=…&state=…`：
+ * 桌面版的内嵌窗口能拦下这个导航并转交网关，**浏览器不能** —— 它会把这个
+ * 未知协议丢掉，于是「打开网页登录」在网页面板里只会一直等一个永远不来的回调
+ * （后端日志只打「等待浏览器回调…」，没有任何报错，最难查的一类）。
+ *
+ * 兜底办法：让用户把浏览器地址栏里那段 `office-raccoon://…` **粘回来**，
+ * 前端从里面解析出 `state`，连同原文 POST 给网关既有的
+ * `/api/session/login/callback`（桌面壳走的就是这条，契约 `{state, callbackUrl}`）。
+ * 因此**不需要改后端**。
+ */
+export type PasteCallbackConfig = {
+  label: string
+  placeholder: string
+  button: string
+  hint: string
+  /** 等待期间替代引擎那一行提示的文案（默认那句是给内嵌窗口写的，网页端不适用） */
+  webHint?: string
+}
+
 export type WebLoginConfig = {
   /** 说明里的行内标记（原样注入，与旧实现的 noteOf 同口径） */
   noteHtml?: string
@@ -48,6 +71,8 @@ export type WebLoginConfig = {
   region?: string
   /** 写死的变体选择器（传给壳侧 start_login 的第一个参数） */
   edition?: string
+  /** 有这一项 = 网页端要多显示一块「粘贴回调地址」（见 `PasteCallbackConfig`） */
+  pasteCallback?: PasteCallbackConfig
 }
 
 export type SmsLoginConfig = { noteHtml?: string }
@@ -106,6 +131,19 @@ const RACCOON: ProviderConfig = {
     button: '打开网页登录',
     hint: '内嵌窗口打开；完成后自动加入列表，关窗即取消等待',
     busyText: '等待小浣熊登录完成…',
+    // 网页端（浏览器）没有内嵌窗口，也没有任何办法接管 office-raccoon:// 这个
+    // 自定义协议 ⇒ 多给一块「粘贴回调地址」。文案写清三步，否则用户不知道
+    // 「地址栏里那段打不开的地址」才是要粘的东西。
+    pasteCallback: {
+      label: '粘贴回调地址',
+      placeholder: 'office-raccoon://auth/callback?code=…&state=…',
+      button: '提交回调',
+      hint: '浏览器打不开 office-raccoon:// 是正常的（那是小浣熊客户端的私有协议）。'
+        + '在打开的页面里完成登录后，把浏览器地址栏里那段以 office-raccoon:// 开头的地址'
+        + '整段复制过来，粘到上面再点「提交回调」。',
+      webHint: '点「打开网页登录」→ 在新页面里登录 → 把跳转后地址栏里那段 '
+        + 'office-raccoon:// 地址复制回来，粘到下面的输入框',
+    },
   },
   manualTitle: '粘贴 token / refreshToken',
   manualNoteHtml: 'refreshToken 可选，填了到期可自动续期；两者都能从<a href="#" class="raccoon-hint-link" data-raccoon-hint>小浣熊客户端登录态文件</a>里取到。',
