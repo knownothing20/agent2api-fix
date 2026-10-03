@@ -375,6 +375,12 @@ function WebLoginSection({
           />
         </div>
       ) : null}
+      {/* 网页端做不了这家（如小浣熊：官网只在自定义协议回调里给授权码，浏览器拿不到）：
+          不给按钮也不给粘贴框 —— 点了只会一直等，比直接说清更糟。引擎的控制器照旧
+          建着（`applyState` 找不到按钮会自己返回），桌面版仍走下面那一支。 */}
+      {isWeb && web.webUnavailable ? (
+        <div className='detail border-l-2 border-border pl-[11px]'>{web.webUnavailable}</div>
+      ) : (
       <div className='field-row'>
         {/* 按钮与提示的文本子节点必须是常量：引擎会直接改它们的 textContent */}
         <Button id={`${prefix}-web-button`} onClick={() => controllerRef.current?.start()}>
@@ -395,6 +401,7 @@ function WebLoginSection({
           {web.hint || web.modes?.[0]?.hint || ''}
         </span>
       </div>
+      )}
       {/* 回调是自定义协议的家（当前只有小浣熊）在**网页端**多一块粘贴框：
           浏览器无法把 office-raccoon:// 交给网关，只能让用户把那段地址粘回来。
           桌面版不显示（内嵌窗口自己就能完成）。 */}

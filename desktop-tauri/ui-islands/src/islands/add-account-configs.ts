@@ -71,8 +71,21 @@ export type WebLoginConfig = {
   region?: string
   /** 写死的变体选择器（传给壳侧 start_login 的第一个参数） */
   edition?: string
-  /** 有这一项 = 网页端要多显示一块「粘贴回调地址」（见 `PasteCallbackConfig`） */
+  /**
+   * 有这一项 = 网页端要多显示一块「粘贴回调地址」（见 `PasteCallbackConfig`）。
+   *
+   * ⚠️ **当前没有任何一家用它** —— 实测（2026-10-03）小浣熊在浏览器里**根本拿不到
+   * 授权码**：官网只在自定义协议那条路上把 code 交出去，浏览器把它丢掉后跳回官网
+   * 首页，地址里既没有 code 也没有 state（用户实测确认）。所以小浣熊网页端走
+   * `webUnavailable`（明确告知不可用 + 指路「填写凭证」），而不是给一个粘不出东西的输入框。
+   * 这个结构留着是给「回调确实落在某个可复制的 URL 上」的家用的。
+   */
   pasteCallback?: PasteCallbackConfig
+  /**
+   * 有这一项 = 网页端**做不了**这家登录：说明原因并指路替代办法。
+   * 此时「打开网页登录」按钮与「取消等待」都不显示（避免用户点了白等）。
+   */
+  webUnavailable?: string
 }
 
 export type SmsLoginConfig = { noteHtml?: string }
@@ -131,19 +144,14 @@ const RACCOON: ProviderConfig = {
     button: '打开网页登录',
     hint: '内嵌窗口打开；完成后自动加入列表，关窗即取消等待',
     busyText: '等待小浣熊登录完成…',
-    // 网页端（浏览器）没有内嵌窗口，也没有任何办法接管 office-raccoon:// 这个
-    // 自定义协议 ⇒ 多给一块「粘贴回调地址」。文案写清三步，否则用户不知道
-    // 「地址栏里那段打不开的地址」才是要粘的东西。
-    pasteCallback: {
-      label: '粘贴回调地址',
-      placeholder: 'office-raccoon://auth/callback?code=…&state=…',
-      button: '提交回调',
-      hint: '浏览器打不开 office-raccoon:// 是正常的（那是小浣熊客户端的私有协议）。'
-        + '在打开的页面里完成登录后，把浏览器地址栏里那段以 office-raccoon:// 开头的地址'
-        + '整段复制过来，粘到上面再点「提交回调」。',
-      webHint: '点「打开网页登录」→ 在新页面里登录 → 把跳转后地址栏里那段 '
-        + 'office-raccoon:// 地址复制回来，粘到下面的输入框',
-    },
+    // 网页端**做不了**这家登录：官网只在自定义协议回调里交出授权码
+    // （`office-raccoon://auth/callback?code=…`），浏览器把它丢掉后跳回官网首页，
+    // 地址里没有 code 也没有 state（2026-10-03 用户实测确认）。
+    // 所以这里不给按钮、不给粘贴框，直接说清并指路。
+    webUnavailable: '浏览器无法完成小浣熊登录：官网只在自定义协议回调里交出授权码'
+      + '（office-raccoon://auth/callback?code=…），浏览器拿不到它。'
+      + '请改用下面的「填写凭证」：把小浣熊客户端登录态里的 access_token（一长串 JWT）'
+      + '粘进来即可（可选再填 refreshToken，填了能自动续期）。',
   },
   manualTitle: '粘贴 token / refreshToken',
   manualNoteHtml: 'refreshToken 可选，填了到期可自动续期；两者都能从<a href="#" class="raccoon-hint-link" data-raccoon-hint>小浣熊客户端登录态文件</a>里取到。',
