@@ -382,6 +382,13 @@ pub const KEY_REPORT_AUTO_REFRESH: &str = "reportAutoRefresh";
 pub const KEY_UPDATE_CHECK: &str = "updateCheck";
 /// 定时查询积分在 `scheduledTasks` 下的子键（后端定时查全部账号的余额 / 积分）
 pub const KEY_USAGE_QUERY: &str = "usageQuery";
+/// 自动领福利在 `scheduledTasks` 下的子键（后端定时领 CodeArts 的每日福利）。
+///
+/// 为什么它不在 `auto_checkin` 的提供商清单里：那一套是「定点、无人值守、一次请求」，
+/// 而 CodeArts 的福利是**运营活动交付**（delivery → claim → confirm → 回读确认，
+/// 三接口两状态一个幂等键，见 `providers::codearts::welfare` 模块头）。
+/// 形状不同 ⇒ 各自一条任务，但都挂在同一个「间隔型任务」框架下。
+pub const KEY_CODEARTS_WELFARE: &str = "codeartsWelfare";
 
 /// 凭证维护默认间隔（分钟）：与改造前的硬编码 600 秒一致
 pub const DEFAULT_CREDENTIAL_MAINTENANCE_MINUTES: i64 = 10;
@@ -414,6 +421,14 @@ pub const DEFAULT_UPDATE_CHECK_MINUTES: i64 = 20;
 /// 10 分钟一次（每小时 6 轮）对这个「看一眼还剩多少」的需求足够，
 /// 也不会因为间隔过密给上游添负担、触发风控。
 pub const DEFAULT_USAGE_QUERY_MINUTES: i64 = 10;
+/// 自动领福利的默认间隔（分钟）。
+///
+/// 为什么是 30 而不是跟余额查询同档的 10：这一条会**发写请求**（真的去领），
+/// 而写请求的真正闸在本地台账里 —— 每天 ≤6 次、间隔 ≥10 分钟
+/// （见 `providers::codearts::welfare` 模块头）。这一档只决定「多久去看一眼资格」：
+/// 30 分钟 = 一天最多看 48 次，台账最多放行 6 次 ⇒ 既不会漏掉当天上线的活动，
+/// 也不会把上游打成筛子。资格每次重读，所以看得勤不会漏、看得稀也不会误领。
+pub const DEFAULT_CODEARTS_WELFARE_MINUTES: i64 = 30;
 
 /// 间隔型任务的取值范围。上下限分两套（分钟 / 秒），因为两类任务的合理区间
 /// 差着量级：后端维护任务按分钟（1 分钟～1 天），前端刷新按秒（1 秒～10 分钟）。
@@ -450,6 +465,8 @@ pub struct ScheduledSettings {
     pub report_auto_refresh: IntervalTask,
     pub update_check: IntervalTask,
     pub usage_query: IntervalTask,
+    /// 自动领福利（CodeArts）。与其余后端任务同一形状：开关 + 间隔。
+    pub codearts_welfare: IntervalTask,
 }
 
 impl Default for ScheduledSettings {
@@ -482,6 +499,14 @@ impl Default for ScheduledSettings {
             usage_query: IntervalTask {
                 enabled: true,
                 interval: DEFAULT_USAGE_QUERY_MINUTES,
+            },
+            // 与其余后端任务一致：默认**开启**。这一条的「副作用」是替用户领他自己
+            // 账号上本来就有的每日福利（不是替谁做决定），而项目对「无人值守地领每日
+            // 福利」已有先例（`auto_checkin` 默认全选）。写请求由台账限流兜底
+            // （每天 ≤6 次），不会因为默认开着就变成刷上游。
+            codearts_welfare: IntervalTask {
+                enabled: true,
+                interval: DEFAULT_CODEARTS_WELFARE_MINUTES,
             },
         }
     }

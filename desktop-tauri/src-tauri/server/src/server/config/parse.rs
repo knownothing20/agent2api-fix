@@ -208,6 +208,12 @@ pub(super) fn scheduled_from(map: &Map<String, Value>) -> ScheduledSettings {
             INTERVAL_MIN_MINUTES,
             INTERVAL_MAX_MINUTES,
         ),
+        codearts_welfare: task(
+            KEY_CODEARTS_WELFARE,
+            defaults.codearts_welfare.interval,
+            INTERVAL_MIN_MINUTES,
+            INTERVAL_MAX_MINUTES,
+        ),
     }
 }
 

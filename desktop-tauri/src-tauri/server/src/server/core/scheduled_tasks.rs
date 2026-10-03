@@ -75,8 +75,9 @@ pub const TASK_USAGE_QUERY: &str = config::KEY_USAGE_QUERY;
 pub const TASK_LOGS_AUTO_REFRESH: &str = config::KEY_LOGS_AUTO_REFRESH;
 pub const TASK_REQUESTS_AUTO_REFRESH: &str = config::KEY_REQUESTS_AUTO_REFRESH;
 pub const TASK_REPORT_AUTO_REFRESH: &str = config::KEY_REPORT_AUTO_REFRESH;
+pub const TASK_CODEARTS_WELFARE: &str = config::KEY_CODEARTS_WELFARE;
 
-pub const TASKS: [TaskDef; 7] = [
+pub const TASKS: [TaskDef; 8] = [
     TaskDef {
         id: TASK_CREDENTIAL_MAINTENANCE,
         label: "凭证自动维护",
@@ -116,6 +117,16 @@ pub const TASKS: [TaskDef; 7] = [
         min: config::INTERVAL_MIN_MINUTES,
         max: config::INTERVAL_MAX_MINUTES,
         default_interval: config::DEFAULT_UPDATE_CHECK_MINUTES,
+    },
+    TaskDef {
+        id: TASK_CODEARTS_WELFARE,
+        label: "自动领福利（码道）",
+        description: "定期遍历 CodeArts 账号，把当天可领的运营福利领掉（delivery → claim → confirm → 回读确认到账）。发写请求的次数由本地台账兜住：每天最多 6 次、间隔至少 10 分钟，所以间隔调小只会「看得更勤」，不会把上游打多。面板上的「领福利」按钮不受这两个闸约束，随时可手动领。",
+        unit: "minutes",
+        runner: Runner::Backend,
+        min: config::INTERVAL_MIN_MINUTES,
+        max: config::INTERVAL_MAX_MINUTES,
+        default_interval: config::DEFAULT_CODEARTS_WELFARE_MINUTES,
     },
     TaskDef {
         id: TASK_LOGS_AUTO_REFRESH,
@@ -159,6 +170,7 @@ fn settings_of(settings: config::ScheduledSettings, id: &str) -> config::Interva
         TASK_MODEL_REFRESH => settings.model_refresh,
         TASK_UPDATE_CHECK => settings.update_check,
         TASK_USAGE_QUERY => settings.usage_query,
+        TASK_CODEARTS_WELFARE => settings.codearts_welfare,
         TASK_LOGS_AUTO_REFRESH => settings.logs_auto_refresh,
         TASK_REQUESTS_AUTO_REFRESH => settings.requests_auto_refresh,
         TASK_REPORT_AUTO_REFRESH => settings.report_auto_refresh,
@@ -353,6 +365,30 @@ async fn run_backend(
                 Err(error) => (format!("查询失败：{}", error.message), false),
             }
         }
+        TASK_CODEARTS_WELFARE => {
+            // 活动接口挂在区域 API 上（不是福利网关），与转发/目录同一个 base ——
+            // 与 `api::codearts_welfare` 的 `welfare_base()` 同源，两处都指向
+            // `codearts::models::DEFAULT_BASE_URL`。
+            let base = crate::server::core::providers::codearts::models::DEFAULT_BASE_URL;
+            match crate::server::core::providers::codearts::welfare::claim_all(store, base).await {
+                Ok((confirmed, already, not_eligible, limited, failed)) => {
+                    // 「领到 0 个」是常态（活动一天只放一次），所以摘要要把
+                    // 「为什么没领到」说清，否则看着像任务没干活。
+                    let summary = format!(
+                        "确认到账 {confirmed} 个，已领过 {already} 个，无可领 {not_eligible} 个，限流跳过 {limited} 个，失败 {failed} 个"
+                    );
+                    if confirmed > 0 || failed > 0 {
+                        logging::log_with_level(
+                            "[Welfare]",
+                            &format!("自动领福利：{summary}"),
+                            if failed > 0 { "error" } else { "info" },
+                        );
+                    }
+                    (summary, failed == 0)
+                }
+                Err(message) => (format!("领取失败：{message}"), false),
+            }
+        }
         _ => return Err("未知后端任务".to_string()),
     };
     guard.finish(success, summary.clone(), None, 0, interval_ms(task))?;
@@ -403,4 +439,30 @@ pub fn spawn(store: AccountStore, update: UpdateManager) {
             tokio::time::sleep(Duration::from_millis(TICK_MS)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    //! 只钉一条：**新加的任务真的进了注册表，且 `settings_of` 有它的分支**。
+    //!
+    //! 这两处任缺一个的表现都不是报错：任务不在设置页出现（看起来像功能没做），
+    //! 或者出现了但读到的开关/间隔永远是 `_ =>` 兜底的「关闭 + 间隔 0」
+    //! （看起来像设置保存不上）。都属于最难排查的那类，所以用断言钉住。
+
+    use super::*;
+
+    #[test]
+    fn codearts_welfare_task_is_registered_and_wired() {
+        let task = find(TASK_CODEARTS_WELFARE).expect("自动领福利必须注册在 TASKS 里");
+        assert_eq!(task.runner, Runner::Backend, "它由后端循环执行，不是界面轮询");
+        assert_eq!(task.unit, "minutes");
+        assert_eq!(task.default_interval, config::DEFAULT_CODEARTS_WELFARE_MINUTES);
+        let settings = settings_of(config::scheduled_settings(), TASK_CODEARTS_WELFARE);
+        assert_eq!(
+            settings.interval,
+            config::DEFAULT_CODEARTS_WELFARE_MINUTES,
+            "settings_of 少一个分支时会落到 `_` 兜底的 interval = 0",
+        );
+        assert!(settings.enabled, "与其余后端任务一致：默认开启");
+    }
 }

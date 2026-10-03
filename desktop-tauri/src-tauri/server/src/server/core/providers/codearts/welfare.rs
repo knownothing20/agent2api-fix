@@ -548,6 +548,55 @@ pub async fn refresh_usage(store: &AccountStore, account_id: &str, now_ms: i64) 
     document
 }
 
+/// 无人值守地领一轮：遍历**全部 CodeArts 账号**，逐个走 [`claim_account`]。
+///
+/// ── 谁在调它 ────────────────────────────────────────────────
+/// 「自动领福利」那条间隔型任务（`core::scheduled_tasks` 的
+/// `TASK_CODEARTS_WELFARE`）。面板上那个「领福利」按钮走的是
+/// `api::codearts_welfare::claim`，与本函数**共用同一个 `claim_account`** ——
+/// 两条路只差一个 `manual` 参数，落账号、台账、幂等键都是同一份实现。
+///
+/// ── 为什么这里传 `manual = false` ───────────────────────────
+/// 这一条是**无人值守**的：定时任务每次到点都会来看一眼资格，但真正发写请求的次数
+/// 必须由本地台账兜住（每天 ≤6 次、间隔 ≥10 分钟）。资格仍然每次重读 ——
+/// 「delivery 里的 CONFIRMED 不带日期」那条坑见模块头。
+///
+/// 返回 `(确认到账, 已领过, 无可领, 被限流跳过, 失败)`，供任务摘要直接念出来。
+pub async fn claim_all(
+    store: &AccountStore,
+    base: &str,
+) -> Result<(usize, usize, usize, usize, usize), String> {
+    // 只取 CodeArts 的账号：福利活动是这一家独有的运营玩法。
+    // `resolve_batch_targets` 会把「凭证不完整」的账号排除在外（`available: false`）——
+    // 那些账号连 `current_credential` 都过不去，发请求只会稳定失败。
+    let (targets, _skipped) =
+        crate::server::core::usage_query::resolve_batch_targets(store, Some("codearts"), None)
+            .map_err(|error| error.message)?;
+    let (mut confirmed, mut already, mut not_eligible, mut limited, mut failed) = (0, 0, 0, 0, 0);
+    for account in targets {
+        let Some(account_id) = account.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let now = logging::now_ms();
+        match claim_account(store, account_id, base, now, false).await {
+            Ok(Outcome::Confirmed) => confirmed += 1,
+            Ok(Outcome::Already) => already += 1,
+            Ok(Outcome::NotEligible) => not_eligible += 1,
+            Ok(Outcome::Skipped) => limited += 1,
+            Err(error) => {
+                failed += 1;
+                // 单账号失败不影响其余账号：记一条日志继续下一个（与凭证维护、
+                // 余额查询同一取向 —— 一个账号的问题不该让整轮任务失败）。
+                logging::log(
+                    "[Welfare]",
+                    &format!("自动领福利：账号 {account_id} 失败（{}）", error.message),
+                );
+            }
+        }
+    }
+    Ok((confirmed, already, not_eligible, limited, failed))
+}
+
 #[cfg(test)]
 mod tests {
     //! 领取状态机用**进程内 mock 上游**跑真流程（与 `session.rs` / `chat.rs` 同一手法）：
