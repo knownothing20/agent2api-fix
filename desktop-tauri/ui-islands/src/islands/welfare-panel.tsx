@@ -71,7 +71,20 @@ type IntervalTask = {
   canRun?: boolean
 }
 
-const WELFARE_TASK_ID = 'codeartsWelfare'
+const WELFARE_TASK_ID = 'codeartsWelfare'
+
+/**
+ * 福利页的提供商 tab。
+ *
+ * 现在只有码道一家 —— **但结构先留好**：后续接入别家（WorkBuddy 签到、
+ * Qoder 活动…）只需往这个数组里加一项、并在下面的渲染里加对应分支，
+ * 不用再动页面骨架。`available: false` 的 tab 先不显示（避免点进去是空的）。
+ */
+const WELFARE_TABS = [
+  { id: 'codearts', label: '码道', available: true },
+] as const
+
+type WelfareTabId = (typeof WELFARE_TABS)[number]['id']
 
 /**
  * 本岛用到的桥方法（**各岛自己声明自己用的那几个**，与 tasks-panel 同一约定）：
@@ -160,6 +173,7 @@ function WelfarePage(): React.ReactElement {
   const [probing, setProbing] = React.useState(false)
   const [claiming, setClaiming] = React.useState('')
   const [taskBusy, setTaskBusy] = React.useState(false)
+  const [tab, setTab] = React.useState<WelfareTabId>('codearts')
 
   /** 只读探测：一个账号一次 preview，互不影响（单账号失败只记在自己的行上） */
   const probeAll = React.useCallback(async (list: Account[]) => {
@@ -265,8 +279,29 @@ function WelfarePage(): React.ReactElement {
   const claimable = (preview?: Preview): number =>
     (preview?.campaigns || []).filter(item => item.claimable && !item.confirmed).length
 
+  const tabs = WELFARE_TABS.filter(item => item.available)
+
   return (
     <div className='flex flex-col gap-4'>
+      {/* 提供商 tab：现在只有码道；加别家时往 WELFARE_TABS 里加一项即可 */}
+      {tabs.length > 1 ? (
+        <div className='flex items-center gap-1 border-b border-border'>
+          {tabs.map(item => (
+            <button
+              key={item.id}
+              type='button'
+              className={`-mb-px cursor-pointer border-b-2 px-3 py-1.5 text-[13px] ${
+                tab === item.id
+                  ? 'border-primary font-medium text-foreground'
+                  : 'border-transparent text-subtle hover:text-foreground'
+              }`}
+              onClick={() => setTab(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {/* ── 自动领福利 ── */}
       <section className='panel'>
         <div className='panel-head'>
