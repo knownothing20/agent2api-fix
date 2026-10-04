@@ -3,13 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { SegmentedControl, type SegmentedControlOption } from '@ui'
 import {
   RANGES, DEFAULT_RANGE, RANGE_KEY, RANGE_LABEL, RANGE_OPTION_LABEL,
-  readRange, round1,
+  readRange, round1, formatTokens,
   overviewCells, rankRows, rankTotalText, donutView,
   heatmapView, heatLegendItems, heatThresholdsOf, cacheRateCells,
-  cacheTrendView, dailyTrendView,
+  cacheTrendView, dailyTrendView, dailyUsageView,
   type CacheTrendView, type ChartText, type DailyTrendView, type HeatmapView,
   type RankRowView, type DonutView,
-  type StatsDay, type StatsGroup, type StatsHour, type StatsSummary,
+  type DailyUsageView, type StatsDay, type StatsGroup, type StatsHour, type StatsSummary,
+  type StatsUsagePoint,
 } from './report-charts'
 
 /**
@@ -413,6 +414,45 @@ function CacheTrendChart({ view }: { view: CacheTrendView }) {
   )
 }
 
+/**
+ * 每日用量曲线（按模型 / 按账号多条线）。
+ *
+ * 这是报表页**最该先看到**的一张图：回答「每天用了多少、花在谁身上」。
+ * 读的是后端 `trendByModel` / `trendByAccount`（与 `dailyTrend` 同源同区间，
+ * 所以各条线之和必然等于当天的合计）。
+ *
+ * 只给**用量 > 0** 的点画圆点（见 `dailyUsageView` 的 dots）；线本身按日铺满、
+ * 缺日补 0 —— 断线会被读成「那几天这个模型消失了」，补 0 才贴事实。
+ */
+function DailyUsageChart({ view }: { view: DailyUsageView }): React.ReactElement {
+  const { width, height, plotLeft, plotW, plotTop, plotH } = view
+  return (
+    <svg className='report-svg' width={width} height={height}
+      viewBox={`0 0 ${width} ${height}`} role='img' aria-label='每日用量曲线'>
+      {view.grid.map(item => (
+        <line className='chart-grid' x1={item.x1} y1={item.y} x2={item.x2} y2={item.y} key={item.key} />
+      ))}
+      <ChartLabels items={view.valueTicks} cls='chart-axis' />
+      {view.series.map(line => (
+        <g key={line.name}>
+          <polyline className='chart-line' points={line.points} fill='none' stroke={line.color}
+            strokeWidth={2} strokeLinejoin='round' strokeLinecap='round' />
+          {line.dots.map(dot => (
+            <circle cx={dot.x} cy={dot.y} r={2.5} fill={line.color} key={dot.key}>
+              <title>{dot.tip}</title>
+            </circle>
+          ))}
+        </g>
+      ))}
+      <ChartLabels items={view.dateTicks} cls='chart-axis' />
+      {view.blank ? (
+        <text className='chart-empty' x={round1(plotLeft + plotW / 2)} y={round1(plotTop + plotH / 2)}
+          textAnchor='middle'>所选范围内暂无用量</text>
+      ) : null}
+    </svg>
+  )
+}
+
 function DailyTrendChart({ view }: { view: DailyTrendView }) {
   const { width, height, plotLeft, plotW, plotTop, plotH } = view
   return (
@@ -692,9 +732,54 @@ function ReportPage() {
   const heatView = summary ? heatmapView(heatmapDays, heatWidth[1]) : null
   const trendView = summary ? cacheTrendView(cacheTrendHours, trendWidth[1]) : null
   const dailyView = summary ? dailyTrendView(dailyDays, dailyWidth[1]) : null
+  // 每日用量曲线：维度可切（模型 / 账号）。默认按模型 —— 「钱花在哪个模型上」
+  // 是这张图最常被问的问题，账号维度是下一层。
+  const [usageDim, setUsageDim] = React.useState<'model' | 'account'>('model')
+  const usagePoints = usageDim === 'model' ? summary?.trendByModel : summary?.trendByAccount
+  const usageView = summary ? dailyUsageView(usagePoints, dailyWidth[1]) : null
 
   return (
     <>
+      {/* ── 每日用量曲线（首屏第一块）──
+           用户最想先看到的是「每天用了多少、花在谁身上」，所以排在最前；
+           时间范围控件在下面「统计概览」的面板头里，两者读同一个 range */}
+      <section className='panel'>
+        <div className='panel-head'>
+          <h2>每日用量</h2>
+          <span className='panel-sub'>按 {usageDim === 'model' ? '模型' : '账号'}拆开</span>
+          <div className='head-actions'>
+            <SegmentedControl
+              aria-label='用量维度'
+              options={[
+                { value: 'model', label: '按模型' },
+                { value: 'account', label: '按账号' },
+              ]}
+              value={usageDim}
+              onValueChange={value => setUsageDim(value === 'account' ? 'account' : 'model')}
+            />
+          </div>
+        </div>
+        {usageView ? (
+          <>
+            <div className='chart-wrap tall' ref={dailyWidth[0]}>
+              <DailyUsageChart view={usageView} />
+            </div>
+            {/* 图例：颜色与曲线一致，读数按用量从多到少 —— 与环形图同一口径 */}
+            <div className='flex flex-wrap gap-x-4 gap-y-1'>
+              {usageView.series.map(line => (
+                <span className='flex items-center gap-1.5 text-[13px]' key={line.name}>
+                  <i className='inline-block h-2.5 w-2.5 rounded-sm' style={{ background: line.color }} />
+                  {line.name}
+                  <span className='detail'>{formatTokens(line.total)}</span>
+                </span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className='detail'>所选范围内暂无用量</p>
+        )}
+      </section>
+
       {/* ── 统计概览 ──
            时间范围控件住在这一块的面板头里：它控制的就是这一页的统计口径，与旁边的读数
            同处一行最直观 */}

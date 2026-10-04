@@ -31,6 +31,9 @@ export type StatsOverview = {
 }
 export type CacheRateWindow = { inputTokens?: number; hitTokens?: number; rate?: number }
 export type StatsSummary = {
+  /** 按天 × 模型 / 按天 × 账号的用量序列（后端 trendByModel / trendByAccount） */
+  trendByModel?: StatsUsagePoint[]
+  trendByAccount?: StatsUsagePoint[]
   range?: string; startDate?: string; endDate?: string
   overview?: StatsOverview
   providers?: StatsGroup[]
@@ -863,6 +866,155 @@ export type DailyTrendView = {
  * 每根柱子都标 —— 柱子密到标注必然重叠时，只标当区间里最大的那几根，其余靠悬停气泡读。
  * 这样图始终是干净的，而峰值一眼可见。
  */
+/** 一条维度序列点（后端 `trendByModel` / `trendByAccount` 的形状）。 */
+export type StatsUsagePoint = { date?: string; name?: string; tokens?: number; requests?: number }
+
+/** 多序列曲线里的一条线。 */
+export type DailyUsageSeries = {
+  name: string
+  color: string
+  points: string
+  total: number
+  dots: { key: string; x: number; y: number; tip: string }[]
+}
+
+export type DailyUsageView = {
+  width: number
+  height: number
+  plotLeft: number
+  plotTop: number
+  plotW: number
+  plotH: number
+  grid: { key: string; x1: number; y: number; x2: number }[]
+  valueTicks: ChartText[]
+  dateTicks: ChartText[]
+  series: DailyUsageSeries[]
+  blank: boolean
+}
+
+/**
+ * 曲线配色：**按用量排名分配，最大的那条是红色**，与用量环形图同一口径
+ * （见 `TIP_MODELS`：同一份报表里换个维度看，配色口径不变）。
+ */
+const USAGE_COLORS = [
+  '#e5484d', '#0090ff', '#30a46c', '#f76b15',
+  '#8e4ec6', '#e93d82', '#12a594', '#978365',
+]
+
+/**
+ * 每日用量曲线（按模型 / 按账号拆成多条线）。
+ *
+ * ── 为什么缺的日子补 0，而不是断线 ──────────────────────────
+ * 某天某模型没有请求，语义就是**那天用了 0**（不是"没有数据"）——
+ * 断线会让人以为那几天这个模型消失了。补 0 画出来的线更贴事实。
+ *
+ * ── 日期轴为什么要在序列之外单独铺 ──────────────────────────
+ * 后端只吐出**有数据的**（天 × 维度）条目，整段没用的日子根本不会出现。
+ * 直接按条目画会把「10-01 有、10-02 整天没用、10-03 有」压缩成相邻两点，
+ * 曲线会把中间的空白吃掉。所以这里按首尾日期铺满，缺的补 0。
+ */
+export function dailyUsageView(
+  points: StatsUsagePoint[] | undefined,
+  width: number,
+): DailyUsageView | null {
+  const list = (Array.isArray(points) ? points : []).filter(item => item && item.date)
+  if (!list.length) return null
+
+  const height = 240
+  const pad = { left: 50, right: 14, top: 16, bottom: 26 }
+  const plotW = Math.max(40, width - pad.left - pad.right)
+  const plotH = height - pad.top - pad.bottom
+
+  // 日期轴：首尾之间逐日铺满（见函数说明）
+  const allDates = Array.from(new Set(list.map(item => String(item.date)))).sort()
+  const dates: string[] = []
+  const first = parseDay(allDates[0])
+  const last = parseDay(allDates[allDates.length - 1])
+  if (first && last) {
+    const cursor = new Date(first.getTime())
+    // 上限兜底：手改保留期把区间撑到十年也不会把图画爆
+    while (cursor.getTime() <= last.getTime() && dates.length < 400) {
+      dates.push(dateKeyOf(cursor))
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  }
+  if (!dates.length) return null
+  const indexOf = new Map(dates.map((date, index) => [date, index]))
+
+  // 按 name 分组求和（同名同日的多条要合并，否则后一条会覆盖前一条）
+  const byName = new Map<string, number[]>()
+  const totals = new Map<string, number>()
+  for (const item of list) {
+    const name = String(item.name || '未知')
+    if (!byName.has(name)) byName.set(name, new Array(dates.length).fill(0))
+    const row = byName.get(name)!
+    const index = indexOf.get(String(item.date))
+    if (index === undefined) continue
+    const tokens = Number(item.tokens) || 0
+    row[index] += tokens
+    totals.set(name, (totals.get(name) || 0) + tokens)
+  }
+
+  // 排名：用量大的在前（配色与图例都按它排）
+  const ranked = Array.from(byName.keys()).sort((a, b) => (totals.get(b) || 0) - (totals.get(a) || 0))
+  const peak = Math.max(0, ...ranked.map(name => totals.get(name) || 0))
+  const yMax = axisMax(peak)
+  const baseY = pad.top + plotH
+  const step = dates.length > 1 ? plotW / (dates.length - 1) : 0
+  const xAt = (index: number) => pad.left + (dates.length > 1 ? step * index : plotW / 2)
+  const yAt = (value: number) => pad.top + plotH - (plotH * value) / yMax
+  const blank = peak <= 0
+
+  const grid: DailyUsageView['grid'] = []
+  const valueTicks: ChartText[] = []
+  if (!blank) {
+    for (let i = 0; i <= 4; i += 1) {
+      const value = (yMax * i) / 4
+      const y = round1(yAt(value))
+      grid.push({ key: `g${i}`, x1: pad.left, y, x2: round1(pad.left + plotW) })
+      valueTicks.push({ key: `v${i}`, x: pad.left - 8, y, anchor: 'end', text: axisText(value, yMax) })
+    }
+  }
+
+  // 日期刻度：最多 6 个，均匀取（多了一天一标会挤成一团）
+  const dateTicks: ChartText[] = []
+  const labelStep = Math.max(1, Math.ceil(dates.length / 6))
+  dates.forEach((date, index) => {
+    if (index % labelStep !== 0 && index !== dates.length - 1) return
+    dateTicks.push({
+      key: `d${date}`,
+      x: round1(xAt(index)),
+      y: pad.top + plotH + 16,
+      anchor: index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle',
+      text: dayLabel(date),
+    })
+  })
+
+  const series: DailyUsageSeries[] = ranked.map((name, rank) => {
+    const row = byName.get(name)!
+    const points = row
+      .map((value, index) => `${round1(xAt(index))},${round1(yAt(value))}`)
+      .join(' ')
+    const dots = row
+      .map((value, index) => ({
+        key: `${name}-${dates[index]}`,
+        x: round1(xAt(index)),
+        y: round1(yAt(value)),
+        tip: `${dayLabel(dates[index])} · ${name} · ${formatTokens(value)} tokens`,
+      }))
+      .filter((_, index) => row[index] > 0)
+    return { name, color: USAGE_COLORS[rank % USAGE_COLORS.length], points, total: totals.get(name) || 0, dots }
+  })
+
+  return { width, height, plotLeft: pad.left, plotTop: pad.top, plotW, plotH, grid, valueTicks, dateTicks, series, blank }
+}
+
+/** `YYYY-MM-DD`（本地日）——与 `daily_trend` 的键同源。 */
+function dateKeyOf(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
 export function dailyTrendView(series: StatsDay[] | undefined, width: number): DailyTrendView | null {
   const list = Array.isArray(series) ? series : []
   if (!list.length) return null
