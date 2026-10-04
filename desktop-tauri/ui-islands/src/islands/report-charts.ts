@@ -155,6 +155,14 @@ export function dayLabel(key: unknown): string {
   return `${date.getMonth() + 1}月${date.getDate()}日 周${'日一二三四五六'[date.getDay()]}`
 }
 
+/** 紧凑日期 `9/28`：短区间要**每天都标**，而完整标签（「9月28日 周一」）挤不下 ——
+ *  7 天 × 8 个字在 800px 宽的图上必然重叠，只能隔天标，于是「近 7 天」看着像 4 天
+ *  （2026-10-04 用户就是这么问的）。 */
+export function shortDayLabel(key: unknown): string {
+  const date = parseDay(key)
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
 /** 本地整点键 `YYYY-MM-DDTHH` → `15:00`（只取时钟位，时区口径由后端定死） */
 export function hourText(key: unknown): string {
   const time = String(key || '').slice(11, 13)
@@ -982,9 +990,12 @@ export function dailyUsageView(
     }
   }
 
-  // 日期刻度：最多 6 个，均匀取（多了一天一标会挤成一团）
+  // 日期刻度：**短区间每天都标**（用紧凑标签 `9/28`），长区间才抽稀到最多 6 个。
+  // 为什么要分档：完整标签「9月28日 周一」有 8 个字，7 天排开必然重叠 ⇒ 只能隔天标
+  // ⇒「近 7 天」看起来像 4 天（2026-10-04 用户原话「近七天 怎么不是7天呢」）。
   const dateTicks: ChartText[] = []
-  const labelStep = Math.max(1, Math.ceil(dates.length / 6))
+  const shortRange = dates.length <= 10
+  const labelStep = shortRange ? 1 : Math.max(1, Math.ceil(dates.length / 6))
   dates.forEach((date, index) => {
     if (index % labelStep !== 0 && index !== dates.length - 1) return
     dateTicks.push({
@@ -992,7 +1003,7 @@ export function dailyUsageView(
       x: round1(xAt(index)),
       y: pad.top + plotH + 16,
       anchor: index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle',
-      text: dayLabel(date),
+      text: shortRange ? shortDayLabel(date) : dayLabel(date),
     })
   })
 
