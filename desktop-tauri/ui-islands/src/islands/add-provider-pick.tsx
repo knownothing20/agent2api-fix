@@ -11,7 +11,14 @@
  */
 
 import * as React from 'react'
-import { DialogSection, InputGroup, InputGroupAddon, InputGroupInput, SegmentedControl } from '@ui'
+import {
+  DialogSection,
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  SegmentedControl,
+  Switch,
+} from '@ui'
 
 import { accountCountOf, shared } from './add-account-bridge'
 import type { CustomProviderRecord } from './add-account-bridge'
@@ -86,7 +93,35 @@ type CardItem = {
  *   · 自定义 —— 已建的自定义家（customList），每张卡是「给这家加账号」的对象。
  * 「手动新建」那张卡不在这个列表里：它不是一家提供商，由渲染处单独插在队首。
  */
-function providerCards(accountType: AccountType): CardItem[] {
+/**
+ * 渠道显示/隐藏（「设置」分段里那组开关）。
+ *
+ * 存在 **localStorage** 而不是后端：这是**本机面板的显示偏好**，与网关的转发行为
+ * 无关 —— 隐藏一家不会让它停用、也不会影响已有账号，只是这个弹窗里不列出来。
+ * 换台电脑看面板本来就该有自己的取舍，所以既不进账号库、也不进配置。
+ */
+const HIDDEN_PROVIDERS_KEY = 'agent2api.hiddenProviders'
+
+function readHiddenProviders(): string[] {
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_PROVIDERS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.map(item => String(item)) : []
+  } catch {
+    // 存储被禁用 / 内容被手改坏：按「全显示」处理，不影响弹窗能用
+    return []
+  }
+}
+
+function writeHiddenProviders(ids: string[]): void {
+  try {
+    window.localStorage.setItem(HIDDEN_PROVIDERS_KEY, JSON.stringify(ids))
+  } catch {
+    // 写不进去就只影响本机偏好，不值得打断用户
+  }
+}
+
+function providerCards(accountType: AccountType, hidden: string[] = []): CardItem[] {
   const providers = shared().wbProviders
   if (accountType === TYPE_PRESET) {
     const customNames = new Set((providers?.customList?.() || []).map(item => item.name || ''))
@@ -107,7 +142,8 @@ function providerCards(accountType: AccountType): CardItem[] {
       custom: true,
     }))
   }
-  const list = providers?.all?.() || []
+  const hiddenSet = new Set(hidden)
+  const list = (providers?.all?.() || []).filter(item => !hiddenSet.has(String(item.id || '')))
   // 摘要还没到时先放 WorkBuddy 一张：弹窗不能因为一次状态未就绪就空着
   const cards: CardItem[] = list.length
     ? list.map(item => ({
@@ -216,7 +252,12 @@ export function PickStep({
   importing,
   importPanel,
 }: PickStepProps): React.ReactElement {
-  const cards = React.useMemo(() => providerCards(accountType), [accountType, version])
+  // 隐藏渠道是**本机偏好**，进 useMemo 依赖 ⇒ 拨开关即时生效，不用重开弹窗
+  const [hidden, setHidden] = React.useState<string[]>(() => readHiddenProviders())
+  const cards = React.useMemo(
+    () => providerCards(accountType, hidden),
+    [accountType, version, hidden],
+  )
   const keyword = search.trim().toLowerCase()
   const hit = cards.filter(item => !keyword || item.label.toLowerCase().includes(keyword))
   // 有关键词时「新建」那张卡收起来 —— 用户在找的是一家
@@ -235,7 +276,7 @@ export function PickStep({
           options={[
             { value: TYPE_PROXY, label: '反代' },
             { value: TYPE_PRESET, label: '预置 API' },
-            { value: TYPE_CUSTOM, label: '自定义' },
+            { value: TYPE_CUSTOM, label: '设置' },
             // 「导入」分段暂时收起（见 IMPORT_SEGMENT_ENABLED）：整段不生成
             ...(IMPORT_SEGMENT_ENABLED ? [{ value: TYPE_IMPORT, label: '导入' }] : []),
           ]}
@@ -257,6 +298,38 @@ export function PickStep({
           </InputGroup>
         </span>
       </div>
+      {/* 「设置」段：渠道显示 / 隐藏。
+          只影响**这个弹窗的列表** —— 隐藏一家不会停用它的账号、也不影响转发，
+          所以它不是「禁用」，而是「我不想在这张列表里看到它」。 */}
+      {accountType === TYPE_CUSTOM ? (
+        <div className='mt-3 rounded-lg border border-border p-3'>
+          <p className='detail'>
+            渠道显示 / 隐藏（只影响这个弹窗的列表；已有账号与转发不受影响）
+          </p>
+          <div className='mt-2 flex flex-wrap gap-x-5 gap-y-2'>
+            {(shared().wbProviders?.all?.() || []).map(item => {
+              const id = String(item.id || '')
+              const visible = !hidden.includes(id)
+              return (
+                <label key={id} className='flex cursor-pointer items-center gap-2 text-[13px]'>
+                  <Switch
+                    checked={visible}
+                    aria-label={`显示渠道 ${String(item.label || id)}`}
+                    onCheckedChange={next => {
+                      const updated = next
+                        ? hidden.filter(value => value !== id)
+                        : [...hidden, id]
+                      setHidden(updated)
+                      writeHiddenProviders(updated)
+                    }}
+                  />
+                  {String(item.label || id)}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
       {/* 导入面板插在卡片网格的位置上（与网格互斥显隐），放在网格之前 ——
           两屏内容同一块区域，滚动位置也就跟着换，不会串 */}
       {importPanel}
