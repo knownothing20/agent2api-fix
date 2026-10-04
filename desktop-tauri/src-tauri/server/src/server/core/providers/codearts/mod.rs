@@ -393,7 +393,16 @@ impl ProviderAdapter for CodeArtsAdapter {
                 if !prefetched.is_empty() {
                     // 先嗅后移（prefetched 会被 move 进 Bytes）
                     sniff_usage(&telemetry_for_stream, &prefetched);
-                    if sender.send(Ok(bytes::Bytes::from(prefetched))).await.is_err() {
+                    // ⚠️ 这段**也要剥**：它在循环之前就发出去了，漏掉它会让开头那几帧的
+                    // 思考照样漏给客户端（实测：剥了循环、这里没剥 ⇒ 739 字只降到 53 字）。
+                    let first = match hide_reasoning
+                        .then(|| strip_reasoning_frame(&prefetched))
+                        .flatten()
+                    {
+                        Some(rewritten) => bytes::Bytes::from(rewritten),
+                        None => bytes::Bytes::from(prefetched),
+                    };
+                    if sender.send(Ok(first)).await.is_err() {
                         session.stop().await;
                         return;
                     }
