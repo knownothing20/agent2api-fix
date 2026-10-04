@@ -106,6 +106,8 @@ export type SettingsBridge = {
   saveQueue(patch: Record<string, number>): Promise<unknown>
   getDebug(): Promise<unknown>
   saveDebug(enabled: boolean): Promise<unknown>
+  getHideReasoning(): Promise<unknown>
+  saveHideReasoning(enabled: boolean): Promise<unknown>
   getSanitize(): Promise<unknown>
   saveSanitize(enabled: boolean): Promise<unknown>
   getPrompt(): Promise<unknown>

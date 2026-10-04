@@ -80,6 +80,7 @@ import {
   restoreCategory,
   saveCaptcha,
   saveDebug,
+  saveHideReasoning,
   savePromptFile,
   savePromptMode,
   saveProviderGatewayPrompt,
@@ -1177,6 +1178,22 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
             />
           </div>
           <div className='settings-state'>{debugStateText(snap.debug)}</div>
+          <div className='settings-switches'>
+            <SwitchRow
+              id='settings-hide-reasoning'
+              label='不下发思考（模型照常思考，客户端只看到正文）'
+              checked={snap.hideReasoning.on}
+              disabled={snap.hideReasoning.status !== 'ready' || snap.busy === 'hideReasoning'}
+              onCheckedChange={next => void saveHideReasoning(next)}
+            />
+          </div>
+          <div className='settings-state'>
+            {snap.hideReasoning.status === 'unavailable'
+              ? '未能读取「不下发思考」设置，请稍后重试'
+              : snap.hideReasoning.on
+                ? '已开启：思考内容不下发，客户端只看到正文（模型照常思考，质量/耗时/扣费都不变）。'
+                : '未开启：思考内容照常下发（与默认一致）。'}
+          </div>
           <div className='hint retention-note'>{NOTES.debug}</div>
         </div>
       </section>

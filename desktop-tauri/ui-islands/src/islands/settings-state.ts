@@ -75,6 +75,7 @@ export type BusyScope =
   | 'timeouts'
   | 'queue'
   | 'debug'
+  | 'hideReasoning'
   | 'sanitize'
   | 'prompt'
   | 'captcha'
@@ -186,6 +187,8 @@ export type SettingsSnapshot = {
   /** 每次 showCategory 递增：视图据此把内容栏滚回顶部（旧实现是命令式写 scrollTop） */
   scrollReset: number
   busy: BusyScope
+  /** 「不下发思考」开关（与请求头 X-A2A-Hide-Reasoning 或的关系） */
+  hideReasoning: { status: 'loading' | 'ready' | 'unavailable'; on: boolean }
   app: AppState
   unitsChinese: boolean
   retention: NumericState
@@ -230,6 +233,7 @@ const INITIAL: SettingsSnapshot = {
   timeouts: { status: 'loading', values: null },
   queue: { status: 'loading', values: null },
   debug: { status: 'loading', on: false, count: null, limit: null },
+  hideReasoning: { status: 'loading', on: false },
   sanitize: { status: 'loading', on: false },
   prompt: {
     status: 'loading',
@@ -840,12 +844,52 @@ export function renderDebug(data?: unknown): void {
   })
 }
 
+export function renderHideReasoning(data?: unknown): void {
+  if (data === undefined) return
+  if (!data || typeof data !== 'object') {
+    publish({ hideReasoning: { status: 'unavailable', on: false } })
+    return
+  }
+  publish({
+    hideReasoning: {
+      status: 'ready',
+      on: (data as { hideReasoning?: unknown }).hideReasoning === true,
+    },
+  })
+}
+
 async function loadDebug(): Promise<void> {
   try {
     renderDebug(await shared().workbuddyDesktop?.getDebug())
   } catch (error) {
     console.warn('读取调试模式设置失败:', errorMessage(error))
     renderDebug(null)
+  }
+}
+
+async function loadHideReasoning(): Promise<void> {
+  try {
+    renderHideReasoning(await shared().workbuddyDesktop?.getHideReasoning())
+  } catch (error) {
+    console.warn('读取「不下发思考」设置失败:', errorMessage(error))
+    renderHideReasoning(null)
+  }
+}
+
+/** 「不下发思考」：模型照常思考（质量、耗时、扣费都不变），只是思考内容不下发。 */
+export async function saveHideReasoning(next: boolean): Promise<void> {
+  if (busyScope) { repaint(); return }
+  beginBusy('hideReasoning')
+  publish({ hideReasoning: { ...snapshot.hideReasoning, on: next } })
+  try {
+    const saved = await shared().workbuddyDesktop?.saveHideReasoning(next)
+    renderHideReasoning(saved)
+    toast(next ? '✅ 已改为「不下发思考」' : '✅ 已恢复下发思考')
+  } catch (error) {
+    toast(`保存失败: ${errorMessage(error)}`, 'err')
+    await loadHideReasoning() // 回滚到后端的真实值
+  } finally {
+    endBusy()
   }
 }
 
@@ -1509,6 +1553,7 @@ export async function load(): Promise<void> {
     loadTimeouts(),
     loadQueue(),
     loadDebug(),
+    loadHideReasoning(),
     loadSanitize(),
     loadPrompt(),
     loadStorage(),
