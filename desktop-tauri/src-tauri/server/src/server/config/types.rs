@@ -113,6 +113,24 @@ pub const FORWARD_MODES: [&str; 4] = [
 /// 没传按 API 规范当非流式。
 pub const FORWARD_MODE_DEFAULT: &str = "follow-nonstream";
 
+/// 码道（CodeArts）的 `max_tokens` 硬顶（设置页「网关 → 码道」）。
+///
+/// 为什么是码道特有、不进通用键：65536 是**码道上游平台（InferHub）的参数硬顶**
+/// （2026-10-04 逐档实测：65536 收、70000+ 一律 `InferHub.001001005.400`，被网关
+/// 包成 502），别家的上限各不相同 —— 所以键名带 `codearts` 前缀，与 `codeartsWelfare`
+/// 同一命名法。钳制动作在码道适配器里（发送体副本上改，客户端原始体不动）。
+///
+/// 模型目录里 `maxOutputTokens: 384000` 是假的：照目录设的客户端必撞 400。
+/// 钳制而不是拒绝 —— 这类请求从「必失败」变成「输出截到上限」，对客户端透明。
+///
+/// `0` = 不钳制（原样透传，与改造前一致）。
+pub const KEY_CODEARTS_MAX_TOKENS_CAP: &str = "codeartsMaxTokensCap";
+/// 默认值：实测的码道平台硬顶。
+pub const CODEARTS_MAX_TOKENS_CAP_DEFAULT: u64 = 65536;
+/// 合法区间（越界拒绝写入 / 回落默认）。上限一百万只是防手滑。
+pub const CODEARTS_MAX_TOKENS_CAP_MIN: u64 = 0;
+pub const CODEARTS_MAX_TOKENS_CAP_MAX: u64 = 1_000_000;
+
 /// 机器人校验开关的键（config.json 键，ALTCHA proof-of-work，见 `server::altcha`）。
 ///
 /// **默认开启**：登录 / 注册是公开的认证边界，脚本可以无限打（暴破密码、

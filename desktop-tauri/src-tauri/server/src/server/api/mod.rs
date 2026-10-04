@@ -68,6 +68,7 @@ pub mod proxies;
 pub mod queue_api;
 pub mod retry_api;
 pub mod scheduling;
+pub mod codearts_max_tokens;
 pub mod forward_mode;
 pub mod hide_reasoning;
 pub mod sanitize;

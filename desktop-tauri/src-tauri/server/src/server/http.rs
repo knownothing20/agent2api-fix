@@ -405,6 +405,14 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/sanitize",
             get(api::sanitize::get_sanitize).put(api::sanitize::put_sanitize),
         )
+        // ── 码道 max_tokens 硬顶 ──
+        // 码道特有（键名带 codearts 前缀）：钳制值只对码道账号生效，别家不读它。
+        // GET 读 / PUT 写，与 /api/hideReasoning、/api/forwardMode 同形。
+        .route(
+            "/api/codeartsMaxTokensCap",
+            get(api::codearts_max_tokens::get_codearts_max_tokens_cap)
+                .put(api::codearts_max_tokens::put_codearts_max_tokens_cap),
+        )
         // ── 转发模式开关 ──
         // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。

@@ -28,6 +28,7 @@ import {
   NOTES,
   PROMPT_MODES,
   SCHEDULING_MODES,
+  CODEARTS_MAX_TOKENS_CAP_FIELD,
   SCHEDULING_WAIT_FIELD,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
@@ -79,6 +80,7 @@ import {
   resolveRetentionConfirm,
   restoreCategory,
   saveCaptcha,
+  saveCodeartsCap,
   saveDebug,
   saveForwardMode,
   saveHideReasoning,
@@ -1122,6 +1124,35 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
         </div>
       </section>
 
+      {/* 码道专属配置：与通用设置分开放 —— 上游平台的参数硬顶，别家各不相同，
+          所以面板名字就写明只对码道生效（键名也带 codearts 前缀）。 */}
+      <section className='panel'>
+        <PanelHead
+          title='码道（CodeArts）'
+          tip={TIPS.codeartsCap}
+          badge={
+            snap.codeartsCap.status === 'ready' ? (
+              <StatusBadge tone='ok'>已生效</StatusBadge>
+            ) : snap.codeartsCap.status === 'unavailable' ? (
+              <StatusBadge tone='bad'>不可用</StatusBadge>
+            ) : (
+              <StatusBadge tone='idle'>检测中…</StatusBadge>
+            )
+          }
+        />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <NumberRow
+              field={CODEARTS_MAX_TOKENS_CAP_FIELD}
+              value={snap.codeartsCap.value}
+              disabled={snap.codeartsCap.status !== 'ready' || snap.busy === 'codeartsCap'}
+              onCommit={raw => saveCodeartsCap(raw)}
+            />
+          </div>
+          <div className='hint retention-note'>{NOTES.codeartsCap}</div>
+        </div>
+      </section>
+
       <section className='panel'>
         <PanelHead
           title='指纹脱敏'
@@ -1192,7 +1223,7 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
             {snap.hideReasoning.status === 'unavailable'
               ? '未能读取「不下发思考」设置，请稍后重试'
               : snap.hideReasoning.on
-                ? '已开启：思考内容不下发，客户端只看到正文（模型照常思考，质量/耗时/扣费都不变）。'
+                ? '已开启：思考内容不下发，客户端只看到正文（模型照常思考，质量/耗时/扣费都不变）。目前仅对码道账号生效。'
                 : '未开启：思考内容照常下发（与默认一致）。'}
           </div>
           {/* 转发模式：两个控件组合出四个取值（后端只存一个键，见 api/forward_mode.rs）。

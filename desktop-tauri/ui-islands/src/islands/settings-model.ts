@@ -110,6 +110,8 @@ export type SettingsBridge = {
   saveHideReasoning(enabled: boolean): Promise<unknown>
   getForwardMode(): Promise<unknown>
   saveForwardMode(mode: string): Promise<unknown>
+  getCodeartsMaxTokensCap(): Promise<unknown>
+  saveCodeartsMaxTokensCap(cap: number): Promise<unknown>
   getSanitize(): Promise<unknown>
   saveSanitize(enabled: boolean): Promise<unknown>
   getPrompt(): Promise<unknown>
@@ -500,6 +502,22 @@ export const SCHEDULING_WAIT_FIELD: NumberField = {
   hint: '账号并发用满时，请求等一个空位最多等这么久（等到就进，等不到才返回原来的并发错误）。填 0 = 不等待。它花的是客户端自己的超时预算：等待期间请求日志会显示「排队中」，实测一次等待叠加换号后整体可以超过 60 秒，客户端超时短的话请调小。',
 }
 
+/**
+ * 码道（CodeArts）的 max_tokens 硬顶 —— **只对码道账号生效**（键名带 codearts 前缀，
+ * 与 codeartsWelfare 同一命名法；别家上游的参数上限各不相同，不进通用设置）。
+ * 转发前客户端 max_tokens 超过它就压到它：模型目录里 maxOutputTokens: 384000 是假的，
+ * 照目录设的客户端会撞上游 400（被网关包成 502，看着像网络故障）。0 = 不钳制。
+ */
+export const CODEARTS_MAX_TOKENS_CAP_FIELD: NumberField = {
+  key: 'codeartsMaxTokensCap',
+  id: 'settings-codearts-max-tokens',
+  label: 'max_tokens 硬顶',
+  unit: 'token',
+  min: 0,
+  max: 1000000,
+  hint: '只对码道账号生效。转发前客户端 max_tokens 超过此值就压到此值再发（实测码道平台硬顶 65536：65536 收、70000+ 一律被拒）。填 0 = 不钳制、原样透传。模型目录里的 maxOutputTokens（384000）是假的，别照它设。',
+}
+
 export const SCHEDULING_MODES: SchedulingModeOption[] = [
   {
     value: 'creditFirst',
@@ -604,6 +622,7 @@ export function formatCount(value: unknown): string {
 
 /** 标题右侧问号（`[data-tip]`）的说明全文：tooltip.js 仍在页面上跑，照旧服务这些元素 */
 export const TIPS = {
+  codeartsCap: '只对码道（CodeArts）账号生效：码道上游平台对 max_tokens 有硬顶（2026-10-04 实测 65536：65536 收、70000+ 一律 400，被网关包成 502 看着像网络故障），而模型目录里的 maxOutputTokens 是假的（384000）。转发前客户端 max_tokens 超过此值就压到此值再发 —— 请求从「必失败」变成「输出截到上限」。填 0 = 不钳制（原样透传）。别家上游的参数上限各不相同，所以它是码道专属配置、不影响其他提供商。保存后对下一个请求立即生效，不用重启。',
   displayTheme: '控制界面的深浅色，与左侧边栏底部的三个主题按钮是同一个设置（改哪一处，另一处立刻跟上）。「跟随系统」会随操作系统当前的浅色 / 深色自动切换，并在系统主题变化时即时跟上；选「浅色」或「深色」则把界面固定在该模式，不再随系统变化。窗口标题栏的深浅色会一并同步，不会出现深色界面配一条浅色标题栏的情况。',
   displayZoom: '等比放大或缩小整个界面（文字、控件、间距一起变），效果与浏览器按 Ctrl +/- 相同：80%–130%、5% 一档。窗口本身不缩放，变的是页面内容的显示比例，设置立即生效并记住，下次启动直接按这个比例打开。放得越大可视范围越小，窗口较窄或表格较宽时不建议调得太大。',
   displayLanguage: '界面语言。目前只提供简体中文，所以这里只有这一项可选（选中即当前语言）。以后增加其它语言时，这个列表里会出现对应选项，选择后立即应用到界面。',
@@ -622,6 +641,7 @@ export const TIPS = {
 
 /** 面板底注（`.hint.retention-note`）与各面板内的说明行 */
 export const NOTES = {
+  codeartsCap: '钳制发生在发给上游的副本上，客户端原始请求不变；被钳制的请求在客户端只体现为输出变短（finish_reason 可能是 length）。日志与统计照客户端原样记。',
   timeouts: '保存后立即生效，不用重启；超时按上游失败处理（计入请求日志的「错误」列，并按「请求重试」的设置决定是否重试）。',
   queue: '等待期间请求日志的状态列会显示「排队中」阶段，详情弹窗的「内部重试」里能逐次看到等待时长；等待用尽后返回 HTTP 503（不是 401/429：既不会刷新凭证，也不会把账号标成限额）。',
   retry: '保存后立即生效，不用重启；次数用尽仍失败时，错误原样返回给客户端。',

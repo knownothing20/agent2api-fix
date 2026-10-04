@@ -139,6 +139,9 @@ pub struct RuntimeConfig {
     /// 与 `debug_mode` 同一理由（转发层逐请求判一次，改完下一个请求生效）。
     /// 解析时**越界一律回落 `FORWARD_MODE_DEFAULT`**，所以这里存的一定是四个合法值之一。
     forward_mode: String,
+    /// 码道的 max_tokens 硬顶（0 = 不钳制，见 `KEY_CODEARTS_MAX_TOKENS_CAP`）。
+    /// 码道特有：钳制动作在码道适配器里，别家不读它。
+    codearts_max_tokens_cap: u64,
     /// 面板机器人校验开关（设置页「通用 → 机器人校验」，ALTCHA proof-of-work）。
     ///
     /// 与 `debug_mode` 同一理由：登录 / 注册端点逐请求判一次（改完开关下一个
@@ -208,6 +211,14 @@ impl RuntimeConfig {
     /// 当前转发模式（四个合法值之一，见 `KEY_FORWARD_MODE`）。
     pub fn forward_mode(&self) -> &str {
         &self.forward_mode
+    }
+
+    /// 码道的 max_tokens 硬顶；`None` = 不钳制（配置为 0，原样透传）。
+    pub fn codearts_max_tokens_cap(&self) -> Option<u64> {
+        match self.codearts_max_tokens_cap {
+            0 => None,
+            value => Some(value),
+        }
     }
 
     /// **这一条请求最终走不走流式** —— 三个转发入口（Chat / Responses / Anthropic）
@@ -456,6 +467,13 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .filter(|value| FORWARD_MODES.contains(value))
             .unwrap_or(FORWARD_MODE_DEFAULT)
             .to_string(),
+        // 越界回落默认（与 forward_mode 的「写坏回落」同一取向）；0 是合法值（不钳制）
+        codearts_max_tokens_cap: raw
+            .get(KEY_CODEARTS_MAX_TOKENS_CAP)
+            .and_then(Value::as_u64)
+            .filter(|value| (CODEARTS_MAX_TOKENS_CAP_MIN..=CODEARTS_MAX_TOKENS_CAP_MAX)
+                .contains(value))
+            .unwrap_or(CODEARTS_MAX_TOKENS_CAP_DEFAULT),
         // 只有字面 `false` 算关闭：**默认开**。登录 / 注册的暴破与抢注防护
         // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）。配置项缺失
         // 时环境变量兜底：登录页人机验证组件环境变量，默认为1开启，0为关闭
@@ -1243,6 +1261,19 @@ pub fn set_debug_mode(enabled: bool) -> bool {
 /// 与 `set_debug_mode` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
 /// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
 /// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
+/// 写入码道的 max_tokens 硬顶（越界拒绝，返回 false 表示没写）。
+pub fn set_codearts_max_tokens_cap(cap: u64) -> bool {
+    if !(CODEARTS_MAX_TOKENS_CAP_MIN..=CODEARTS_MAX_TOKENS_CAP_MAX).contains(&cap) {
+        return false;
+    }
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_CODEARTS_MAX_TOKENS_CAP.to_string(), Value::from(cap));
+        config.codearts_max_tokens_cap = cap;
+    })
+}
+
 /// 写入转发模式（越界值拒绝，返回 false 表示没写）。
 pub fn set_forward_mode(mode: &str) -> bool {
     if !FORWARD_MODES.contains(&mode) {

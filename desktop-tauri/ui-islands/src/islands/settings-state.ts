@@ -37,6 +37,7 @@ import {
   PROMPT_MODES,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
+  CODEARTS_MAX_TOKENS_CAP_FIELD,
   RETRY_CODE_MAX,
   RETRY_CODE_MIN,
   RETRY_FIELDS,
@@ -77,6 +78,7 @@ export type BusyScope =
   | 'debug'
   | 'hideReasoning'
   | 'forwardMode'
+  | 'codeartsCap'
   | 'sanitize'
   | 'prompt'
   | 'captcha'
@@ -192,6 +194,8 @@ export type SettingsSnapshot = {
   hideReasoning: { status: 'loading' | 'ready' | 'unavailable'; on: boolean }
   /** 转发模式：follow-* / always-* × stream / nonstream 四个取值 */
   forwardMode: { status: 'loading' | 'ready' | 'unavailable'; mode: string }
+  /** 码道 max_tokens 硬顶（只对码道账号生效；0 = 不钳制） */
+  codeartsCap: { status: 'loading' | 'ready' | 'unavailable'; value: number }
   app: AppState
   unitsChinese: boolean
   retention: NumericState
@@ -238,6 +242,7 @@ const INITIAL: SettingsSnapshot = {
   debug: { status: 'loading', on: false, count: null, limit: null },
   hideReasoning: { status: 'loading', on: false },
   forwardMode: { status: 'loading', mode: 'follow-nonstream' },
+  codeartsCap: { status: 'loading', value: 65536 },
   sanitize: { status: 'loading', on: false },
   prompt: {
     status: 'loading',
@@ -931,6 +936,59 @@ export async function saveForwardMode(next: string): Promise<void> {
   }
 }
 
+export function renderCodeartsCap(data?: unknown): void {
+  if (data === undefined) return
+  if (!data || typeof data !== 'object') {
+    publish({ codeartsCap: { status: 'unavailable', value: 65536 } })
+    return
+  }
+  const raw = (data as { codeartsMaxTokensCap?: unknown }).codeartsMaxTokensCap
+  publish({
+    codeartsCap: {
+      status: 'ready',
+      value: typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65536,
+    },
+  })
+}
+
+async function loadCodeartsCap(): Promise<void> {
+  try {
+    renderCodeartsCap(await bridgeOrApi('getCodeartsMaxTokensCap', '/api/codeartsMaxTokensCap'))
+  } catch (error) {
+    console.warn('读取码道 max_tokens 硬顶失败:', errorMessage(error))
+    renderCodeartsCap(null)
+  }
+}
+
+/** 码道 max_tokens 硬顶（只对码道账号生效；0 = 不钳制）。 */
+export async function saveCodeartsCap(raw: string): Promise<void> {
+  const parsed = parseInteger(
+    raw,
+    CODEARTS_MAX_TOKENS_CAP_FIELD.min,
+    CODEARTS_MAX_TOKENS_CAP_FIELD.max,
+    CODEARTS_MAX_TOKENS_CAP_FIELD.label,
+  )
+  if (!parsed.ok) {
+    toast(parsed.message, 'err')
+    return
+  }
+  if (busyScope) { repaint(); return }
+  beginBusy('codeartsCap')
+  publish({ codeartsCap: { ...snapshot.codeartsCap, value: parsed.value } })
+  try {
+    const saved = await bridgeOrApi('saveCodeartsMaxTokensCap', '/api/codeartsMaxTokensCap', {
+      codeartsMaxTokensCap: parsed.value,
+    })
+    renderCodeartsCap(saved)
+    toast(parsed.value === 0 ? '✅ 已保存：码道 max_tokens 不再钳制' : `✅ 已保存：码道 max_tokens 硬顶 ${parsed.value}`)
+  } catch (error) {
+    toast(`保存失败: ${errorMessage(error)}`, 'err')
+    await loadCodeartsCap()
+  } finally {
+    endBusy()
+  }
+}
+
 async function loadHideReasoning(): Promise<void> {
   try {
     renderHideReasoning(await bridgeOrApi('getHideReasoning', '/api/hideReasoning'))
@@ -1619,6 +1677,7 @@ export async function load(): Promise<void> {
     loadDebug(),
     loadHideReasoning(),
     loadForwardMode(),
+    loadCodeartsCap(),
     loadSanitize(),
     loadPrompt(),
     loadStorage(),

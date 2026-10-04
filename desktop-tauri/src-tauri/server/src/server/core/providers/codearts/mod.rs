@@ -351,8 +351,24 @@ impl ProviderAdapter for CodeArtsAdapter {
                 chat_session_id: Some(session_id),
                 ..Default::default()
             };
+            // 码道特有的 max_tokens 钳制（见 `KEY_CODEARTS_MAX_TOKENS_CAP`）：上游平台
+            // （InferHub）的参数硬顶是 65536（2026-10-04 逐档实测：65536 收、70000+ 一律
+            // 400，被网关包成 502 看着像网络故障），而模型目录里的 maxOutputTokens 是假的
+            // （384000），照目录设的客户端必撞墙。钳制而不是拒绝：超了就压到上限，请求从
+            // 「必失败」变成「输出截到上限」。只改**发送体副本**，客户端原始体不动
+            // （与提示词 / 脱敏两层同一规矩）。配置 0 = 不钳制（原样透传）。
+            let mut out_body = body.clone();
+            if let Some(cap) = crate::server::config::current().codearts_max_tokens_cap() {
+                let over = out_body
+                    .get("max_tokens")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value > cap);
+                if over {
+                    out_body["max_tokens"] = Value::from(cap);
+                }
+            }
             let (url, headers, payload) =
-                match chat::build_upstream_request(models::DEFAULT_BASE_URL, &upstream_model, body.clone(), true, benefit, &profile, Some(&credential)) {
+                match chat::build_upstream_request(models::DEFAULT_BASE_URL, &upstream_model, out_body, true, benefit, &profile, Some(&credential)) {
                     Ok(built) => built,
                     Err(error) => {
                         session.stop().await;
