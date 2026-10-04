@@ -118,7 +118,7 @@ impl ProviderAdapter for CodeArtsAdapter {
         store: &'a AccountStore,
         account_id: &'a str,
         body: &'a Value,
-        _client_headers: &'a HeaderMap,
+        client_headers: &'a HeaderMap,
         proxy: Option<crate::server::core::proxies::ResolvedProxy>,
         stream: bool,
         telemetry: &'a std::sync::Arc<RequestTelemetry>,
@@ -298,12 +298,24 @@ impl ProviderAdapter for CodeArtsAdapter {
                 if let Some(usage) = body.get("usage").filter(|item| !item.is_null()) {
                     telemetry.report_usage(usage);
                 }
+                // 「只发结果」：非流式也要剥，否则同一个开关在两种调用方式下表现不一致
+                let mut body = body;
+                if hide_reasoning {
+                    strip_reasoning_body(&mut body);
+                }
                 return Ok(ForwardOutcome::Completion { body });
             }
 
             // ⑧ 流式：透传（上游已是 OpenAI chunk 形状），结束时释放会话与许可
             let (sender, receiver) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
             let telemetry_for_stream = telemetry.clone();
+            // 客户端要不要「只收结果、不收思考」：带 `X-A2A-Hide-Reasoning: 1` 即要
+            // （见 `strip_reasoning_frame` 的说明）。必须在进 spawn **之前**算好 ——
+            // 任务体是 'static，拿不到 `&HeaderMap`。
+            let hide_reasoning = client_headers
+                .get("x-a2a-hide-reasoning")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
             crate::spawn_task(async move {
                 use futures::StreamExt;
                 if !prefetched.is_empty() {
@@ -316,9 +328,17 @@ impl ProviderAdapter for CodeArtsAdapter {
                 }
                 let mut rest = rest;
                 while let Some(item) = rest.next().await {
-                    if let Ok(chunk) = &item {
-                        sniff_usage(&telemetry_for_stream, chunk);
-                    }
+                    let item = match &item {
+                        Ok(chunk) => {
+                            sniff_usage(&telemetry_for_stream, chunk);
+                            // 「只发结果」：命中开关才重写这一帧，否则原样透传
+                            match hide_reasoning.then(|| strip_reasoning_frame(chunk)).flatten() {
+                                Some(rewritten) => Ok(bytes::Bytes::from(rewritten)),
+                                None => item,
+                            }
+                        }
+                        Err(_) => item,
+                    };
                     if sender.send(item).await.is_err() {
                         break;
                     }
@@ -334,7 +354,79 @@ impl ProviderAdapter for CodeArtsAdapter {
         })
     }
 
-    /// 非 2xx 的分类。
+    /// 把一帧 SSE 里 `choices[].delta.reasoning_content` 剥掉。
+///
+/// 客户端带 `X-A2A-Hide-Reasoning: 1` 时：模型**照常思考**（质量、耗时、扣费都不变），
+/// 但思考内容不下发 —— 客户端只看到 `content`（2026-10-04 用户要求）。
+///
+/// 三条取舍，都是为了「绝不能弄坏正常响应」：
+///   · **只在确实命中该键时才重写**；没命中返回 None，调用方原样转发同一份字节；
+///   · 解析失败 / 不是 JSON 对象 / 找不到 `data:` 行 → 原样放行（异常帧不能被我们吞掉）；
+///   · 只删这一个键，其余键与值一个都不碰；帧尾换行原样保留（收尾帧的字节特征依赖它）。
+fn strip_reasoning_frame(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.windows(17).any(|window| window == b"reasoning_content") {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut out = String::with_capacity(text.len());
+    let mut touched = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let Some(payload) = trimmed.strip_prefix("data:") else {
+            out.push_str(line);
+            continue;
+        };
+        let payload = payload.strip_prefix(' ').unwrap_or(payload);
+        let Ok(mut chunk) = serde_json::from_str::<serde_json::Value>(payload) else {
+            out.push_str(line);
+            continue;
+        };
+        let mut changed = false;
+        if let Some(choices) = chunk.get_mut("choices").and_then(|value| value.as_array_mut()) {
+            for choice in choices.iter_mut() {
+                for holder in ["delta", "message"] {
+                    if let Some(object) = choice.get_mut(holder).and_then(|value| value.as_object_mut())
+                    {
+                        if object.remove("reasoning_content").is_some() {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            out.push_str(line);
+            continue;
+        }
+        touched = true;
+        out.push_str("data: ");
+        out.push_str(&chunk.to_string());
+        if line.ends_with("\r\n") {
+            out.push_str("\r\n");
+        } else if line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    touched.then(|| out.into_bytes())
+}
+
+/// 非流式：把 `choices[].message.reasoning_content` 从聚合体里删掉。
+fn strip_reasoning_body(body: &mut serde_json::Value) -> bool {
+    let Some(choices) = body.get_mut("choices").and_then(|value| value.as_array_mut()) else {
+        return false;
+    };
+    let mut touched = false;
+    for choice in choices.iter_mut() {
+        if let Some(object) = choice.get_mut("message").and_then(|value| value.as_object_mut()) {
+            if object.remove("reasoning_content").is_some() {
+                touched = true;
+            }
+        }
+    }
+    touched
+}
+
+/// 非 2xx 的分类。
     ///
     /// **注意**：CodeArts 的业务失败常常不体现在状态码上（额度耗尽是 HTTP 200
     /// SSE 里的信封），那部分由 `stream_fault` 负责；这里只管真的是状态码的错。
