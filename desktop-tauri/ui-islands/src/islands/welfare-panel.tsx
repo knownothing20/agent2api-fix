@@ -310,11 +310,11 @@ function WelfarePage(): React.ReactElement {
           >
             保存间隔
           </Button>
-          <span className='detail'>
-            上次：{task?.lastResult || '未执行'}（{agoText(task?.lastSuccessAt)}）
-            {task?.nextRunAt ? ` · 下次 ${agoText(task.nextRunAt).replace('前', '后')}` : ''}
-          </span>
         </div>
+        <p className='detail mt-1'>
+          上次：{task?.lastResult || '未执行'}（{agoText(task?.lastSuccessAt)}）
+          {task?.nextRunAt ? ` · 下次 ${agoText(task.nextRunAt).replace('前', '后')}` : ''}
+        </p>
         <p className='detail'>
           间隔只决定「多久看一次资格」；真正发写请求的次数由本地台账兜住
           （每天最多 6 次、间隔至少 10 分钟），所以调小不会把上游打多。
@@ -345,18 +345,11 @@ function WelfarePage(): React.ReactElement {
                     {failure ? (
                       <span className='badge bad'>探测失败</span>
                     ) : (
-                      <span className={`badge ${claimable(preview) > 0 ? 'warn' : 'ok'}`}>
+                      <span className={`badge ${claimable(preview) > 0 ? 'warn' : ''}`}>
                         {claimable(preview) > 0 ? `${claimable(preview)} 项可领` : '暂无可领'}
                       </span>
                     )}
                     {account.enabled === false ? <span className='badge'>已禁用</span> : null}
-                    <span className='detail'>
-                      今天（北京时间 {preview?.day || '—'}）已试 {preview?.attempts ?? 0} 次，
-                      还能试 {preview?.attemptsLeft ?? 0} 次
-                      {preview?.nextAttemptInMs
-                        ? `，最快 ${Math.ceil(preview.nextAttemptInMs / 60000)} 分钟后可再试`
-                        : ''}
-                    </span>
                     <div className='ml-auto flex items-center gap-2'>
                       <Button
                         variant='outline'
@@ -376,26 +369,38 @@ function WelfarePage(): React.ReactElement {
                   {failure ? (
                     <p className='detail text-destructive'>{failure}</p>
                   ) : (
-                    <ul className='mt-2 flex flex-col gap-1'>
-                      {campaigns.length === 0 ? (
-                        <li className='detail'>没有可自动领的活动</li>
-                      ) : (
-                        campaigns.map((item, index) => {
-                          const badge = campaignBadge(item)
-                          return (
-                            <li
-                              key={`${account.id}-${index}`}
-                              className='flex items-center gap-2 text-[13px]'
-                              title={item.status || ''}
-                            >
-                              <b>{campaignLabel(item)}</b>
-                              <span className={`badge ${badge.tone}`}>{badge.text}</span>
-                              {item.name ? <span className='detail'>{item.name}</span> : null}
-                            </li>
-                          )
-                        })
-                      )}
-                    </ul>
+                    <>
+                      <p className='detail mt-1'>
+                        今天（北京时间 {preview?.day || '—'}）已试 {preview?.attempts ?? 0} 次，
+                        还能试 {preview?.attemptsLeft ?? 0} 次
+                        {preview?.nextAttemptInMs
+                          ? `，最快 ${Math.ceil(preview.nextAttemptInMs / 60000)} 分钟后可再试`
+                          : ''}
+                      </p>
+                      {/* 活动做成 chip：一眼看清有几项、各自什么状态。
+                          `list-none pl-0` 是必须的 —— 默认 ul 有左内边距，
+                          会让活动比账号名缩进一截，看着像没对齐。 */}
+                      <ul className='mt-2 flex list-none flex-wrap gap-2 pl-0'>
+                        {campaigns.length === 0 ? (
+                          <li className='detail'>没有可自动领的活动</li>
+                        ) : (
+                          campaigns.map((item, index) => {
+                            const badge = campaignBadge(item)
+                            return (
+                              <li
+                                key={`${account.id}-${index}`}
+                                className='flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[13px]'
+                                title={item.status || ''}
+                              >
+                                <b>{campaignLabel(item)}</b>
+                                <span className={`badge ${badge.tone}`}>{badge.text}</span>
+                                {item.name ? <span className='detail'>{item.name}</span> : null}
+                              </li>
+                            )
+                          })
+                        )}
+                      </ul>
+                    </>
                   )}
                 </div>
               )
