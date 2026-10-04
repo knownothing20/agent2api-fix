@@ -480,31 +480,24 @@ function BalanceDetailDialog({
             <thead>
               <tr className='text-subtle'>
                 <th className='text-left font-normal'>账本</th>
-                <th className='text-right font-normal'>剩余</th>
-                <th className='text-right font-normal'>本周期</th>
-                <th className='text-right font-normal'>已用</th>
+
+                <th className='text-right font-normal'>读数</th>
               </tr>
             </thead>
             <tbody>
               {wallets.length === 0 ? (
-                <tr><td className='detail' colSpan={4}>没有可拆分的账本（该家余额只有一个总数）</td></tr>
+                <tr><td className='detail' colSpan={2}>没有可拆分的账本（该家余额只有一个总数）</td></tr>
               ) : wallets.map((wallet, index) => {
                 const percent = numberOrNull(wallet.remainingPercent)
-                return (
-                  <tr key={`${account.id}-wallet-${index}`} className='border-t border-border'>
+                return (                  <tr key={`${account.id}-wallet-${index}`} className='border-t border-border'>
                     <td className='py-1.5'>
                       {String(wallet.displayName || wallet.planName || wallet.type || '账本')}
                     </td>
+                    {/* 后端给的是**已格式化的读数串**（「剩 7500 / 7500 积分」），
+                        拆不出「本周期 / 已用」两个独立数字 ⇒ 只给一列读数。
+                        要两列得让后端把数值也带上（另一件事）。 */}
                     <td className='py-1.5 text-right'>
                       {wallet.balanceView ? String(wallet.balanceView) : numberOrDash(wallet.balance)}
-                    </td>
-                    <td className='py-1.5 text-right'>
-                      {Number.isFinite(Number(wallet.total)) && Number(wallet.total) > 0
-                        ? numberText(Number(wallet.total))
-                        : '—'}
-                    </td>
-                    <td className='py-1.5 text-right'>
-                      {percent === null ? '—' : `${Math.max(0, Math.min(100, Math.round(100 - percent)))}%`}
                     </td>
                   </tr>
                 )
