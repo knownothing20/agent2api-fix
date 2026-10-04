@@ -6,10 +6,11 @@ import {
   readRange, round1, formatTokens,
   overviewCells, rankRows, rankTotalText, donutView,
   heatmapView, heatLegendItems, heatThresholdsOf, cacheRateCells,
-  cacheTrendView, dailyTrendView, dailyUsageView,
+  cacheTrendView, dailyTrendView, dailyUsageView, usageMetricText,
   type CacheTrendView, type ChartText, type DailyTrendView, type HeatmapView,
   type RankRowView, type DonutView,
   type DailyUsageView, type StatsDay, type StatsGroup, type StatsHour, type StatsSummary,
+  type UsageMetric,
   type StatsUsagePoint,
 } from './report-charts'
 
@@ -735,8 +736,11 @@ function ReportPage() {
   // 每日用量曲线：维度可切（模型 / 账号）。默认按模型 —— 「钱花在哪个模型上」
   // 是这张图最常被问的问题，账号维度是下一层。
   const [usageDim, setUsageDim] = React.useState<'model' | 'account'>('model')
+  // 指标维度：Token 用量 / 请求次数。两个数后端都给了（trendByModel / trendByAccount
+  // 每条都带 tokens 与 requests），所以切换只是换个字段取数，不用再请求一次。
+  const [usageMetric, setUsageMetric] = React.useState<UsageMetric>('tokens')
   const usagePoints = usageDim === 'model' ? summary?.trendByModel : summary?.trendByAccount
-  const usageView = summary ? dailyUsageView(usagePoints, dailyWidth[1]) : null
+  const usageView = summary ? dailyUsageView(usagePoints, dailyWidth[1], usageMetric) : null
 
   return (
     <>
@@ -768,6 +772,15 @@ function ReportPage() {
           <span className='panel-sub'>按 {usageDim === 'model' ? '模型' : '账号'}拆开</span>
           <div className='head-actions'>
             <SegmentedControl
+              aria-label='用量指标'
+              options={[
+                { value: 'tokens', label: '按 Token' },
+                { value: 'requests', label: '按请求数' },
+              ]}
+              value={usageMetric}
+              onValueChange={value => setUsageMetric(value === 'requests' ? 'requests' : 'tokens')}
+            />
+            <SegmentedControl
               aria-label='用量维度'
               options={[
                 { value: 'model', label: '按模型' },
@@ -789,7 +802,7 @@ function ReportPage() {
                 <span className='flex items-center gap-1.5 text-[13px]' key={line.name}>
                   <i className='inline-block h-2.5 w-2.5 rounded-sm' style={{ background: line.color }} />
                   {line.name}
-                  <span className='detail'>{formatTokens(line.total)}</span>
+                  <span className='detail'>{usageMetricText(line.total, usageMetric)}</span>
                 </span>
               ))}
             </div>

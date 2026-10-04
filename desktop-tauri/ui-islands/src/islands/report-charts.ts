@@ -868,6 +868,9 @@ export type DailyTrendView = {
  * 每根柱子都标 —— 柱子密到标注必然重叠时，只标当区间里最大的那几根，其余靠悬停气泡读。
  * 这样图始终是干净的，而峰值一眼可见。
  */
+/** 曲线的指标维度：Token 用量，或请求次数。两个数后端都给了，切一下就能换口径。 */
+export type UsageMetric = 'tokens' | 'requests'
+
 /** 一条维度序列点（后端 `trendByModel` / `trendByAccount` 的形状）。 */
 export type StatsUsagePoint = { date?: string; name?: string; tokens?: number; requests?: number }
 
@@ -918,6 +921,7 @@ const USAGE_COLORS = [
 export function dailyUsageView(
   points: StatsUsagePoint[] | undefined,
   width: number,
+  metric: UsageMetric = 'tokens',
 ): DailyUsageView | null {
   const list = (Array.isArray(points) ? points : []).filter(item => item && item.date)
   if (!list.length) return null
@@ -952,7 +956,7 @@ export function dailyUsageView(
     const row = byName.get(name)!
     const index = indexOf.get(String(item.date))
     if (index === undefined) continue
-    const tokens = Number(item.tokens) || 0
+    const tokens = Number(metric === 'requests' ? item.requests : item.tokens) || 0
     row[index] += tokens
     totals.set(name, (totals.get(name) || 0) + tokens)
   }
@@ -1002,13 +1006,18 @@ export function dailyUsageView(
         key: `${name}-${dates[index]}`,
         x: round1(xAt(index)),
         y: round1(yAt(value)),
-        tip: `${dayLabel(dates[index])} · ${name} · ${formatTokens(value)} tokens`,
+        tip: `${dayLabel(dates[index])} · ${name} · ${metric === 'requests' ? `${formatInt(value)} 次请求` : `${formatTokens(value)} tokens`}`,
       }))
       .filter((_, index) => row[index] > 0)
     return { name, color: USAGE_COLORS[rank % USAGE_COLORS.length], points, total: totals.get(name) || 0, dots }
   })
 
   return { width, height, plotLeft: pad.left, plotTop: pad.top, plotW, plotH, grid, valueTicks, dateTicks, series, blank }
+}
+
+/** 曲线读数：Token 走 `formatTokens`（带量级），请求数走 `formatInt`（整数）。 */
+export function usageMetricText(value: number, metric: UsageMetric): string {
+  return metric === 'requests' ? `${formatInt(value)} 次` : `${formatTokens(value)} tokens`
 }
 
 /** `YYYY-MM-DD`（本地日）——与 `daily_trend` 的键同源。 */
