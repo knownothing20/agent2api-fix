@@ -886,9 +886,28 @@ export function renderForwardMode(data?: unknown): void {
   })
 }
 
+/** 桥方法缺失时的兜底：桥本来就是 `call(method, path)` 的薄壳（见 bridge.rs），
+ *  所以直接打同一个端点完全等价。存在的意义：**桌面壳没跟着更新**时（比如只发布了
+ *  服务端镜像），这两个开关仍然能用，不必为了两个开关重装一次 app。
+ *  读用 GET、写用 PUT，返回值都取响应体的 `data`（与桥的返回形状一致）。 */
+async function bridgeOrApi<T>(name: string, path: string, body?: unknown): Promise<T> {
+  const bridge = shared().workbuddyDesktop as unknown as Record<string, unknown> | undefined
+  const method = bridge?.[name]
+  if (typeof method === 'function') {
+    return (method as (arg?: unknown) => Promise<T>).call(bridge, body)
+  }
+  const response = await fetch(path, body === undefined ? {} : {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const payload = (await response.json()) as { data?: T }
+  return (payload.data ?? payload) as T
+}
+
 async function loadForwardMode(): Promise<void> {
   try {
-    renderForwardMode(await shared().workbuddyDesktop?.getForwardMode())
+    renderForwardMode(await bridgeOrApi('getForwardMode', '/api/forwardMode'))
   } catch (error) {
     console.warn('读取转发模式设置失败:', errorMessage(error))
     renderForwardMode(null)
@@ -901,7 +920,7 @@ export async function saveForwardMode(next: string): Promise<void> {
   beginBusy('forwardMode')
   publish({ forwardMode: { ...snapshot.forwardMode, mode: next } })
   try {
-    const saved = await shared().workbuddyDesktop?.saveForwardMode(next)
+    const saved = await bridgeOrApi('saveForwardMode', '/api/forwardMode', { forwardMode: next })
     renderForwardMode(saved)
     toast(`✅ 转发模式已改为 ${next}`)
   } catch (error) {
@@ -914,7 +933,7 @@ export async function saveForwardMode(next: string): Promise<void> {
 
 async function loadHideReasoning(): Promise<void> {
   try {
-    renderHideReasoning(await shared().workbuddyDesktop?.getHideReasoning())
+    renderHideReasoning(await bridgeOrApi('getHideReasoning', '/api/hideReasoning'))
   } catch (error) {
     console.warn('读取「不下发思考」设置失败:', errorMessage(error))
     renderHideReasoning(null)
@@ -927,7 +946,7 @@ export async function saveHideReasoning(next: boolean): Promise<void> {
   beginBusy('hideReasoning')
   publish({ hideReasoning: { ...snapshot.hideReasoning, on: next } })
   try {
-    const saved = await shared().workbuddyDesktop?.saveHideReasoning(next)
+    const saved = await bridgeOrApi('saveHideReasoning', '/api/hideReasoning', { hideReasoning: next })
     renderHideReasoning(saved)
     toast(next ? '✅ 已改为「不下发思考」' : '✅ 已恢复下发思考')
   } catch (error) {

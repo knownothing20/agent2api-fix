@@ -1203,7 +1203,7 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               <label htmlFor='settings-forward-mode'>转发模式</label>
               <span className='prompt-input'>
                 <Select
-                  value={snap.forwardMode.mode.endsWith('stream') ? 'stream' : 'nonstream'}
+                  value={snap.forwardMode.mode.endsWith('-stream') ? 'stream' : 'nonstream'}
                   onValueChange={next => void saveForwardMode(
                     `${snap.forwardMode.mode.startsWith('follow') ? 'follow' : 'always'}-${String(next)}`,
                   )}
@@ -1226,7 +1226,7 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               checked={snap.forwardMode.mode.startsWith('follow')}
               disabled={snap.forwardMode.status !== 'ready' || snap.busy === 'forwardMode'}
               onCheckedChange={next => void saveForwardMode(
-                `${next ? 'follow' : 'always'}-${snap.forwardMode.mode.endsWith('stream') ? 'stream' : 'nonstream'}`,
+                `${next ? 'follow' : 'always'}-${snap.forwardMode.mode.endsWith('-stream') ? 'stream' : 'nonstream'}`,
               )}
             />
           </div>
