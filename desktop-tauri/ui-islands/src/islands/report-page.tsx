@@ -791,11 +791,15 @@ function ReportPage() {
             />
           </div>
         </div>
+        {/* ⚠️ 容器**必须始终渲染**：宽度是靠它量的（`useContainerWidth` 只在挂载时测一次，
+            之后靠 ResizeObserver）。跟着数据一起条件渲染的话，挂载那一刻 ref 还是 null
+            ⇒ 永远测不到宽度 ⇒ 退回兜底宽度，图只画到一半、右边留一大块空白
+            （2026-10-04 用户截图反馈「右边空白啊」）。老图表是无条件渲染的，所以没这问题。 */}
+        <div className='chart-wrap tall' ref={dailyWidth[0]}>
+          {usageView ? <DailyUsageChart view={usageView} /> : placeholder('所选范围内暂无用量')}
+        </div>
         {usageView ? (
           <>
-            <div className='chart-wrap tall' ref={dailyWidth[0]}>
-              <DailyUsageChart view={usageView} />
-            </div>
             {/* 图例：颜色与曲线一致，读数按用量从多到少 —— 与环形图同一口径 */}
             <div className='flex flex-wrap gap-x-4 gap-y-1'>
               {usageView.series.map(line => (
@@ -807,9 +811,7 @@ function ReportPage() {
               ))}
             </div>
           </>
-        ) : (
-          <p className='detail'>所选范围内暂无用量</p>
-        )}
+        ) : null}
       </section>
 
       {/* ── Top 提供商 / Top 账号（并排两张卡，各自独立判断显隐）── */}
