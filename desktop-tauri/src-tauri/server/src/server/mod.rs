@@ -618,7 +618,17 @@ impl ServerState {
                 .get("unavailableReason")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(core::auth::UNCONFIGURED_REASON);
-            logging::log("[Init]", &format!("⚠️  暂无可用登录态: {reason}"));
+            // ⚠️ 这条说的是**内置登录态**（旧机制：`config.auth`，Node 版
+            // `server.mjs --login` 那套），**不是**「账号」页里那些账号 —— 后者在
+            // 账号库里、走各自 provider 的凭证链（CodeArts 的临时凭据、WorkBuddy
+            // 的登录态…），与这条无关。
+            // 原文案只写「暂无可用登录态」，用户看到会以为自己的账号掉了、还会追问
+            // 「是哪个账号、是不是登录太多了」（2026-10-04 实测反馈）。说清范围比
+            // 省几个字重要：这条**不指向任何账号**。
+            logging::log(
+                "[Init]",
+                &format!("⚠️  内置登录态为空（旧机制，与「账号」页的账号无关）: {reason}"),
+            );
         }
 
         // 定时签到：开启时起调度，今天还没签且时间点已过则补签一次
