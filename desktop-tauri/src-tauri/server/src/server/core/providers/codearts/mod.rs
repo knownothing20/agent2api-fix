@@ -292,33 +292,33 @@ impl ProviderAdapter for CodeArtsAdapter {
                 if let Some(error) = read_error {
                     return Err(GatewayError::with_status(502, format!("CodeArts 上游流中断：{error}")));
                 }
-                let body = chat::aggregate_sse(&all, &upstream_model)?;
-                // 上报 usage：本家这条路径**不经过**会 report_usage 的公共路径，
-                // 不在这里补一次，台账 token 就永远是 0（见 sniff_usage 的说明）。
-                if let Some(usage) = body.get("usage").filter(|item| !item.is_null()) {
-                    telemetry.report_usage(usage);
-                }
+                let body = chat::aggregate_sse(&all, &upstream_model)?;
+                // 上报 usage：本家这条路径**不经过**会 report_usage 的公共路径，
+                // 不在这里补一次，台账 token 就永远是 0（见 sniff_usage 的说明）。
+                if let Some(usage) = body.get("usage").filter(|item| !item.is_null()) {
+                    telemetry.report_usage(usage);
+                }
                 return Ok(ForwardOutcome::Completion { body });
             }
 
             // ⑧ 流式：透传（上游已是 OpenAI chunk 形状），结束时释放会话与许可
             let (sender, receiver) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
-            let telemetry_for_stream = telemetry.clone();
-            crate::spawn_task(async move {
-                use futures::StreamExt;
-                if !prefetched.is_empty() {
-                    // 先嗅后移（prefetched 会被 move 进 Bytes）
-                    sniff_usage(&telemetry_for_stream, &prefetched);
+            let telemetry_for_stream = telemetry.clone();
+            crate::spawn_task(async move {
+                use futures::StreamExt;
+                if !prefetched.is_empty() {
+                    // 先嗅后移（prefetched 会被 move 进 Bytes）
+                    sniff_usage(&telemetry_for_stream, &prefetched);
                     if sender.send(Ok(bytes::Bytes::from(prefetched))).await.is_err() {
                         session.stop().await;
                         return;
                     }
                 }
-                let mut rest = rest;
-                while let Some(item) = rest.next().await {
-                    if let Ok(chunk) = &item {
-                        sniff_usage(&telemetry_for_stream, chunk);
-                    }
+                let mut rest = rest;
+                while let Some(item) = rest.next().await {
+                    if let Ok(chunk) = &item {
+                        sniff_usage(&telemetry_for_stream, chunk);
+                    }
                     if sender.send(item).await.is_err() {
                         break;
                     }
