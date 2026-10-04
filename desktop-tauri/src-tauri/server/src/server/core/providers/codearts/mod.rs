@@ -241,7 +241,11 @@ impl ProviderAdapter for CodeArtsAdapter {
             let hide_reasoning = client_headers
                 .get("x-a2a-hide-reasoning")
                 .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+                // 全局开关（设置页「通用 → 思考」）：与请求头是**或**的关系，任一为真即剥。
+                // 头管单次请求（客户端要干净结果时带），键管全局（流量都经过别的网关时
+                // 改它更省事）。默认 false = 照旧下发，与现状一致。
+                || crate::server::config::current().hide_reasoning();
             // ① 凭据（含临期主动续期与写回）；代理沿用编排层为本账号解析出的那份
             let credential = refresh::ensure_fresh(store, account_id, false, proxy.as_ref()).await?;
             if !credential.valid() {

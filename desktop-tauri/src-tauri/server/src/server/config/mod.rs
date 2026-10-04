@@ -129,6 +129,11 @@ pub struct RuntimeConfig {
     /// 请求就生效，不重启进程），从 `Value` 里翻一次要处理类型判定，解析一次存
     /// 下来最省事 —— 这条判定在转发热路径上。
     sanitize_fingerprints: bool,
+    /// 「不下发思考」开关（设置页「通用 → 思考」，见 `KEY_HIDE_REASONING`）。
+    ///
+    /// 与 `sanitize_fingerprints` 同一理由（转发层逐请求取一次，改完下一个请求
+    /// 生效），默认 **false** = 照旧下发思考（与现状一致，零意外）。
+    hide_reasoning: bool,
     /// 面板机器人校验开关（设置页「通用 → 机器人校验」，ALTCHA proof-of-work）。
     ///
     /// 与 `debug_mode` 同一理由：登录 / 注册端点逐请求判一次（改完开关下一个
@@ -188,6 +193,11 @@ impl RuntimeConfig {
     /// 调试模式是否开启（转发层每次发送前判一次，见字段说明）
     pub fn debug_mode(&self) -> bool {
         self.debug_mode
+    }
+
+    /// 是否不下发思考（转发层每次发送前判一次，见字段说明）
+    pub fn hide_reasoning(&self) -> bool {
+        self.hide_reasoning
     }
 
     /// 出站指纹脱敏是否开启（转发层每次发送前判一次，见字段说明）
@@ -407,6 +417,11 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .get(KEY_SANITIZE_FINGERPRINTS)
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        // 只有字面 `true` 算开启；默认 false = 照旧下发思考（与现状一致）
+        hide_reasoning: raw
+            .get(KEY_HIDE_REASONING)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         // 只有字面 `false` 算关闭：**默认开**。登录 / 注册的暴破与抢注防护
         // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）。配置项缺失
         // 时环境变量兜底：登录页人机验证组件环境变量，默认为1开启，0为关闭
@@ -1194,6 +1209,16 @@ pub fn set_debug_mode(enabled: bool) -> bool {
 /// 与 `set_debug_mode` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
 /// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
 /// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
+/// 写入「不下发思考」开关（与 `set_debug_mode` 同一模式：内存快照 + raw 底稿一起改）。
+pub fn set_hide_reasoning(enabled: bool) -> bool {
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_HIDE_REASONING.to_string(), Value::Bool(enabled));
+        config.hide_reasoning = enabled;
+    })
+}
+
 pub fn set_sanitize_fingerprints(enabled: bool) -> bool {
     update(|config| {
         config

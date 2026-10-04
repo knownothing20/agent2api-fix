@@ -86,6 +86,12 @@ pub const KEY_DEBUG_MODE: &str = "debugMode";
 /// 上游，那正是模板句被误拦（400 code=11128）的原因。
 /// 转发层逐请求读快照，改完下一个请求立即生效，不重启进程。
 pub const KEY_SANITIZE_FINGERPRINTS: &str = "sanitizeBlacklistFingerprints";
+/// 「不下发思考」开关（设置页「通用 → 思考」）。
+///
+/// 与请求头 `X-A2A-Hide-Reasoning` 同一件事，两种入口：头管单次请求（客户端要
+/// 干净结果时带）、这个键管全局（流量都经过别的网关时改它更省事）。
+/// 任一为真即剥 —— 模型照常思考，只是思考内容不下发。
+pub const KEY_HIDE_REASONING: &str = "hideReasoning";
 
 /// 机器人校验开关的键（config.json 键，ALTCHA proof-of-work，见 `server::altcha`）。
 ///
