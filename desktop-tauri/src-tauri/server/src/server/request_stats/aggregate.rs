@@ -24,7 +24,7 @@ use super::record::{DailyEntry, RequestEntry};
 use super::report::{
     build_accounts, build_models, build_providers, build_top_model, cache_rates, cache_trend_24h,
     daily_trend, heatmap, normalize_range, push_account_accum, push_model_accum,
-    push_provider_accum, range_bounds, range_totals, streak,
+    push_provider_accum, range_bounds, range_totals, streak, trend_by_account, trend_by_model,
 };
 use super::{daily, sql};
 use super::legacy;
