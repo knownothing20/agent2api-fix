@@ -139,6 +139,15 @@ fn category_of(tag: &str) -> &'static str {
 ///   - 消息或标签以 ⚠️ 开头 → warn
 ///   - 其余 info
 fn infer_level(tag: &str, text: &str) -> &'static str {
+    // ⚠️ 先排掉「失败 0」这种**语义为"没有失败"**的写法。
+    // 任务摘要是「…，限流跳过 0 个，失败 0 个」这种形状：含「失败」二字，
+    // 但意思是全都没失败。只按 contains("失败") 判会把它记成 error ⇒
+    // 日志页一片红、实际一切正常 —— 2026-10-04 用户反馈「日志看不懂」的
+    // 直接来源之一（他自己的福利任务摘要就是这样被标红的）。
+    // 判据：**每一处**「失败」后面紧跟的数字都是 0（允许中间有空格），才算"没有失败"。
+    if is_zero_failure(text) {
+        return "info";
+    }
     // Node 的 /\b失败\b/ 在中文里等价于「含失败二字」（中文两侧都是非单词字符）
     if text.starts_with('❌') || text.contains("失败") || tag.starts_with('❌') {
         return "error";
@@ -147,6 +156,34 @@ fn infer_level(tag: &str, text: &str) -> &'static str {
         return "warn";
     }
     "info"
+}
+
+/// 「失败 N」里的 N 是不是全是 0（即：文案提到失败，但一处失败都没有）。
+///
+/// 逐处扫描而不是找一次：摘要里可能同时有别的计数，只要**有一处**非 0
+/// 就仍按失败处理（宁可误报成错误，也别把真失败藏起来）。
+/// 用 `chars` 而不是字节：全角空格也是空白，按字节比会切坏多字节字符。
+fn is_zero_failure(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let marker: Vec<char> = "失败".chars().collect();
+    let mut seen = false;
+    let mut index = 0;
+    while index + marker.len() <= chars.len() {
+        if chars[index..index + marker.len()] == marker[..] {
+            seen = true;
+            let mut next = index + marker.len();
+            while next < chars.len() && chars[next].is_whitespace() {
+                next += 1;
+            }
+            if next >= chars.len() || chars[next] != '0' {
+                return false;
+            }
+            index = next;
+        } else {
+            index += 1;
+        }
+    }
+    seen
 }
 
 /// 只写控制台（不写日志库）。日志库自身出错时用它，
