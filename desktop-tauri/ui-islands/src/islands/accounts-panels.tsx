@@ -543,7 +543,20 @@ export function UsageCell({ account }: { account: AccountRecord }) {
   // 给它配个进度条会把一句错误装饰成一条可信的读数
   const pool = summary.kind === 'ok' || summary.kind === 'warn' ? usagePool(entry) : null
   if (!pool) {
-    return <span className={`usage-sum ${summary.kind}`} title={summary.title}>{summary.text}</span>
+    // 没有可画的额度桶时走这一支（码道就是这一支：余额是 availableView 串，
+    // 不是 wallets 里的桶）—— 点击也要挂上，否则这一支的账号点不出明细。
+    return (
+      <span
+        className={`usage-sum ${summary.kind} cursor-pointer`}
+        title={`${summary.title}（点击看积分明细）`}
+        onClick={() => setDetailOpen(true)}
+      >
+        {summary.text}
+        {detailOpen ? (
+          <BalanceDetailDialog account={account} entry={entry} onClose={() => setDetailOpen(false)} />
+        ) : null}
+      </span>
+    )
   }
   return (
     <span
