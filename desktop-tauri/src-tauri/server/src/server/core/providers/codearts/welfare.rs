@@ -62,6 +62,10 @@ pub struct Campaign {
     pub status: String,
     pub benefit_amount: f64,
     pub benefit_unit: String,
+    /// 上游给的活动名（面板上要能看出「这是哪个活动」）。键名各家版本不一，
+    /// 解析时按 name / campaignName / title 依次取，取不到就是空串 ——
+    /// 空串时界面退回显示活动类型（`kind`），不会变成一片空白。
+    pub name: String,
 }
 
 impl Campaign {
@@ -225,6 +229,11 @@ fn parse_delivery(data: &Value) -> Result<Vec<Campaign>, GatewayError> {
             status: item.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
             benefit_amount: item.get("benefitAmount").and_then(Value::as_f64).unwrap_or(0.0),
             benefit_unit: item.get("benefitUnit").and_then(Value::as_str).unwrap_or("").to_string(),
+            name: ["name", "campaignName", "title"]
+                .iter()
+                .find_map(|key| item.get(*key).and_then(Value::as_str))
+                .unwrap_or("")
+                .to_string(),
         })
         .collect())
 }
@@ -361,6 +370,24 @@ pub async fn preview(store: &AccountStore, account_id: &str, base: &str, now_ms:
                 "benefitUnit": item.benefit_unit,
                 "confirmed": item.is_confirmed(),
                 "localClaimed": ledger.campaigns.get(&item.key()).map(|p| p.claimed).unwrap_or(false),
+            }))
+            .collect::<Vec<_>>(),
+        // 全量活动清单（**只读**，与上面 campaigns 同一个 delivery 响应，不新增任何
+        // 上游调用）：客户端「活动福利」那一列有 6 条（对话 / 邀请 / 注册 / 学生 /
+        // 签到…），而 `campaigns` 只挑「该自动领的」那一类 ⇒ 只给 1 条。
+        // 面板要「探测活动」就得把全量带上 —— 只展示，不领不抽（风险不对等）。
+        "allCampaigns": items
+            .iter()
+            .map(|item| json!({
+                "id": item.key(),
+                "name": item.name,
+                "kind": item.kind,
+                "status": item.status,
+                "claimable": item.claimable,
+                "benefitAmount": item.benefit_amount,
+                "benefitUnit": item.benefit_unit,
+                "confirmed": item.is_confirmed(),
+                "autoClaim": item.is_daily_login_credit(),
             }))
             .collect::<Vec<_>>(),
         "eligible": daily.iter().any(|item| item.has_work()),
@@ -618,6 +645,7 @@ mod tests {
             status: status.to_string(),
             benefit_amount: 100.0,
             benefit_unit: unit.to_string(),
+            name: String::new(),
         }
     }
 

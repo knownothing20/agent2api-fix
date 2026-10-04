@@ -38,6 +38,8 @@ declare global {
 /* ─── 数据形状（与后端 / 既有弹窗逐字对齐）─────────────────── */
 
 type Campaign = {
+  kind?: string
+  autoClaim?: boolean
   benefitAmount?: number
   benefitUnit?: string
   confirmed?: boolean
@@ -50,6 +52,8 @@ type Campaign = {
 
 type Preview = {
   campaigns?: Campaign[]
+  /** 全量活动清单（只读）：面板「探测」要展示的完整列表，见后端 welfare::preview */
+  allCampaigns?: Campaign[]
   attempts?: number
   attemptsLeft?: number
   nextAttemptInMs?: number
@@ -371,7 +375,10 @@ function WelfarePage(): React.ReactElement {
           <div className='flex flex-col gap-3'>
             {accounts.map(account => {
               const preview = previews[account.id]
-              const campaigns = preview?.campaigns || []
+              // 展示**全量**活动（后端 allCampaigns）：客户端「活动福利」那一列有 6 条，
+              // 只显示「该自动领的」那一类会让人以为别的活动没了。老后端没有这个字段时
+              // 退回 campaigns（不会空白）。
+              const campaigns = preview?.allCampaigns || preview?.campaigns || []
               const failure = errors[account.id]
               return (
                 <div key={account.id} className='rounded-lg border border-border p-3'>
@@ -427,9 +434,14 @@ function WelfarePage(): React.ReactElement {
                                 className='flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[13px]'
                                 title={item.status || ''}
                               >
+                                {item.name ? <b>{item.name}</b> : null}
                                 <b>{campaignLabel(item)}</b>
                                 <span className={`badge ${badge.tone}`}>{badge.text}</span>
-                                {item.name ? <span className='detail'>{item.name}</span> : null}
+                                {item.autoClaim ? (
+                                  <span className='detail'>可自动领</span>
+                                ) : (
+                                  <span className='detail'>{item.kind || ''}</span>
+                                )}
                               </li>
                             )
                           })

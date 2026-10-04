@@ -34,7 +34,16 @@ pub async fn accounts_usage(state: &ServerState, query: &str) -> Response {
     // 空串与缺失同义（前端 `''` 时不带 id），所以这里 filter 掉空值再往下传
     let id = query_param(query, "id").filter(|value| !value.is_empty());
     match usage_query::query_all(state.store(), id.as_deref()).await {
-        Ok(report) => ok_json(report),
+        Ok(report) => {
+            // 手动**批量**查询也要落快照：账号页读的是快照（`/usage/snapshot`），
+            // 只返回结果不落盘的话，用户点完「查询余额」看到新值、**一刷新又变回
+            // 上一轮的旧值**（新账号显示「未查询」）—— 2026-10-04 用户实测报的就是这个。
+            // 单账号查询（`?id=`）**不动快照**：那是一次针对性查询，不代表整批刚查过。
+            if id.is_none() {
+                usage_query::store_snapshot(report.clone());
+            }
+            ok_json(report)
+        }
         Err(error) => management_error(error.status_code as i32, error.message),
     }
 }
