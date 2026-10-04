@@ -206,8 +206,10 @@ export function overviewCells(overview: StatsOverview | undefined, range: string
     { key: 'requests', label: '总请求数', value: formatInt(requests), sub: RANGE_LABEL[range] || '', mono: false },
     { key: 'successful', label: '成功请求数', value: formatInt(successful), sub: `成功率 ${successRate}`, mono: false },
     { key: 'tokens', label: '总 Token', value: formatTokens(data.tokens), sub: '输入 + 输出', mono: false },
-    { key: 'activeDays', label: '活跃天数', value: formatInt(data.activeDays), sub: `区间共 ${days} 天`, mono: false },
-    { key: 'streak', label: '当前连续天数', value: formatInt(data.streak), sub: '含今天在内往前数', mono: false },
+    // 「活跃天数 / 当前连续天数」两块按用户要求去掉（2026-10-04：「很多其实不用知道，
+    // 把不怎么重要的放后面或取消」）。它们回答的是「我坚持用了多久」——与「用了多少」
+    // 不是同一个问题，而首屏每一格都在挤同一行的宽度。数据仍由后端返回
+    // （`overview.activeDays` / `overview.streak`），要恢复只是把这两行加回来。
   ]
   cells.push(top
     ? {
