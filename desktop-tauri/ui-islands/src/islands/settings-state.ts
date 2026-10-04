@@ -76,6 +76,7 @@ export type BusyScope =
   | 'queue'
   | 'debug'
   | 'hideReasoning'
+  | 'forwardMode'
   | 'sanitize'
   | 'prompt'
   | 'captcha'
@@ -189,6 +190,8 @@ export type SettingsSnapshot = {
   busy: BusyScope
   /** 「不下发思考」开关（与请求头 X-A2A-Hide-Reasoning 或的关系） */
   hideReasoning: { status: 'loading' | 'ready' | 'unavailable'; on: boolean }
+  /** 转发模式：follow-* / always-* × stream / nonstream 四个取值 */
+  forwardMode: { status: 'loading' | 'ready' | 'unavailable'; mode: string }
   app: AppState
   unitsChinese: boolean
   retention: NumericState
@@ -234,6 +237,7 @@ const INITIAL: SettingsSnapshot = {
   queue: { status: 'loading', values: null },
   debug: { status: 'loading', on: false, count: null, limit: null },
   hideReasoning: { status: 'loading', on: false },
+  forwardMode: { status: 'loading', mode: 'follow-nonstream' },
   sanitize: { status: 'loading', on: false },
   prompt: {
     status: 'loading',
@@ -864,6 +868,47 @@ async function loadDebug(): Promise<void> {
   } catch (error) {
     console.warn('读取调试模式设置失败:', errorMessage(error))
     renderDebug(null)
+  }
+}
+
+export function renderForwardMode(data?: unknown): void {
+  if (data === undefined) return
+  if (!data || typeof data !== 'object') {
+    publish({ forwardMode: { status: 'unavailable', mode: 'follow-nonstream' } })
+    return
+  }
+  const mode = String((data as { forwardMode?: unknown }).forwardMode || '')
+  publish({
+    forwardMode: {
+      status: 'ready',
+      mode: /^(follow|always)-(stream|nonstream)$/.test(mode) ? mode : 'follow-nonstream',
+    },
+  })
+}
+
+async function loadForwardMode(): Promise<void> {
+  try {
+    renderForwardMode(await shared().workbuddyDesktop?.getForwardMode())
+  } catch (error) {
+    console.warn('读取转发模式设置失败:', errorMessage(error))
+    renderForwardMode(null)
+  }
+}
+
+/** 转发模式：四个取值由设置页那两个控件（模式 + 按客户端要求）组合而来。 */
+export async function saveForwardMode(next: string): Promise<void> {
+  if (busyScope) { repaint(); return }
+  beginBusy('forwardMode')
+  publish({ forwardMode: { ...snapshot.forwardMode, mode: next } })
+  try {
+    const saved = await shared().workbuddyDesktop?.saveForwardMode(next)
+    renderForwardMode(saved)
+    toast(`✅ 转发模式已改为 ${next}`)
+  } catch (error) {
+    toast(`保存失败: ${errorMessage(error)}`, 'err')
+    await loadForwardMode()
+  } finally {
+    endBusy()
   }
 }
 
@@ -1554,6 +1599,7 @@ export async function load(): Promise<void> {
     loadQueue(),
     loadDebug(),
     loadHideReasoning(),
+    loadForwardMode(),
     loadSanitize(),
     loadPrompt(),
     loadStorage(),

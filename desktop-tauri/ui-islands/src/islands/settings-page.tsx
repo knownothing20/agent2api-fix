@@ -80,6 +80,7 @@ import {
   restoreCategory,
   saveCaptcha,
   saveDebug,
+  saveForwardMode,
   saveHideReasoning,
   savePromptFile,
   savePromptMode,
@@ -1193,6 +1194,48 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               : snap.hideReasoning.on
                 ? '已开启：思考内容不下发，客户端只看到正文（模型照常思考，质量/耗时/扣费都不变）。'
                 : '未开启：思考内容照常下发（与默认一致）。'}
+          </div>
+          {/* 转发模式：两个控件组合出四个取值（后端只存一个键，见 api/forward_mode.rs）。
+              「按客户端要求」勾上时，客户端**明确要求**就听它的；只有它**没要求**时才用
+              下面选的模式。不勾则一律按下面选的模式，**覆盖客户端**。 */}
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label htmlFor='settings-forward-mode'>转发模式</label>
+              <span className='prompt-input'>
+                <Select
+                  value={snap.forwardMode.mode.endsWith('stream') ? 'stream' : 'nonstream'}
+                  onValueChange={next => void saveForwardMode(
+                    `${snap.forwardMode.mode.startsWith('follow') ? 'follow' : 'always'}-${String(next)}`,
+                  )}
+                >
+                  <SelectTrigger id='settings-forward-mode' aria-label='转发模式'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='nonstream'>总是非流式</SelectItem>
+                    <SelectItem value='stream'>总是流式</SelectItem>
+                  </SelectContent>
+                </Select>
+              </span>
+            </div>
+          </div>
+          <div className='settings-switches'>
+            <SwitchRow
+              id='settings-forward-follow-client'
+              label='按客户端要求（勾上：客户端要求了就听它；没要求则上面的模式生效）'
+              checked={snap.forwardMode.mode.startsWith('follow')}
+              disabled={snap.forwardMode.status !== 'ready' || snap.busy === 'forwardMode'}
+              onCheckedChange={next => void saveForwardMode(
+                `${next ? 'follow' : 'always'}-${snap.forwardMode.mode.endsWith('stream') ? 'stream' : 'nonstream'}`,
+              )}
+            />
+          </div>
+          <div className='settings-state'>
+            {snap.forwardMode.status === 'unavailable'
+              ? '未能读取转发模式设置，请稍后重试'
+              : snap.forwardMode.mode.startsWith('follow')
+                ? '当前：客户端明确要求就听它的；没要求时按上面选的模式。'
+                : '当前：一律按上面选的模式，客户端的要求会被忽略（可能让它解析不了响应，谨慎使用）。'}
           </div>
           <div className='hint retention-note'>{NOTES.debug}</div>
         </div>

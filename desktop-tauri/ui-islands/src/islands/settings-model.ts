@@ -108,6 +108,8 @@ export type SettingsBridge = {
   saveDebug(enabled: boolean): Promise<unknown>
   getHideReasoning(): Promise<unknown>
   saveHideReasoning(enabled: boolean): Promise<unknown>
+  getForwardMode(): Promise<unknown>
+  saveForwardMode(mode: string): Promise<unknown>
   getSanitize(): Promise<unknown>
   saveSanitize(enabled: boolean): Promise<unknown>
   getPrompt(): Promise<unknown>
