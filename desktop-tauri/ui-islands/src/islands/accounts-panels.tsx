@@ -34,6 +34,11 @@ import {
   SelectTrigger,
   SelectValue,
   Switch,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
   cn,
 } from '@ui'
 import { formatTime, poolItemLabel, POOL_VALUE_PREFIX, shared, type AccountRecord, type UsageEntry } from './accounts-shared'
@@ -405,7 +410,130 @@ function numberOrNull(value: unknown): number | null {
  * 完整明细（每个桶、到期、可用合计）仍在悬停提示里，这里只抢最基本的两个问题：
  * 哪个套餐、还剩多少。
  */
+/* ─── 积分明细弹窗 ─────────────────────────────────────────── */
+
+/**
+ * 一个账号的余额按**账本**拆开看。
+ *
+ * ── 为什么值得单独一个弹窗 ──────────────────────────────────
+ * 账号行上那一格只放得下一个数（「可用 13000 积分」），而码道的积分是**按包分开
+ * 记账**的（总包 / 基础包 / 赠送包 / 按需包各一本），领到的福利进的是「赠送包」。
+ * 只看总数会把「哪本快用完了」完全藏起来 —— 与参考面板那句「只看总数会把
+ * 『今天有 100 分要没了』藏起来」同一个理由。
+ *
+ * ── 一个如实说明（不编数据）────────────────────────────────
+ * **上游不提供逐包的到期时间**：订阅统计只给整期的 end_date。所以这里没有参考
+ * 面板那种「到期 / 倒计时」两列，只有整期结束这一个时间点 —— 写清楚比编一列假
+ * 倒计时诚实。
+ */
+function BalanceDetailDialog({
+  account,
+  entry,
+  onClose,
+}: {
+  account: AccountRecord
+  entry: UsageEntry
+  onClose: () => void
+}): React.ReactElement {
+  const data = (entry && typeof entry === 'object' && !Array.isArray(entry)
+    ? entry
+    : {}) as Record<string, unknown>
+  const wallets = (Array.isArray(data.wallets) ? data.wallets : []) as Array<Record<string, unknown>>
+  const subscription = (data.subscription && typeof data.subscription === 'object'
+    ? data.subscription
+    : {}) as Record<string, unknown>
+  // 整期结束时间：键名各家/各版本不一样，都兜住；取不到就不显示倒计时
+  const endRaw = data.endDate || data.resetDate || data.end_date || subscription.endDate
+  const endAt = endRaw ? new Date(String(endRaw)) : null
+  const daysLeft = endAt && !Number.isNaN(endAt.getTime())
+    ? Math.ceil((endAt.getTime() - Date.now()) / 86400000)
+    : null
+  const benefit = (data.benefit && typeof data.benefit === 'object'
+    ? data.benefit
+    : null) as Record<string, unknown> | null
+  const numberOrDash = (value: unknown): string =>
+    Number.isFinite(Number(value)) ? numberText(Number(value)) : '—'
+
+  return (
+    <Dialog open onOpenChange={next => { if (!next) onClose() }}>
+      <DialogContent className='max-w-[720px]'>
+        <DialogHeader>
+          <DialogTitle>积分明细</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <p className='detail'>{account.name || account.id}</p>
+          <p className='mt-1 text-[15px] font-medium'>
+            {data.availableView
+              ? String(data.availableView)
+              : `可用 ${numberOrDash(data.available)} ${String(data.unit || '积分')}`}
+            {daysLeft !== null ? (
+              <span className='detail'>
+                {' '}· 本周期 {String(endRaw)} 结束（还剩 {daysLeft} 天）
+              </span>
+            ) : null}
+          </p>
+          <p className='detail mt-2'>
+            码道的积分按包分开记账，各自独立；领到的福利进「赠送包」。
+            只看总数会把「哪本快用完了」藏起来，所以这里按账本拆开列。
+          </p>
+          <table className='mt-3 w-full text-[13px]'>
+            <thead>
+              <tr className='text-subtle'>
+                <th className='text-left font-normal'>账本</th>
+                <th className='text-right font-normal'>剩余</th>
+                <th className='text-right font-normal'>本周期</th>
+                <th className='text-right font-normal'>已用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {wallets.length === 0 ? (
+                <tr><td className='detail' colSpan={4}>没有可拆分的账本（该家余额只有一个总数）</td></tr>
+              ) : wallets.map((wallet, index) => {
+                const percent = numberOrNull(wallet.remainingPercent)
+                return (
+                  <tr key={`${account.id}-wallet-${index}`} className='border-t border-border'>
+                    <td className='py-1.5'>
+                      {String(wallet.displayName || wallet.planName || wallet.type || '账本')}
+                    </td>
+                    <td className='py-1.5 text-right'>
+                      {wallet.balanceView ? String(wallet.balanceView) : numberOrDash(wallet.balance)}
+                    </td>
+                    <td className='py-1.5 text-right'>
+                      {Number.isFinite(Number(wallet.total)) && Number(wallet.total) > 0
+                        ? numberText(Number(wallet.total))
+                        : '—'}
+                    </td>
+                    <td className='py-1.5 text-right'>
+                      {percent === null ? '—' : `${Math.max(0, Math.min(100, Math.round(100 - percent)))}%`}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {benefit ? (
+            <>
+              <p className='detail mt-3'>福利模型额度（另一本账，单位 token）</p>
+              <p className='detail'>
+                日池 已用 {numberOrDash(benefit.dailyTokensUsed)} / {numberOrDash(benefit.dailyTokenLimit)}
+                {' · '}月池 已用 {numberOrDash(benefit.monthlyTokensUsed)} / {numberOrDash(benefit.monthlyTokenLimit)}
+              </p>
+            </>
+          ) : null}
+          <p className='detail mt-3'>
+            上游不提供逐包的到期时间（订阅统计只给整期结束日），所以这里没有
+            「到期 / 倒计时」两列 —— 只有上面那个本周期结束时间。
+          </p>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function UsageCell({ account }: { account: AccountRecord }) {
+  // 明细弹窗的开关是本单元格自己的状态：只影响这一行，没必要进全局 store
+  // （store 里的 dialog 是给「增删改」那种需要跨组件协作的流程用的）。
+  const [detailOpen, setDetailOpen] = React.useState(false)
   if (!supportsUsage(account)) {
     return <span className='muted' title='该提供商没有余额查询'>—</span>
   }
@@ -418,12 +546,19 @@ export function UsageCell({ account }: { account: AccountRecord }) {
     return <span className={`usage-sum ${summary.kind}`} title={summary.title}>{summary.text}</span>
   }
   return (
-    <span className='usage-pool' title={summary.title}>
+    <span
+      className='usage-pool cursor-pointer'
+      title={`${summary.title}\n（点击看积分明细）`}
+      onClick={() => setDetailOpen(true)}
+    >
       {pool.planName ? <span className='usage-pool-name'>{pool.planName}</span> : null}
       <span className='usage-pool-line'>
         {pool.percent !== null ? <Progress value={pool.percent} className='usage-pool-bar' /> : null}
         <span className={`usage-pool-view ${summary.kind}`}>{pool.text}</span>
       </span>
+      {detailOpen ? (
+        <BalanceDetailDialog account={account} entry={entry} onClose={() => setDetailOpen(false)} />
+      ) : null}
     </span>
   )
 }
