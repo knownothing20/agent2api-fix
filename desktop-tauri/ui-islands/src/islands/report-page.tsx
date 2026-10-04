@@ -740,7 +740,26 @@ function ReportPage() {
 
   return (
     <>
-      {/* ── 每日用量曲线（首屏第一块）──
+      {/* ── 统计概览 ──
+           时间范围控件住在这一块的面板头里：它控制的就是这一页的统计口径，与旁边的读数
+           同处一行最直观 */}
+      <section className='panel'>
+        <div className='panel-head'>
+          <h2>统计概览</h2>
+          <span className='panel-sub' id='report-range-label'>{RANGE_LABEL[rangeKey] || ''}</span>
+          <div className='head-actions'>
+            <SegmentedControl options={RANGE_OPTIONS} value={range}
+              onValueChange={changeRange} aria-label='报表时间范围' />
+          </div>
+        </div>
+        <div className='panel-body'>
+          <div className='field-grid' id='report-overview'>
+            {summary ? <OverviewCells summary={summary} range={rangeKey} /> : loading}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 每日用量曲线（排在统计概览之后）──
            用户最想先看到的是「每天用了多少、花在谁身上」，所以排在最前；
            时间范围控件在下面「统计概览」的面板头里，两者读同一个 range */}
       <section className='panel'>
@@ -778,25 +797,6 @@ function ReportPage() {
         ) : (
           <p className='detail'>所选范围内暂无用量</p>
         )}
-      </section>
-
-      {/* ── 统计概览 ──
-           时间范围控件住在这一块的面板头里：它控制的就是这一页的统计口径，与旁边的读数
-           同处一行最直观 */}
-      <section className='panel'>
-        <div className='panel-head'>
-          <h2>统计概览</h2>
-          <span className='panel-sub' id='report-range-label'>{RANGE_LABEL[rangeKey] || ''}</span>
-          <div className='head-actions'>
-            <SegmentedControl options={RANGE_OPTIONS} value={range}
-              onValueChange={changeRange} aria-label='报表时间范围' />
-          </div>
-        </div>
-        <div className='panel-body'>
-          <div className='field-grid' id='report-overview'>
-            {summary ? <OverviewCells summary={summary} range={rangeKey} /> : loading}
-          </div>
-        </div>
       </section>
 
       {/* ── Top 提供商 / Top 账号（并排两张卡，各自独立判断显隐）── */}
