@@ -89,6 +89,45 @@ fn sniff_usage(telemetry: &RequestTelemetry, bytes: &[u8]) {
 ///   · **只在确实命中该键时才重写**；没命中返回 None，调用方原样转发同一份字节；
 ///   · 解析失败 / 不是 JSON 对象 / 找不到 `data:` 行 → 原样放行（异常帧不能被我们吞掉）；
 ///   · 只删这一个键，其余键与值一个都不碰；帧尾换行原样保留（收尾帧的字节特征依赖它）。
+/// 跨块剥思考的缓冲器。
+///
+/// 为什么需要它：`rest` 吐出来的**字节块边界与 SSE 帧边界无关** —— 一帧
+/// `data: {...}\n\n` 可能被切成两块，也可能一块里挤着好几帧。按块直接解析会漏：
+/// 实测「剥了但还剩 63 字」，剩下的正是被切断的那部分。
+///
+/// 做法：只把**攒够完整帧**（到最后一个 `\n\n` 为止）的那段交出去剥，
+/// 尾部残余留到下一块；流结束时 `flush` 原样吐出 —— **绝不吞字节**。
+struct ReasoningStripper {
+    pending: Vec<u8>,
+}
+
+impl ReasoningStripper {
+    fn new() -> Self {
+        Self { pending: Vec::new() }
+    }
+
+    /// 喂一块，返回**可以立刻下发**的字节（空 = 还没攒够一帧，调用方继续等）。
+    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(chunk);
+        // 找最后一个帧边界（`\n\n`）：它之前的整段是完整的若干帧
+        let Some(cut) = self
+            .pending
+            .windows(2)
+            .rposition(|window| window == b"\n\n")
+            .map(|index| index + 2)
+        else {
+            return Vec::new();
+        };
+        let head: Vec<u8> = self.pending.drain(..cut).collect();
+        strip_reasoning_frame(&head).unwrap_or(head)
+    }
+
+    /// 流结束：把残余原样吐出（不完整的尾巴也要发，否则等于吞了上游的字节）。
+    fn flush(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 fn strip_reasoning_frame(bytes: &[u8]) -> Option<Vec<u8>> {
     if !bytes.windows(17).any(|window| window == b"reasoning_content") {
         return None;
@@ -388,21 +427,17 @@ impl ProviderAdapter for CodeArtsAdapter {
             // ⑧ 流式：透传（上游已是 OpenAI chunk 形状），结束时释放会话与许可
             let (sender, receiver) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
             let telemetry_for_stream = telemetry.clone();
+            // 跨块剥思考：帧边界与字节块边界无关，必须攒够一帧再剥（见 ReasoningStripper）
+            let mut stripper = ReasoningStripper::new();
             crate::spawn_task(async move {
                 use futures::StreamExt;
                 if !prefetched.is_empty() {
                     // 先嗅后移（prefetched 会被 move 进 Bytes）
                     sniff_usage(&telemetry_for_stream, &prefetched);
-                    // ⚠️ 这段**也要剥**：它在循环之前就发出去了，漏掉它会让开头那几帧的
-                    // 思考照样漏给客户端（实测：剥了循环、这里没剥 ⇒ 739 字只降到 53 字）。
-                    let first = match hide_reasoning
-                        .then(|| strip_reasoning_frame(&prefetched))
-                        .flatten()
-                    {
-                        Some(rewritten) => bytes::Bytes::from(rewritten),
-                        None => bytes::Bytes::from(prefetched),
-                    };
-                    if sender.send(Ok(first)).await.is_err() {
+                    // 这段也要过剥除器：它在循环之前就发出去了，漏掉它会让开头那几帧
+                    // 的思考照样漏给客户端。交给 stripper 攒帧，攒够才发。
+                    let first = if hide_reasoning { stripper.push(&prefetched) } else { prefetched.to_vec() };
+                    if !first.is_empty() && sender.send(Ok(bytes::Bytes::from(first))).await.is_err() {
                         session.stop().await;
                         return;
                     }
@@ -412,16 +447,28 @@ impl ProviderAdapter for CodeArtsAdapter {
                     let item = match &item {
                         Ok(chunk) => {
                             sniff_usage(&telemetry_for_stream, chunk);
-                            // 「只发结果」：命中开关才重写这一帧，否则原样透传
-                            match hide_reasoning.then(|| strip_reasoning_frame(chunk)).flatten() {
-                                Some(rewritten) => Ok(bytes::Bytes::from(rewritten)),
-                                None => item,
+                            // 「只发结果」：过跨块缓冲器（帧会被切成任意块，按块剥会漏）
+                            if hide_reasoning {
+                                let out = stripper.push(chunk);
+                                if out.is_empty() {
+                                    continue;
+                                }
+                                Ok(bytes::Bytes::from(out))
+                            } else {
+                                item
                             }
                         }
                         Err(_) => item,
                     };
                     if sender.send(item).await.is_err() {
                         break;
+                    }
+                }
+                // 流结束：把缓冲里残余的字节原样吐出（不完整的尾巴也要发，不能吞）
+                if hide_reasoning {
+                    let tail = stripper.flush();
+                    if !tail.is_empty() {
+                        let _ = sender.send(Ok(bytes::Bytes::from(tail))).await;
                     }
                 }
                 // 客户端断开也会走到这里：idle 必须发，否则上游槽位悬着
