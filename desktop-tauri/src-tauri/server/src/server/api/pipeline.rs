@@ -76,7 +76,12 @@ pub type TerminalFrames = &'static [&'static [u8]];
 /// 的事实，写在一起才能一眼看出「谁跟谁对得上」。
 pub mod terminal {
     /// Chat Completions：`ReasoningCoalescer` 透传的 `data: [DONE]\n\n`
-    pub const CHAT: super::TerminalFrames = &[b"data: [DONE]\n\n"];
+    /// ⚠️ 两种冒号形态都要收：SSE 规范里 `:` 后的空格是**可选**的，而 CodeArts
+    /// 那条路径实际发的是 `data:[DONE]`（无空格，2026-10-04 抓包实测：末尾字节
+    /// `…data:[DONE]\n\n`）。只认带空格那一种的后果是：**每个收完 `[DONE]` 就
+    /// 正常关闭的客户端**都被记成「响应流未完整下发（客户端中断或服务退出）」，
+    /// 请求日志里一片红、看着像网关不稳。
+    pub const CHAT: super::TerminalFrames = &[b"data: [DONE]\n\n", b"data:[DONE]\n\n"];
     /// Responses：正常收尾 `response.completed`，失败收尾 `response.failed`
     pub const RESPONSES: super::TerminalFrames =
         &[b"event: response.completed\n", b"event: response.failed\n"];

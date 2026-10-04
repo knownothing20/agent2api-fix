@@ -269,23 +269,33 @@ impl ProviderAdapter for CodeArtsAdapter {
                 if let Some(error) = read_error {
                     return Err(GatewayError::with_status(502, format!("CodeArts 上游流中断：{error}")));
                 }
-                return Ok(ForwardOutcome::Completion {
-                    body: chat::aggregate_sse(&all, &upstream_model)?,
-                });
+                let body = chat::aggregate_sse(&all, &upstream_model)?;
+                // 上报 usage：本家这条路径**不经过**会 report_usage 的公共路径，
+                // 不在这里补一次，台账 token 就永远是 0（见 sniff_usage 的说明）。
+                if let Some(usage) = body.get("usage").filter(|item| !item.is_null()) {
+                    telemetry.report_usage(usage);
+                }
+                return Ok(ForwardOutcome::Completion { body });
             }
 
             // ⑧ 流式：透传（上游已是 OpenAI chunk 形状），结束时释放会话与许可
             let (sender, receiver) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(64);
-            crate::spawn_task(async move {
-                use futures::StreamExt;
-                if !prefetched.is_empty() {
+            let telemetry_for_stream = telemetry.clone();
+            crate::spawn_task(async move {
+                use futures::StreamExt;
+                if !prefetched.is_empty() {
+                    // 先嗅后移（prefetched 会被 move 进 Bytes）
+                    sniff_usage(&telemetry_for_stream, &prefetched);
                     if sender.send(Ok(bytes::Bytes::from(prefetched))).await.is_err() {
                         session.stop().await;
                         return;
                     }
                 }
-                let mut rest = rest;
-                while let Some(item) = rest.next().await {
+                let mut rest = rest;
+                while let Some(item) = rest.next().await {
+                    if let Ok(chunk) = &item {
+                        sniff_usage(&telemetry_for_stream, chunk);
+                    }
                     if sender.send(item).await.is_err() {
                         break;
                     }
@@ -301,7 +311,30 @@ impl ProviderAdapter for CodeArtsAdapter {
         })
     }
 
-    /// 非 2xx 的分类。
+    /// 从一段（可能含多帧的）SSE 字节里嗅出 `usage` 并上报台账。
+///
+/// **只读不改**：无论命中与否，转发的字节一个都不动（与 `upstream::sse` 的
+/// 「usage 旁路提取」同一取舍 —— 统计少记一条可以接受，改动客户端看到的字节不行）。
+///
+/// 为什么本家要自己嗅：码道走的是**自己这条会话式转发**（字节直转），不经过
+/// `upstream::sse` / `upstream::aggregate` 那两条会 `report_usage` 的公共路径。
+/// 不补这一处，台账 token 永远是 0，报表页所有按 token 聚合的块全空
+/// （2026-10-04 实测：上游每帧都带 usage，网关却记 0）。
+fn sniff_usage(telemetry: &RequestTelemetry, bytes: &[u8]) {
+    for line in bytes.split(|byte| *byte == b'\n') {
+        // SSE 的 `data:` 后空格可选：CodeArts 发的是 `data:{...}`（无空格）
+        let Some(rest) = line.strip_prefix(b"data:") else { continue };
+        let payload = rest.strip_prefix(b" ").unwrap_or(rest);
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
+            continue;
+        };
+        if let Some(usage) = value.get("usage").filter(|item| !item.is_null()) {
+            telemetry.report_usage(usage);
+        }
+    }
+}
+
+/// 非 2xx 的分类。
     ///
     /// **注意**：CodeArts 的业务失败常常不体现在状态码上（额度耗尽是 HTTP 200
     /// SSE 里的信封），那部分由 `stream_fault` 负责；这里只管真的是状态码的错。
