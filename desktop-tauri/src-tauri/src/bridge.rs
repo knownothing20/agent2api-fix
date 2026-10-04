@@ -554,6 +554,9 @@ const BRIDGE_JS: &str = r#"
     // 落到统一库的 debug_traffic 表，请求日志页的「详情」列据此展示。
     // 「不下发思考」开关（hideReasoning）：开启后模型照常思考，但思考内容不下发，
     // 客户端只看到正文。与请求头 X-A2A-Hide-Reasoning 是或的关系（头管单次请求）。
+    // 转发模式（forwardMode）：四个取值，决定「流式还是非流式」怎么定。
+    getForwardMode: () => call('GET', '/api/forwardMode'),
+    saveForwardMode: mode => call('PUT', '/api/forwardMode', { forwardMode: mode }),
     getHideReasoning: () => call('GET', '/api/hideReasoning'),
     saveHideReasoning: enabled => call('PUT', '/api/hideReasoning', { hideReasoning: enabled }),
     getDebug: () => call('GET', '/api/debug'),

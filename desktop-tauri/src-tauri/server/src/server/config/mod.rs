@@ -134,6 +134,11 @@ pub struct RuntimeConfig {
     /// 与 `sanitize_fingerprints` 同一理由（转发层逐请求取一次，改完下一个请求
     /// 生效），默认 **false** = 照旧下发思考（与现状一致，零意外）。
     hide_reasoning: bool,
+    /// 转发模式（设置页「通用 → 转发」，见 `KEY_FORWARD_MODE`）。
+    ///
+    /// 与 `debug_mode` 同一理由（转发层逐请求判一次，改完下一个请求生效）。
+    /// 解析时**越界一律回落 `FORWARD_MODE_DEFAULT`**，所以这里存的一定是四个合法值之一。
+    forward_mode: String,
     /// 面板机器人校验开关（设置页「通用 → 机器人校验」，ALTCHA proof-of-work）。
     ///
     /// 与 `debug_mode` 同一理由：登录 / 注册端点逐请求判一次（改完开关下一个
@@ -198,6 +203,28 @@ impl RuntimeConfig {
     /// 是否不下发思考（转发层每次发送前判一次，见字段说明）
     pub fn hide_reasoning(&self) -> bool {
         self.hide_reasoning
+    }
+
+    /// 当前转发模式（四个合法值之一，见 `KEY_FORWARD_MODE`）。
+    pub fn forward_mode(&self) -> &str {
+        &self.forward_mode
+    }
+
+    /// **这一条请求最终走不走流式** —— 三个转发入口（Chat / Responses / Anthropic）
+    /// 共用这一处判定，避免三处各写一遍必然漂移。
+    ///
+    /// `requested` 必须是 `payload.get("stream").and_then(Value::as_bool)` 的**原始
+    /// `Option`**：`None` 表示客户端**没要求**（而不是"要非流式"），这正是
+    /// `follow-*` 两档能把「没要求」交给转发模式兜底的前提。
+    pub fn wants_stream(&self, requested: Option<bool>) -> bool {
+        match (self.forward_mode.as_str(), requested) {
+            // 勾了「按客户端要求」且客户端**明确要求**了 → 听客户端的
+            ("follow-stream" | "follow-nonstream", Some(value)) => value,
+            // 其余（没勾，或勾了但客户端没要求）→ 一律按转发模式
+            ("always-stream", _) => true,
+            ("always-nonstream", _) => false,
+            (_, _) => self.forward_mode == "follow-stream",
+        }
     }
 
     /// 出站指纹脱敏是否开启（转发层每次发送前判一次，见字段说明）
@@ -422,6 +449,13 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .get(KEY_HIDE_REASONING)
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        // 越界（手改文件写了个没见过的值）一律回落默认，与「写坏回落」同一取向
+        forward_mode: raw
+            .get(KEY_FORWARD_MODE)
+            .and_then(Value::as_str)
+            .filter(|value| FORWARD_MODES.contains(value))
+            .unwrap_or(FORWARD_MODE_DEFAULT)
+            .to_string(),
         // 只有字面 `false` 算关闭：**默认开**。登录 / 注册的暴破与抢注防护
         // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）。配置项缺失
         // 时环境变量兜底：登录页人机验证组件环境变量，默认为1开启，0为关闭
@@ -1209,6 +1243,19 @@ pub fn set_debug_mode(enabled: bool) -> bool {
 /// 与 `set_debug_mode` 同一模式：内存快照与 raw 底稿一起改 —— 前者让下一个请求
 /// 立刻用新值（转发层逐请求读快照），后者保证写盘时不吃掉 config.json 里的
 /// 其它字段。返回是否落盘成功（失败时内存仍已更新，见调用点）。
+/// 写入转发模式（越界值拒绝，返回 false 表示没写）。
+pub fn set_forward_mode(mode: &str) -> bool {
+    if !FORWARD_MODES.contains(&mode) {
+        return false;
+    }
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_FORWARD_MODE.to_string(), Value::String(mode.to_string()));
+        config.forward_mode = mode.to_string();
+    })
+}
+
 /// 写入「不下发思考」开关（与 `set_debug_mode` 同一模式：内存快照 + raw 底稿一起改）。
 pub fn set_hide_reasoning(enabled: bool) -> bool {
     update(|config| {

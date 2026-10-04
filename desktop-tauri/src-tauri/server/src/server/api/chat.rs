@@ -101,7 +101,10 @@ pub async fn chat_completions(
 
     let method = "POST";
     let path = "/v1/chat/completions";
-    let stream = payload.get("stream").map(|value| value == &Value::Bool(true)).unwrap_or(false);
+    // 转发模式（设置页「通用 → 转发」）：把客户端的**原始 Option** 交给统一的判定 ——
+    // `None`（没传）与 `Some(false)`（明确要非流式）必须区分，否则 follow-* 两档无从兜底。
+    let stream = config::current()
+        .wants_stream(payload.get("stream").and_then(Value::as_bool));
     let message_count = payload
         .get("messages")
         .and_then(Value::as_array)

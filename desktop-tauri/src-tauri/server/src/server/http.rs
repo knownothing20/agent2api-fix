@@ -405,6 +405,13 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/sanitize",
             get(api::sanitize::get_sanitize).put(api::sanitize::put_sanitize),
         )
+        // ── 转发模式开关 ──
+        // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
+        // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。
+        .route(
+            "/api/forwardMode",
+            get(api::forward_mode::get_forward_mode).put(api::forward_mode::put_forward_mode),
+        )
         // ── 不下发思考开关 ──
         // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定响应里的 reasoning_content 要不要下发给客户端（模型照常思考，

@@ -125,7 +125,8 @@ pub async fn responses_endpoint(
     // 在协议翻译里会搬到 chat_body 的 reasoning_effort，值相同 —— 见
     // client_reasoning_of 的说明）
     let client_reasoning = pipeline::client_reasoning_of(&raw);
-    let stream = raw.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    // 与 chat.rs 同一口径：原始 Option 交给统一判定（见 config::wants_stream）
+    let stream = config::current().wants_stream(raw.get("stream").and_then(Value::as_bool));
 
     // 协议翻译（有状态字段在这里被拒）
     let mut chat_body = match responses::chat_from_responses(&raw) {
@@ -304,7 +305,8 @@ pub async fn messages_endpoint(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let stream = raw.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    // 与 chat.rs 同一口径：原始 Option 交给统一判定（见 config::wants_stream）
+    let stream = config::current().wants_stream(raw.get("stream").and_then(Value::as_bool));
 
     // 协议翻译
     let mut chat_body = match anthropic::chat_from_anthropic(&raw) {

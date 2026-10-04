@@ -92,6 +92,26 @@ pub const KEY_SANITIZE_FINGERPRINTS: &str = "sanitizeBlacklistFingerprints";
 /// 干净结果时带）、这个键管全局（流量都经过别的网关时改它更省事）。
 /// 任一为真即剥 —— 模型照常思考，只是思考内容不下发。
 pub const KEY_HIDE_REASONING: &str = "hideReasoning";
+/// 转发模式（设置页「通用 → 转发」）：决定「流式还是非流式」怎么定。
+///
+/// 四个取值（把设置页那两个控件合成一个键，配置只需改 5 处）：
+///   `follow-stream` / `follow-nonstream` —— 勾了「按客户端要求」：
+///       客户端**明确要求**就听它的；**没要求**时按 stream / nonstream 兜底；
+///   `always-stream` / `always-nonstream` —— 没勾：一律按它，**覆盖客户端**。
+///
+/// 注意用的是 `payload.get("stream")` 的 `Option`（能区分「没传」与「传了 false」），
+/// 这正是「客户端没要求」这个判断成立的前提。
+pub const KEY_FORWARD_MODE: &str = "forwardMode";
+/// `forwardMode` 的合法取值（越界一律回落默认，见 `forward_mode_of`）。
+pub const FORWARD_MODES: [&str; 4] = [
+    "follow-stream",
+    "follow-nonstream",
+    "always-stream",
+    "always-nonstream",
+];
+/// `forwardMode` 的默认值：与改造前**完全一致** —— 客户端说什么就是什么，
+/// 没传按 API 规范当非流式。
+pub const FORWARD_MODE_DEFAULT: &str = "follow-nonstream";
 
 /// 机器人校验开关的键（config.json 键，ALTCHA proof-of-work，见 `server::altcha`）。
 ///
