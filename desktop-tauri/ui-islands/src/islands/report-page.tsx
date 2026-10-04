@@ -820,11 +820,8 @@ function ReportPage() {
             tip={TIP_MODELS} ariaLabel='模型用量占比'
             view={donutView(modelList, '未知模型')} emptyText='所选范围内还没有模型用量' />
         ) : null}
-        {providerList ? (
-          <DonutPanel panelId='report-providers-pie-panel' listId='report-providers-donut' title='提供商用'
-            tip={TIP_PROVIDERS_PIE} ariaLabel='提供商用占比'
-            view={donutView(providerList, '未知')} emptyText='所选范围内还没有提供商用量' />
-        ) : null}
+        {/* 提供商环形图已删（2026-10-04）：与上面「Top 提供商」排行是**同一份数据**的
+            两种画法（排行还能给出请求数，信息更多）。模型那一维没有排行卡，所以保留环形图。 */}
       </div>
 
       {/* ── 热力图（固定 365 天，与时间范围筛选解耦）── */}
@@ -904,23 +901,10 @@ function ReportPage() {
         </div>
       </section>
 
-      {/* ── 按天 Token 趋势（随时间范围变化）── */}
-      <section className='panel'>
-        <div className='panel-head'>
-          <h2>按天 Token 趋势</h2>
-          <TipQ text={TIP_DAILY_TREND} />
-          <span className='panel-sub' id='report-trend-label'>
-            {summary ? `${summary.startDate || '—'} ～ ${summary.endDate || '—'}` : '—'}
-          </span>
-        </div>
-        <div className='panel-body'>
-          <div className='chart-wrap tall' id='report-daily-trend' ref={dailyWidth[0]}>
-            {summary
-              ? (dailyView ? <DailyTrendChart view={dailyView} /> : placeholder('暂无趋势数据'))
-              : loading}
-          </div>
-        </div>
-      </section>
+      {/* 底部的「按天 Token 趋势」已删（2026-10-04）：首屏那条「每日用量」曲线
+          把它整个覆盖了，而且还能按模型 / 账号拆维度 —— 留着是同一份数据的第二次展示。
+          `dailyView` / `DailyTrendChart` 仍保留在文件里：老实现（ui/report.js）与
+          这一版并存期里还要对照，等确认没人再比对之后再清。 */}
     </>
   )
 }
