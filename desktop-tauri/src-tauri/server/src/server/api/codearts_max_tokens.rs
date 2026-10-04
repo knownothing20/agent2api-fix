@@ -82,6 +82,6 @@ pub async fn put_codearts_max_tokens_cap(
 /// 当前值（GET 与 PUT 共用，前端直接用响应刷新界面）
 fn cap_json() -> Value {
     json!({
-        config::KEY_CODEARTS_MAX_TOKENS_CAP: config::current().codearts_max_tokens_cap.unwrap_or(0),
+        config::KEY_CODEARTS_MAX_TOKENS_CAP: config::current().codearts_max_tokens_cap().unwrap_or(0),
     })
 }
