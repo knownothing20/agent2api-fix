@@ -536,6 +536,89 @@ pub(super) fn daily_trend(daily: &BTreeMap<String, DailyEntry>, start: &str, end
     out
 }
 
+/// 按天 × 模型的用量序列（报表首屏那条曲线读它）。
+///
+/// 数据来自聚合行里**本来就有**的 `modelTokens`（每天一份，见 `DailyEntry` 的说明）
+/// —— 不是新采集，只是把「天」与「模型」两个维度铺开成一条可画曲线的序列。
+/// 为什么不交给前端拆：`dailyTrend` 只有当天合计；而区间可能跨过明细的 30 天保留期，
+/// 只有聚合行才靠得住（与 `topModel` 必须走聚合是同一个理由）。
+pub(super) fn trend_by_model(
+    daily: &BTreeMap<String, DailyEntry>,
+    start: &str,
+    end: &str,
+) -> Vec<Value> {
+    trend_by_dimension(daily, start, end, |day| {
+        day.model_tokens
+            .iter()
+            .map(|item| (item.model.clone(), item.tokens, item.requests))
+            .collect()
+    })
+}
+
+/// 按天 × 账号的用量序列（同 `trend_by_model`，维度换成账号）。
+///
+/// 名字优先用 `accountName`（面板上看到的就是它），空则退回 `accountId` ——
+/// 否则曲线图例会是一条看不出是谁的哈希。
+pub(super) fn trend_by_account(
+    daily: &BTreeMap<String, DailyEntry>,
+    start: &str,
+    end: &str,
+) -> Vec<Value> {
+    trend_by_dimension(daily, start, end, |day| {
+        day.account_stats
+            .iter()
+            .map(|item| {
+                let name = if item.account_name.trim().is_empty() {
+                    item.account_id.clone()
+                } else {
+                    item.account_name.clone()
+                };
+                (name, item.tokens, item.requests)
+            })
+            .collect()
+    })
+}
+
+/// 两条维度序列共用的铺开逻辑：逐日遍历、逐项展开成 `{date, name, tokens, requests}`。
+///
+/// 与 `daily_trend` 同一套日期游走（含 `MAX_TREND_DAYS` 上限）；多一道
+/// `MAX_TREND_POINTS` 兜底：维度序列的条目数是「天数 × 维度数」，只限天数不够 ——
+/// 手改文件把区间撑到十年、又有几十个模型时，响应会被撑爆。
+fn trend_by_dimension<F>(
+    daily: &BTreeMap<String, DailyEntry>,
+    start: &str,
+    end: &str,
+    pick: F,
+) -> Vec<Value>
+where
+    F: Fn(&DailyEntry) -> Vec<(String, i64, i64)>,
+{
+    let (Some(start_date), Some(end_date)) = (parse_key(start), parse_key(end)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = start_date;
+    let mut days = 0usize;
+    while cursor <= end_date && days < MAX_TREND_DAYS as usize && out.len() < MAX_TREND_POINTS {
+        let key = date_key(cursor);
+        if let Some(day) = daily.get(&key) {
+            for (name, tokens, requests) in pick(day) {
+                // 空项不进序列：它们只会把响应撑大，画出来是一条贴着 0 的线
+                if tokens == 0 && requests == 0 {
+                    continue;
+                }
+                out.push(json!({ "date": key, "name": name, "tokens": tokens, "requests": requests }));
+            }
+        }
+        cursor += ChronoDuration::days(1);
+        days += 1;
+    }
+    out
+}
+
+/// 维度序列的条目上限（天 × 维度）。见 `trend_by_dimension` 的说明。
+const MAX_TREND_POINTS: usize = 20_000;
+
 /// 热力图：**固定 365 天**（含今天），与 range 解耦，无数据的日期补零。
 /// 升序返回，前端按「一年 = 若干列周」排布。
 pub(super) fn heatmap(daily: &BTreeMap<String, DailyEntry>, today: NaiveDate) -> Vec<Value> {

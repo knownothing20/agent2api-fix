@@ -150,6 +150,10 @@ pub(super) fn summarize(
     // 报表的「模型用量」环形图读它，各扇区之和等于 overview.tokens
     let models = build_models(&totals.model_totals);
     let trend = daily_trend(daily, &start_date, &end_date);
+    // 按天 × 维度两条序列（报表首屏的曲线读它们）。与 dailyTrend **同源同区间**，
+    // 所以「曲线各条之和」必然等于「dailyTrend 那天的合计」—— 不会出现两处对不上。
+    let trend_by_model = trend_by_model(daily, &start_date, &end_date);
+    let trend_by_account = trend_by_account(daily, &start_date, &end_date);
     let map = heatmap(daily, now_day);
     let consecutive = streak(daily, now_day);
 
@@ -185,6 +189,11 @@ pub(super) fn summarize(
         "cacheRates": rates,
         "cacheTrend24h": cache_trend,
         "dailyTrend": trend,
+        // 按天 × 模型的用量序列（**新增字段，不改既有字段**，旧前端忽略即可）。
+        // 形状：[{date, name, tokens, requests}]，name 是模型名。
+        "trendByModel": trend_by_model,
+        // 按天 × 账号的用量序列（同上，name 是账号展示名，空则退回账号 id）。
+        "trendByAccount": trend_by_account,
     })
 }
 
