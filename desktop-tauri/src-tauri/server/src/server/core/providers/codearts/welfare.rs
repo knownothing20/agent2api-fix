@@ -353,7 +353,24 @@ pub async fn preview(store: &AccountStore, account_id: &str, base: &str, now_ms:
     let credential = current_credential(store, account_id).await?;
     let items = delivery(base, &credential).await?;
     let daily: Vec<&Campaign> = items.iter().filter(|item| item.is_daily_login_credit()).collect();
-    let ledger = ledger_of(store, account_id, now_ms)?;
+    let mut ledger = ledger_of(store, account_id, now_ms)?;
+    // ── 自愈：把「上游已确认到账」这个事实落到台账上 ──────────────
+    // 账号行那颗「领福利」按钮的判据就是台账 `accepted`（见 accounts-panels 的
+    // welfareTaken）。本函数原先纯只读 ⇒ 上游说「都已到账」时按钮仍显示「领福利」，
+    // 点一次只弹一句同样的话、台账还是不写 —— 死循环（2026-10-04 用户实测报的
+    // 正是这个）。判据与 `claim_account` 的 `Outcome::Already` 完全一致
+    // （每日活动**全部** confirmed），语义对齐。
+    // 「只读」说的是**上游那一侧**：这里一个上游写请求都不发，写的是本地台账。
+    // 落盘失败只记日志 —— 探测本身仍要能用（下一次刷新还有机会自愈）。
+    if !daily.is_empty() && daily.iter().all(|item| item.is_confirmed()) && !ledger.accepted {
+        ledger.accepted = true;
+        if let Err(error) = store.put_codearts_welfare_ledger(account_id, &ledger.to_value()) {
+            logging::log(
+                "[CodeArts]",
+                &format!("每日福利台账自愈写回失败（不影响本次探测）：{}", error.message),
+            );
+        }
+    }
     Ok(json!({
         "day": ledger.day,
         "attempts": ledger.attempts,
@@ -477,6 +494,14 @@ pub async fn claim_account(
         return Ok(Outcome::NotEligible);
     }
     if daily.iter().all(Campaign::is_confirmed) {
+        // 上游已确认到账 = 今天确实领过了，把台账补上（与 preview 的自愈同一理由：
+        // 定时任务 / 直接调 claim 的路径也走到这里，漏写会让按钮一直亮着）。
+        // 写不进去就原样返回 Already —— 这是**展示口径**的补齐，不该让一次
+        // 本来成功的「已领取」变成失败。
+        if !ledger.accepted {
+            ledger.accepted = true;
+            let _ = save(&ledger);
+        }
         return Ok(Outcome::Already);
     }
     // 限流只管**写**：读资格、判确认永远放行
