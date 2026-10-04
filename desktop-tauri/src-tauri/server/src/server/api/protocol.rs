@@ -34,6 +34,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::{json, Value};
 
+use crate::server::config;
 use crate::server::core::key_scope::KeyScope;
 use crate::server::core::protocol::{anthropic, responses};
 use crate::server::core::upstream::cancellation;
