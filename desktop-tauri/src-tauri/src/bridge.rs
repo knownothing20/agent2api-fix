@@ -552,6 +552,10 @@ const BRIDGE_JS: &str = r#"
     // ── 调试模式（设置页「通用 → 调试模式」）──
     // 开关存配置（debugMode）：开启后转发层把上游原始报文（凭据类头已脱敏）
     // 落到统一库的 debug_traffic 表，请求日志页的「详情」列据此展示。
+    // 「不下发思考」开关（hideReasoning）：开启后模型照常思考，但思考内容不下发，
+    // 客户端只看到正文。与请求头 X-A2A-Hide-Reasoning 是或的关系（头管单次请求）。
+    getHideReasoning: () => call('GET', '/api/hideReasoning'),
+    saveHideReasoning: enabled => call('PUT', '/api/hideReasoning', { hideReasoning: enabled }),
     getDebug: () => call('GET', '/api/debug'),
     saveDebug: enabled => call('PUT', '/api/debug', { debugMode: enabled }),
     // 按 id 取一条请求的原始报文（列表接口不返回报文，见后端 debug_api 的模块头）。

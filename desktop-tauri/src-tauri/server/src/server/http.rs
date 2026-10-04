@@ -405,6 +405,14 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/sanitize",
             get(api::sanitize::get_sanitize).put(api::sanitize::put_sanitize),
         )
+        // ── 不下发思考开关 ──
+        // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
+        // 它决定响应里的 reasoning_content 要不要下发给客户端（模型照常思考，
+        // 只是不发出来）。默认关，与改造前完全一致。
+        .route(
+            "/api/hideReasoning",
+            get(api::hide_reasoning::get_hide_reasoning).put(api::hide_reasoning::put_hide_reasoning),
+        )
         // ── 机器人校验开关 ──
         // 与 /api/sanitize 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定登录 / 注册是否要求 ALTCHA proof-of-work，敏感度同级。
