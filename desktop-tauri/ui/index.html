@@ -95,6 +95,7 @@
         <button class="nav-item" data-page="requests" data-icon="requests"><span class="ico"></span><span class="label">请求日志</span><span class="count" id="nav-count-requests" style="display:none">0</span></button>
         <button class="nav-item" data-page="logs" data-icon="logs"><span class="ico"></span><span class="label">日志</span><span class="count" id="nav-count-logs" style="display:none">0</span></button>
         <button class="nav-item" data-page="tasks" data-icon="tasks"><span class="ico"></span><span class="label">定时任务</span></button>
+        <button class="nav-item" data-page="welfare" data-icon="tasks"><span class="ico"></span><span class="label">福利</span></button>
         <button class="nav-item" data-page="settings" data-icon="settings"><span class="ico"></span><span class="label">设置</span><span class="count" id="nav-count-update" style="display:none">新</span></button>
       </nav>
 
@@ -252,6 +253,12 @@
              applyAutoRefresh, visibleColumns, clearParams, notifyCleared }。
              这一页的**页面骨架类名照旧**（.panel / .panel-head / .log-filters /
              .log-list / .panel-foot / .log-pager …），换掉的只是里面的控件。 -->
+        <!-- 整页由 React 岛渲染（ui-islands/src/islands/welfare-panel.tsx，随 islands/ui.js
+             一起加载）。岛直接挂在这个 section 上、不套宿主 div —— 与 tasks 页同一理由：
+             页面 CSS 用 .page 的直接子选择器（.panel 是它的直接子元素），中间插一层会破坏布局。
+             对外是 window.wbWelfarePanel.load()。 -->
+        <section class="page" data-page="welfare"></section>
+
         <section class="page" data-page="requests"></section>
 
         <!-- ─── 设置 ───

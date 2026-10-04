@@ -123,7 +123,7 @@ function applyZoom(percent) {
 // ─── 页面导航 ────────────────────────────────
 
 const PAGE_KEY = 'workbuddy-desktop-page';
-const PAGES = ['overview', 'accounts', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
+const PAGES = ['overview', 'accounts', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'welfare', 'requests', 'settings'];
 /** 页签中文名：顶栏面包屑用。overview 的用户可见名是「报表」、gateway 的是「模型管理」
  *  （内部标识保持不变：localStorage 记忆、showPage 与 CSS 的 [data-page] 选择器都依赖它） */
 const PAGE_LABELS = {
@@ -135,6 +135,7 @@ const PAGE_LABELS = {
   docs: '文档',
   logs: '日志',
   tasks: '定时任务',
+  welfare: '福利',
   requests: '请求日志',
   settings: '设置',
 };
@@ -176,6 +177,10 @@ function showPage(name, { persist = true } = {}) {
   // 定时任务页自持清单与编辑态，切进去时拉一次最新
   if (page === 'tasks') {
     window.wbTasksPanel?.load?.();
+  }
+  // 福利页同理：切进去时重挂（首帧已挂过则 load 内部直接返回）
+  if (page === 'welfare') {
+    window.wbWelfarePanel?.load?.();
   }
   // 切到设置页时拉一次启动设置与网关地址（面板内部自持状态，这里只做转发）
   if (page === 'settings') {
