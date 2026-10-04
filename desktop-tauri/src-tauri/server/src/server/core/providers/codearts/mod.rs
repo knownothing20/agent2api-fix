@@ -54,6 +54,29 @@ impl CodeArtsAdapter {
     }
 }
 
+/// 从一段（可能含多帧的）SSE 字节里嗅出 `usage` 并上报台账。
+///
+/// **只读不改**：无论命中与否，转发的字节一个都不动（与 `upstream::sse` 的
+/// 「usage 旁路提取」同一取舍 —— 统计少记一条可以接受，改动客户端看到的字节不行）。
+///
+/// 为什么本家要自己嗅：码道走的是**自己这条会话式转发**（字节直转），不经过
+/// `upstream::sse` / `upstream::aggregate` 那两条会 `report_usage` 的公共路径。
+/// 不补这一处，台账 token 永远是 0，报表页所有按 token 聚合的块全空
+/// （2026-10-04 实测：上游每帧都带 usage，网关却记 0）。
+fn sniff_usage(telemetry: &RequestTelemetry, bytes: &[u8]) {
+    for line in bytes.split(|byte| *byte == b'\n') {
+        // SSE 的 `data:` 后空格可选：CodeArts 发的是 `data:{...}`（无空格）
+        let Some(rest) = line.strip_prefix(b"data:") else { continue };
+        let payload = rest.strip_prefix(b" ").unwrap_or(rest);
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
+            continue;
+        };
+        if let Some(usage) = value.get("usage").filter(|item| !item.is_null()) {
+            telemetry.report_usage(usage);
+        }
+    }
+}
+
 impl ProviderAdapter for CodeArtsAdapter {
     fn kind(&self) -> ProviderKind {
         ProviderKind::CodeArts
@@ -311,30 +334,7 @@ impl ProviderAdapter for CodeArtsAdapter {
         })
     }
 
-    /// 从一段（可能含多帧的）SSE 字节里嗅出 `usage` 并上报台账。
-///
-/// **只读不改**：无论命中与否，转发的字节一个都不动（与 `upstream::sse` 的
-/// 「usage 旁路提取」同一取舍 —— 统计少记一条可以接受，改动客户端看到的字节不行）。
-///
-/// 为什么本家要自己嗅：码道走的是**自己这条会话式转发**（字节直转），不经过
-/// `upstream::sse` / `upstream::aggregate` 那两条会 `report_usage` 的公共路径。
-/// 不补这一处，台账 token 永远是 0，报表页所有按 token 聚合的块全空
-/// （2026-10-04 实测：上游每帧都带 usage，网关却记 0）。
-fn sniff_usage(telemetry: &RequestTelemetry, bytes: &[u8]) {
-    for line in bytes.split(|byte| *byte == b'\n') {
-        // SSE 的 `data:` 后空格可选：CodeArts 发的是 `data:{...}`（无空格）
-        let Some(rest) = line.strip_prefix(b"data:") else { continue };
-        let payload = rest.strip_prefix(b" ").unwrap_or(rest);
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
-            continue;
-        };
-        if let Some(usage) = value.get("usage").filter(|item| !item.is_null()) {
-            telemetry.report_usage(usage);
-        }
-    }
-}
-
-/// 非 2xx 的分类。
+    /// 非 2xx 的分类。
     ///
     /// **注意**：CodeArts 的业务失败常常不体现在状态码上（额度耗尽是 HTTP 200
     /// SSE 里的信封），那部分由 `stream_fault` 负责；这里只管真的是状态码的错。
