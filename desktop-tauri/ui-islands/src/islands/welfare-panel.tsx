@@ -157,7 +157,11 @@ function campaignBadge(item: Campaign): { text: string; tone: string } {
   if (item.confirmed) return { text: '已到账', tone: 'ok' }
   if (item.localClaimed) return { text: '已领取，等确认', tone: 'warn' }
   if (item.claimable) return { text: '可领取', tone: 'warn' }
-  return { text: `不可领（${item.status || '未知'}）`, tone: '' }
+  // 上游对「还没做完前置任务」的活动既不给 claimable、也不给 status
+  // （实测 6 条里有 5 条如此：下载 IDE 对话、邀请、学生认证…）——
+  // 这时说「不可领（未知）」既难读又像出错，改成中性的「暂不可领」。
+  if (!item.status) return { text: '暂不可领', tone: '' }
+  return { text: `不可领（${item.status}）`, tone: '' }
 }
 
 function campaignLabel(item: Campaign): string {
