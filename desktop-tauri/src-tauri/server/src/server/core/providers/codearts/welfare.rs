@@ -169,7 +169,7 @@ async fn welfare_request(
     for (name, value) in signed {
         request = request.header(name.as_str(), value.as_str());
     }
-    let response = request.send().await.map_err(|error| {
+    let response = egress::send_with_connect_retry(request).await.map_err(|error| {
         GatewayError::with_status(
             502,
             format!("CodeArts 活动请求失败：{}", egress::describe_error_detail(&error)),

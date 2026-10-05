@@ -372,6 +372,38 @@ async fn read_exit_ip(client: &reqwest::Client, proxy: Option<&ResolvedProxy>, t
     }
 }
 
+/// 发送请求，对「连接层」失败（DNS 解析失败 / TCP 建连失败）退避 800ms 重试一次。
+///
+/// 背景（2026-10-05）：宿主机 v2rayA 透明代理劫持容器 DNS（PREROUTING 的 UDP 53
+/// 被引到 v2rayA 自己），上游/网络抖动时容器出现长达数小时的间歇
+/// 「Temporary failure in name resolution」—— 余额查询、自动领福利整轮失败。
+/// 连接层失败 = 请求根本没有发出去，重发对 GET/POST 都安全（claim 的幂等键
+/// 本来就为重发设计）。只重试 `is_connect()` 且最多 1 次：持续故障不该被拖成
+/// 两倍延迟，治本靠宿主侧的 DNS 旁路与探测 cron（见当日会话记录）。
+pub async fn send_with_connect_retry(
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let retry = builder.try_clone();
+    match builder.send().await {
+        Ok(response) => Ok(response),
+        Err(first) if first.is_connect() => {
+            logging::log(
+                "[Egress]",
+                &format!(
+                    "上游连接失败（{}），800ms 后重试一次",
+                    describe_error_detail(&first)
+                ),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            match retry {
+                Some(again) => again.send().await,
+                None => Err(first),
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
 /// 测试某个出口是否可用。
 ///
 /// 判据是「能否连上 WorkBuddy 上游」，而**不是**能否访问第三方站点：
