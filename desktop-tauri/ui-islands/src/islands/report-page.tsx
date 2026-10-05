@@ -6,7 +6,7 @@ import {
   readRange, round1, formatTokens,
   overviewCells, rankRows, rankTotalText, donutView,
   heatmapView, heatLegendItems, heatThresholdsOf, cacheRateCells,
-  cacheTrendView, dailyTrendView, dailyUsageView, usageMetricText,
+  cacheTrendView, dailyTrendView, dailyUsageView, rangeWindowOf, usageMetricText,
   type CacheTrendView, type ChartText, type DailyTrendView, type HeatmapView,
   type RankRowView, type DonutView,
   type DailyUsageView, type StatsDay, type StatsGroup, type StatsHour, type StatsSummary,
@@ -740,7 +740,9 @@ function ReportPage() {
   // 每条都带 tokens 与 requests），所以切换只是换个字段取数，不用再请求一次。
   const [usageMetric, setUsageMetric] = React.useState<UsageMetric>('tokens')
   const usagePoints = usageDim === 'model' ? summary?.trendByModel : summary?.trendByAccount
-  const usageView = summary ? dailyUsageView(usagePoints, dailyWidth[1], usageMetric) : null
+  const usageView = summary
+    ? dailyUsageView(usagePoints, dailyWidth[1], usageMetric, rangeWindowOf(range))
+    : null
 
   return (
     <>

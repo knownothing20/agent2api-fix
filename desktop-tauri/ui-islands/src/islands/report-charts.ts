@@ -924,12 +924,38 @@ const USAGE_COLORS = [
  * ── 日期轴为什么要在序列之外单独铺 ──────────────────────────
  * 后端只吐出**有数据的**（天 × 维度）条目，整段没用的日子根本不会出现。
  * 直接按条目画会把「10-01 有、10-02 整天没用、10-03 有」压缩成相邻两点，
- * 曲线会把中间的空白吃掉。所以这里按首尾日期铺满，缺的补 0。
+ * 曲线会把中间的空白吃掉。所以这里逐日铺满，缺的补 0。
+ *
+ * ── 为什么铺满的基准是「所选窗口」而不是「数据首尾」（2026-10-05）────
+ * 基准此前取数据首尾：选「7 天」但用量记录只有 2 天时，轴就缩成 2 天，
+ * 用户原话「七天怎么只有 2 天」。轴应该覆盖**所选档位**（调用方用
+ * rangeWindowOf 算好窗口传进来）；与数据首尾取**并集**是防御 —— 手改
+ * 时钟等边界把条目甩到窗口外时，别把那些点从图上裁掉。all 档没有固定
+ * 窗口（窗口为 undefined），退回数据首尾。
  */
+/** 报表档位 → 日期窗口（终点一律是今天：today=当天；7/30=往前 N-1 天；
+ *  month=本月 1 号；all 无固定窗口 → undefined）。给 dailyUsageView 铺轴用：
+ *  轴要覆盖所选档位，而不是从第一条数据开始 —— 否则「7 天」在数据只有
+ *  2 天时会缩成 2 天（2026-10-05 用户实测报告）。 */
+export function rangeWindowOf(range: string): { first: string; last: string } | undefined {
+  const today = new Date()
+  const last = dateKeyOf(today)
+  if (range === 'today') return { first: last, last }
+  if (range === '7' || range === '30') {
+    const first = new Date(today.getTime() - (Number(range) - 1) * 86400000)
+    return { first: dateKeyOf(first), last }
+  }
+  if (range === 'month') {
+    return { first: dateKeyOf(new Date(today.getFullYear(), today.getMonth(), 1)), last }
+  }
+  return undefined
+}
+
 export function dailyUsageView(
   points: StatsUsagePoint[] | undefined,
   width: number,
   metric: UsageMetric = 'tokens',
+  window?: { first: string; last: string },
 ): DailyUsageView | null {
   const list = (Array.isArray(points) ? points : []).filter(item => item && item.date)
   if (!list.length) return null
@@ -939,11 +965,20 @@ export function dailyUsageView(
   const plotW = Math.max(40, width - pad.left - pad.right)
   const plotH = height - pad.top - pad.bottom
 
-  // 日期轴：首尾之间逐日铺满（见函数说明）
+  // 日期轴：窗口 ∪ 数据首尾，之间逐日铺满（见函数说明）
   const allDates = Array.from(new Set(list.map(item => String(item.date)))).sort()
   const dates: string[] = []
-  const first = parseDay(allDates[0])
-  const last = parseDay(allDates[allDates.length - 1])
+  const dataFirst = parseDay(allDates[0])
+  const dataLast = parseDay(allDates[allDates.length - 1])
+  const winFirst = window?.first ? parseDay(window.first) : undefined
+  const winLast = window?.last ? parseDay(window.last) : undefined
+  const union = (
+    a: Date | undefined,
+    b: Date | undefined,
+    pick: (x: number, y: number) => number,
+  ): Date | undefined => (a && b ? new Date(pick(a.getTime(), b.getTime())) : a || b)
+  const first = union(winFirst, dataFirst, Math.min)
+  const last = union(winLast, dataLast, Math.max)
   if (first && last) {
     const cursor = new Date(first.getTime())
     // 上限兜底：手改保留期把区间撑到十年也不会把图画爆
