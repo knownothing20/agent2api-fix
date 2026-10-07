@@ -518,6 +518,42 @@ export const CODEARTS_MAX_TOKENS_CAP_FIELD: NumberField = {
   hint: '只对码道账号生效。转发前客户端 max_tokens 超过此值就压到此值再发（实测码道平台硬顶 65536：65536 收、70000+ 一律被拒）。填 0 = 不钳制、原样透传。模型目录里的 maxOutputTokens（384000）是假的，别照它设。',
 }
 
+/**
+ * 自动领福利（码道）的三个节流旋钮（2026-10-07 用户要求可配）。
+ *
+ * 与任务页那个「间隔」（扫描周期）**不是一回事**：那个管「多久扫一轮账号列表」，
+ * 这三个管「一轮里怎么发请求」。任务描述里已分条说明，别混。
+ */
+export const WELFARE_ACCOUNT_GAP_FIELD: NumberField = {
+  key: 'welfareAccountGapMinutes',
+  id: 'settings-welfare-account-gap',
+  label: '账号之间的间隔',
+  unit: '分钟',
+  min: 0,
+  max: 1440,
+  hint: '自动领福利时，领完一个账号隔多久再领下一个。账号紧挨着发是同 IP 批量操作最显眼的特征，所以默认 10 分钟。填 0 = 不等待（改造前的行为）。',
+}
+
+export const WELFARE_MIN_ATTEMPT_GAP_FIELD: NumberField = {
+  key: 'welfareMinAttemptGapMinutes',
+  id: 'settings-welfare-min-attempt-gap',
+  label: '单账号写闸 · 间隔',
+  unit: '分钟',
+  min: 1,
+  max: 1440,
+  hint: '同一个账号两次写请求至少隔多久 —— 防「同一账号反复写上游」。默认 10 分钟。',
+}
+
+export const WELFARE_MAX_ATTEMPTS_FIELD: NumberField = {
+  key: 'welfareMaxAttemptsPerDay',
+  id: 'settings-welfare-max-attempts',
+  label: '单账号写闸 · 每日上限',
+  unit: '次',
+  min: 1,
+  max: 100,
+  hint: '同一个账号每天最多发几次写请求。默认 6 次。',
+}
+
 export const SCHEDULING_MODES: SchedulingModeOption[] = [
   {
     value: 'creditFirst',

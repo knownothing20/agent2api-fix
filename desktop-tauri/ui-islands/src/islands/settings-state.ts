@@ -38,6 +38,9 @@ import {
   QUEUE_FIELDS,
   RETENTION_FIELDS,
   CODEARTS_MAX_TOKENS_CAP_FIELD,
+  WELFARE_ACCOUNT_GAP_FIELD,
+  WELFARE_MIN_ATTEMPT_GAP_FIELD,
+  WELFARE_MAX_ATTEMPTS_FIELD,
   RETRY_CODE_MAX,
   RETRY_CODE_MIN,
   RETRY_FIELDS,
@@ -79,6 +82,7 @@ export type BusyScope =
   | 'hideReasoning'
   | 'forwardMode'
   | 'codeartsCap'
+  | 'welfareSettings'
   | 'sanitize'
   | 'prompt'
   | 'captcha'
@@ -196,6 +200,13 @@ export type SettingsSnapshot = {
   forwardMode: { status: 'loading' | 'ready' | 'unavailable'; mode: string }
   /** 码道 max_tokens 硬顶（只对码道账号生效；0 = 不钳制） */
   codeartsCap: { status: 'loading' | 'ready' | 'unavailable'; value: number }
+  /** 自动领福利的三个节流旋钮（账号之间 / 单账号写闸 ×2，2026-10-07） */
+  welfareSettings: {
+    status: 'loading' | 'ready' | 'unavailable'
+    accountGap: number
+    minAttemptGap: number
+    maxAttempts: number
+  }
   app: AppState
   unitsChinese: boolean
   retention: NumericState
@@ -243,6 +254,7 @@ const INITIAL: SettingsSnapshot = {
   hideReasoning: { status: 'loading', on: false },
   forwardMode: { status: 'loading', mode: 'follow-nonstream' },
   codeartsCap: { status: 'loading', value: 65536 },
+  welfareSettings: { status: 'loading', accountGap: 10, minAttemptGap: 10, maxAttempts: 6 },
   sanitize: { status: 'loading', on: false },
   prompt: {
     status: 'loading',
@@ -989,6 +1001,79 @@ export async function saveCodeartsCap(raw: string): Promise<void> {
   }
 }
 
+export function renderWelfareSettings(data?: unknown): void {
+  if (data === undefined) return
+  if (!data || typeof data !== 'object') {
+    publish({ welfareSettings: { status: 'unavailable', accountGap: 10, minAttemptGap: 10, maxAttempts: 6 } })
+    return
+  }
+  const raw = data as {
+    welfareAccountGapMinutes?: unknown
+    welfareMinAttemptGapMinutes?: unknown
+    welfareMaxAttemptsPerDay?: unknown
+  }
+  const pick = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback
+  publish({
+    welfareSettings: {
+      status: 'ready',
+      accountGap: pick(raw.welfareAccountGapMinutes, 10),
+      minAttemptGap: pick(raw.welfareMinAttemptGapMinutes, 10),
+      maxAttempts: pick(raw.welfareMaxAttemptsPerDay, 6),
+    },
+  })
+}
+
+async function loadWelfareSettings(): Promise<void> {
+  try {
+    renderWelfareSettings(await bridgeOrApi('getWelfareSettings', '/api/welfareSettings'))
+  } catch (error) {
+    console.warn('读取福利节流设置失败:', errorMessage(error))
+    renderWelfareSettings(null)
+  }
+}
+
+/** 福利节流三个旋钮：改其中一个，三个值一起 PUT（后端要求给全，不做部分更新）。 */
+export async function saveWelfareSettings(
+  kind: 'accountGap' | 'minAttemptGap' | 'maxAttempts',
+  raw: string,
+): Promise<void> {
+  const field =
+    kind === 'accountGap'
+      ? WELFARE_ACCOUNT_GAP_FIELD
+      : kind === 'minAttemptGap'
+        ? WELFARE_MIN_ATTEMPT_GAP_FIELD
+        : WELFARE_MAX_ATTEMPTS_FIELD
+  const parsed = parseInteger(raw, field.min, field.max, field.label)
+  if (!parsed.ok) {
+    toast(parsed.message, 'err')
+    return
+  }
+  if (busyScope) { repaint(); return }
+  const current = snapshot.welfareSettings
+  const next = {
+    accountGap: kind === 'accountGap' ? parsed.value : current.accountGap,
+    minAttemptGap: kind === 'minAttemptGap' ? parsed.value : current.minAttemptGap,
+    maxAttempts: kind === 'maxAttempts' ? parsed.value : current.maxAttempts,
+  }
+  beginBusy('welfareSettings')
+  publish({ welfareSettings: { ...current, ...next } })
+  try {
+    const saved = await bridgeOrApi('saveWelfareSettings', '/api/welfareSettings', {
+      welfareAccountGapMinutes: next.accountGap,
+      welfareMinAttemptGapMinutes: next.minAttemptGap,
+      welfareMaxAttemptsPerDay: next.maxAttempts,
+    })
+    renderWelfareSettings(saved)
+    toast(`✅ 已保存：账号之间 ${next.accountGap} 分钟、单账号写闸 ${next.minAttemptGap} 分钟 / 每天 ${next.maxAttempts} 次`)
+  } catch (error) {
+    toast(`保存失败: ${errorMessage(error)}`, 'err')
+    await loadWelfareSettings()
+  } finally {
+    endBusy()
+  }
+}
+
 async function loadHideReasoning(): Promise<void> {
   try {
     renderHideReasoning(await bridgeOrApi('getHideReasoning', '/api/hideReasoning'))
@@ -1678,6 +1763,7 @@ export async function load(): Promise<void> {
     loadHideReasoning(),
     loadForwardMode(),
     loadCodeartsCap(),
+    loadWelfareSettings(),
     loadSanitize(),
     loadPrompt(),
     loadStorage(),

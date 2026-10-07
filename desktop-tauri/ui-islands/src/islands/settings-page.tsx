@@ -29,6 +29,9 @@ import {
   PROMPT_MODES,
   SCHEDULING_MODES,
   CODEARTS_MAX_TOKENS_CAP_FIELD,
+  WELFARE_ACCOUNT_GAP_FIELD,
+  WELFARE_MIN_ATTEMPT_GAP_FIELD,
+  WELFARE_MAX_ATTEMPTS_FIELD,
   SCHEDULING_WAIT_FIELD,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
@@ -81,6 +84,7 @@ import {
   restoreCategory,
   saveCaptcha,
   saveCodeartsCap,
+  saveWelfareSettings,
   saveDebug,
   saveForwardMode,
   saveHideReasoning,
@@ -1147,6 +1151,26 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               value={snap.codeartsCap.value}
               disabled={snap.codeartsCap.status !== 'ready' || snap.busy === 'codeartsCap'}
               onCommit={raw => saveCodeartsCap(raw)}
+            />
+            {/* 福利节流三个旋钮（2026-10-07）：与任务页那个「间隔」不是一回事 ——
+                那个是**扫描周期**（多久扫一轮），这三个是**一轮里怎么发请求**。 */}
+            <NumberRow
+              field={WELFARE_ACCOUNT_GAP_FIELD}
+              value={snap.welfareSettings.accountGap}
+              disabled={snap.welfareSettings.status !== 'ready' || snap.busy === 'welfareSettings'}
+              onCommit={raw => saveWelfareSettings('accountGap', raw)}
+            />
+            <NumberRow
+              field={WELFARE_MIN_ATTEMPT_GAP_FIELD}
+              value={snap.welfareSettings.minAttemptGap}
+              disabled={snap.welfareSettings.status !== 'ready' || snap.busy === 'welfareSettings'}
+              onCommit={raw => saveWelfareSettings('minAttemptGap', raw)}
+            />
+            <NumberRow
+              field={WELFARE_MAX_ATTEMPTS_FIELD}
+              value={snap.welfareSettings.maxAttempts}
+              disabled={snap.welfareSettings.status !== 'ready' || snap.busy === 'welfareSettings'}
+              onCommit={raw => saveWelfareSettings('maxAttempts', raw)}
             />
           </div>
           <div className='hint retention-note'>{NOTES.codeartsCap}</div>
