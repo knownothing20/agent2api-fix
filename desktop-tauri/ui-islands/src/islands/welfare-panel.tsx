@@ -75,7 +75,35 @@ type IntervalTask = {
   canRun?: boolean
 }
 
-const WELFARE_TASK_ID = 'codeartsWelfare'
+const WELFARE_TASK_ID = 'codeartsWelfare'
+
+/** 福利节流三个旋钮（`GET/PUT /api/welfareSettings`，2026-10-07）。
+ *
+ * 与上面那个「间隔」不是一回事：那个是**任务扫描周期**（多久看一次资格），
+ * 这三个是**一轮里怎么发写请求** —— ② 账号之间隔多久 ③ 单账号写闸（间隔 + 每日上限）。 */
+type WelfareLimits = {
+  welfareAccountGapMinutes: number
+  welfareMinAttemptGapMinutes: number
+  welfareMaxAttemptsPerDay: number
+}
+type WelfareLimitKey = keyof WelfareLimits
+const WELFARE_LIMITS: Record<
+  WelfareLimitKey,
+  { label: string; unit: string; min: number; max: number }
+> = {
+  welfareAccountGapMinutes: { label: '账号之间的间隔', unit: '分钟', min: 0, max: 1440 },
+  welfareMinAttemptGapMinutes: { label: '单账号写闸·间隔', unit: '分钟', min: 1, max: 1440 },
+  welfareMaxAttemptsPerDay: { label: '单账号写闸·每日上限', unit: '次', min: 1, max: 100 },
+}
+const WELFARE_LIMIT_KEYS = Object.keys(WELFARE_LIMITS) as WelfareLimitKey[]
+
+function limitsToDrafts(limits: WelfareLimits | null): Record<WelfareLimitKey, string> {
+  return {
+    welfareAccountGapMinutes: String(limits?.welfareAccountGapMinutes ?? 10),
+    welfareMinAttemptGapMinutes: String(limits?.welfareMinAttemptGapMinutes ?? 10),
+    welfareMaxAttemptsPerDay: String(limits?.welfareMaxAttemptsPerDay ?? 6),
+  }
+}
 
 /**
  * 福利页的提供商 tab。
@@ -182,6 +210,12 @@ function WelfarePage(): React.ReactElement {
   const [claiming, setClaiming] = React.useState('')
   const [taskBusy, setTaskBusy] = React.useState(false)
   const [tab, setTab] = React.useState<WelfareTabId>('codearts')
+  /** 福利节流三个旋钮（读失败时 null → 输入框禁用） */
+  const [limits, setLimits] = React.useState<WelfareLimits | null>(null)
+  const [limitDrafts, setLimitDrafts] = React.useState<Record<WelfareLimitKey, string>>(
+    limitsToDrafts(null),
+  )
+  const [limitsBusy, setLimitsBusy] = React.useState(false)
 
   /** 只读探测：一个账号一次 preview，互不影响（单账号失败只记在自己的行上） */
   const probeAll = React.useCallback(async (list: Account[]) => {
@@ -215,6 +249,9 @@ function WelfarePage(): React.ReactElement {
       const found = (tasks?.tasks || []).find(item => item.id === WELFARE_TASK_ID) || null
       setTask(found)
       if (found) setIntervalDraft(String(found.interval))
+      const limitsSnapshot = await manage<WelfareLimits>('GET', '/api/welfareSettings')
+      setLimits(limitsSnapshot)
+      setLimitDrafts(limitsToDrafts(limitsSnapshot))
       await probeAll(list)
     } catch (error) {
       toast(`加载福利页失败：${describeError(error)}`, 'err')
@@ -241,6 +278,35 @@ function WelfarePage(): React.ReactElement {
       toast(`保存失败：${describeError(error)}`, 'err')
     } finally {
       setTaskBusy(false)
+    }
+  }
+
+  /** 保存一个节流旋钮：三个值一起 PUT（后端要求给全，不做部分更新）。 */
+  async function saveLimit(key: WelfareLimitKey, raw: string): Promise<void> {
+    if (limitsBusy || !limits) return
+    const spec = WELFARE_LIMITS[key]
+    const value = Number(raw)
+    if (!Number.isInteger(value) || value < spec.min || value > spec.max) {
+      toast(`${spec.label}必须是 ${spec.min} 到 ${spec.max} 的整数`, 'err')
+      return
+    }
+    const merged = limitsToDrafts(limits)
+    const next: WelfareLimits = {
+      welfareAccountGapMinutes: Number(key === 'welfareAccountGapMinutes' ? value : merged.welfareAccountGapMinutes),
+      welfareMinAttemptGapMinutes: Number(key === 'welfareMinAttemptGapMinutes' ? value : merged.welfareMinAttemptGapMinutes),
+      welfareMaxAttemptsPerDay: Number(key === 'welfareMaxAttemptsPerDay' ? value : merged.welfareMaxAttemptsPerDay),
+    }
+    setLimitsBusy(true)
+    try {
+      const saved = await manage<WelfareLimits>('PUT', '/api/welfareSettings', next)
+      setLimits(saved)
+      setLimitDrafts(limitsToDrafts(saved))
+      toast(`✅ 已保存：账号之间 ${next.welfareAccountGapMinutes} 分钟、单账号写闸 ${next.welfareMinAttemptGapMinutes} 分钟 / 每天 ${next.welfareMaxAttemptsPerDay} 次`)
+    } catch (error) {
+      toast(`保存失败：${describeError(error)}`, 'err')
+      await load()
+    } finally {
+      setLimitsBusy(false)
     }
   }
 
@@ -361,6 +427,42 @@ function WelfarePage(): React.ReactElement {
         <p className='detail'>
           间隔只决定「多久看一次资格」；真正发写请求的次数由本地台账兜住
           （每天最多 6 次、间隔至少 10 分钟），所以调小不会把上游打多。
+        </p>
+        {/* 节流三旋钮（2026-10-07）：与上面那个「间隔」不是一回事 —— 那个管
+            「多久看一次」，这三个管「一轮里怎么发写请求」。 */}
+        <div className='mt-3 flex flex-wrap items-end gap-3'>
+          {WELFARE_LIMIT_KEYS.map(key => {
+            const spec = WELFARE_LIMITS[key]
+            return (
+              <label key={key} className='flex items-center gap-2 text-[13px]'>
+                {spec.label}
+                <Input
+                  type='number'
+                  min={spec.min}
+                  max={spec.max}
+                  className='max-w-[90px]'
+                  disabled={limits === null}
+                  value={limitDrafts[key]}
+                  onChange={event =>
+                    setLimitDrafts(prev => ({ ...prev, [key]: event.target.value }))
+                  }
+                />
+                {spec.unit}
+                <Button
+                  variant='outline'
+                  disabled={limitsBusy || limits === null}
+                  onClick={() => void saveLimit(key, limitDrafts[key])}
+                >
+                  保存
+                </Button>
+              </label>
+            )
+          })}
+        </div>
+        <p className='detail mt-1'>
+          ② <strong>账号之间的间隔</strong>：领完一个账号隔多久再领下一个 —— 防「同 IP 一口气把多个账号的写请求打完」；
+          ③ <strong>单账号写闸</strong>：同一个账号两次写至少隔多久、一天最多写几次。
+          两者都只约束<strong>自动</strong>领取，行内那颗「领取」按钮随时可手动领。
         </p>
       </section>
 
