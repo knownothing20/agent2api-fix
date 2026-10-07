@@ -61,7 +61,28 @@ impl CallbackListener {
     /// 只绑回环：回调里带着一次性授权码，不给局域网开口子（与
     /// `autoclaw::callback_server` 同一口径）。
     pub async fn bind() -> Result<Self, String> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        // ── 容器 / 远程部署的出口（2026-10-07）──────────────────────
+        // Trae 要求回调 URL 逐字是 `http://127.0.0.1:<port>/authorize`，而
+        // 「网关在远端容器、浏览器在用户本机」这种形态下两边都够不着：
+        // 浏览器的 127.0.0.1 是它自己那台机器；容器的 loopback 连宿主都进不来
+        // （namespace 隔离），端口还每次随机。两个环境变量把这个缺口补上：
+        //   · AGENT2API_TRAE_CALLBACK_PORT  固定端口（默认 0 = 随机）——
+        //     固定后才能在 compose 里写端口映射、才能预先挂一条 `ssh -L`；
+        //   · AGENT2API_TRAE_CALLBACK_BIND  绑定地址（默认 loopback）——
+        //     必须设 `0.0.0.0` 才能被端口映射接出去（映射只到容器网卡）。
+        // 配合 `ssh -L <port>:127.0.0.1:<port> <宿主>`：浏览器地址栏仍是
+        // `127.0.0.1:<port>`（上游校验通过），请求经 ssh → 宿主 → 容器 →
+        // 本监听器。**两个都不设时行为与改造前完全一致**（loopback + 随机），
+        // 桌面形态零影响；容器里映射的端口只绑宿主 loopback，不暴露局域网。
+        let host = match std::env::var("AGENT2API_TRAE_CALLBACK_BIND").as_deref() {
+            Ok("0.0.0.0") => Ipv4Addr::UNSPECIFIED,
+            _ => Ipv4Addr::LOCALHOST,
+        };
+        let wanted: u16 = std::env::var("AGENT2API_TRAE_CALLBACK_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        let listener = TcpListener::bind((host, wanted))
             .await
             .map_err(|error| format!("绑定本机回调端口失败：{error}"))?;
         let port = listener
@@ -74,10 +95,15 @@ impl CallbackListener {
         spawn_server(listener, app.clone(), receiver.clone());
         // 浏览器把 localhost 解析成 ::1 时也要有人接（多数环境先试 IPv4，
         // 但 macOS / 双栈 Docker 上出现过只连 ::1 的情况）。拿不到不影响。
-        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+        // 绑 0.0.0.0（容器形态）时对应绑 `::`，否则 v6 侧仍只接回环。
+        let v6_host = if host.is_unspecified() { Ipv6Addr::UNSPECIFIED } else { Ipv6Addr::LOCALHOST };
+        if let Ok(v6) = TcpListener::bind((v6_host, port)).await {
             spawn_server(v6, app, receiver);
         }
-        logging::log("[Login]", &format!("Trae OAuth 回调已监听 127.0.0.1:{port}{CALLBACK_PATH}"));
+        logging::log(
+            "[Login]",
+            &format!("Trae OAuth 回调已监听 {host}:{port}{CALLBACK_PATH}"),
+        );
         Ok(Self { port, shutdown, inbox: tokio::sync::Mutex::new(inbox) })
     }
 
