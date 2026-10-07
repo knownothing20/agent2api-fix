@@ -375,18 +375,17 @@ impl ProviderAdapter for CodeArtsAdapter {
             //     不抬的话上游把额度全花在 reasoning 上，客户端收到一次「成功的空回答」
             //     （实测 glm 5/5 全空、deepseek 4/5 空）。
             // 思考关掉时不需要预留，所以用 else if。
-            // 档位是上游自己列的（low / high / max）——试过 disabled 被明确拒绝
-            // （InferHub.malformed_json.400：该模型始终思考，不支持关闭思考）。
-            // 注意：`config::current()` 返回的是**临时快照**，借它的 `&str` 会在
-            // 语句结束时就失效（E0716）—— 先 to_string 拿到自己的值再判空。
-            let thinking_level = crate::server::config::current()
-                .codearts_thinking_level()
-                .to_string();
-            if !thinking_level.is_empty() {
-                out_body["thinking"] = serde_json::json!({ "type": thinking_level });
-            }
-            // 额度预留照旧：档位调低后思考变少、正文更容易出来，但档位为空时
-            // 它就是唯一的保障 —— 两件事不冲突，都做。
+            // ⚠️ 思考档位**暂不接线**（2026-10-07 实测两次被拒）：
+            //   · `thinking:{"type":"disabled"}` → 400「该模型始终思考，不支持关闭思考；
+            //      请使用 low、high 或 max」；
+            //   · `thinking:{"type":"low"}`      → 400「001001005 参数无效」。
+            // 上游 `zcode/reasoning.rs` 的注释把真相写全了：GLM-5.3 是**始终思考**的
+            // 模型，三档是「思考多少」而不是「关不关」，且官方客户端的做法是
+            // **`max_tokens += budget`**（预算加在回答额度之外）—— 那正是下面
+            // `reserve_for_thinking` 干的事。所以这条链上正确的解法只有一个：
+            // **抬额度**，档位注入的字段格式未确认、且不解决「思考量大」本身。
+            // 配置与 API 保留（`/api/codeartsThinking`），但**不做注入** ——
+            // 免得设了档位反而把请求打成 502。
             if let Some((from, to)) =
                 chat::reserve_for_thinking(&mut out_body, model.max_output_tokens)
             {

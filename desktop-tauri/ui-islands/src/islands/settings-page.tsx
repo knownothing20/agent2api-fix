@@ -1150,46 +1150,16 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               onCommit={raw => saveCodeartsCap(raw)}
             />
           </div>
-          {/* 思考档位（2026-10-07）：glm 这类模型的思考长度无底洞 —— 实测一次烧
-              35155 思考 token、耗时 7.7 分钟才出 8927 字正文。先试过「关掉思考」，
-              被上游明确拒绝（该模型始终思考，不支持关闭思考；请使用 low、high 或
-              max），所以这里做成**档位**：low 是最省的那档。 */}
-          <div className='retention-list'>
-            <div className='retention-row'>
-              <label htmlFor='settings-codearts-thinking'>思考档位</label>
-              <span className='prompt-input'>
-                <Select
-                  value={snap.codeartsThinking.level || 'default'}
-                  onValueChange={next =>
-                    void saveCodeartsThinking(!next || next === 'default' ? '' : next)
-                  }
-                >
-                  <SelectTrigger
-                    id='settings-codearts-thinking'
-                    className='w-[180px]'
-                    disabled={snap.codeartsThinking.status !== 'ready' || snap.busy === 'codeartsThinking'}
-                    aria-label='码道思考档位'
-                  >
-                    <SelectValue>
-                      {CODEARTS_THINKING_LABELS[snap.codeartsThinking.level || 'default'] ??
-                        CODEARTS_THINKING_LABELS.default}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(CODEARTS_THINKING_LABELS).map(([value, label]) => (
-                      <SelectItem key={value} value={value}>{label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </span>
-            </div>
-          </div>
-          <div className='settings-state'>
-            {snap.codeartsThinking.status === 'unavailable'
-              ? '未能读取思考档位，请稍后重试'
-              : snap.codeartsThinking.level
-                ? `已注入 thinking:{"type":"${snap.codeartsThinking.level}"} —— 档位越低思考越少、越快越省；调档会改变模型行为，请确认这是你要的。`
-                : '不注入（默认）：由上游按默认档跑；客户端额度撑不下时网关会自动抬到 +32768。glm 这类模型思考可达 3 万 token、单次数分钟 —— 想快就选 low。'}
+          {/* 思考档位（2026-10-07）：实测两次被上游拒（disabled 与 low 都被 400），
+              上游注释说明 GLM-5.3「始终思考、关不掉」，官方客户端的做法是
+              `max_tokens += budget`（= 网关已做的额度预留）。所以这里**不再提供
+              档位下拉** —— 免得设了反而把请求打成 502。想快请换不思考的模型。 */}
+          <div className='hint'>
+            思考档位暂不提供：实测上游对 disabled 与 low 两种写法都回 400
+            （「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」→ 但按它
+            说的 low 也报参数无效）。glm-5.3 是**始终思考**的模型，思考长度可达
+            3 万 token，网关已按官方客户端的做法把额度抬到 +32768 保证正文能出来；
+            想要快，请改用不思考的模型（如 kimi-k2.6-vl）。
           </div>
           <div className='hint retention-note'>{NOTES.codeartsCap}</div>
         </div>
