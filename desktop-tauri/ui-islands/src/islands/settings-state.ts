@@ -201,8 +201,8 @@ export type SettingsSnapshot = {
   forwardMode: { status: 'loading' | 'ready' | 'unavailable'; mode: string }
   /** 码道 max_tokens 硬顶（只对码道账号生效；0 = 不钳制） */
   codeartsCap: { status: 'loading' | 'ready' | 'unavailable'; value: number }
-  /** 码道「禁用思考」开关（注入 thinking:{type:"disabled"}，默认关） */
-  codeartsThinking: { status: 'loading' | 'ready' | 'unavailable'; on: boolean }
+  /** 码道思考档位（注入 thinking:{type:…}；空串 = 不注入） */
+  codeartsThinking: { status: 'loading' | 'ready' | 'unavailable'; level: string }
   /** 自动领福利的三个节流旋钮（账号之间 / 单账号写闸 ×2，2026-10-07） */
   welfareSettings: {
     status: 'loading' | 'ready' | 'unavailable'
@@ -258,7 +258,7 @@ const INITIAL: SettingsSnapshot = {
   forwardMode: { status: 'loading', mode: 'follow-nonstream' },
   codeartsCap: { status: 'loading', value: 65536 },
   welfareSettings: { status: 'loading', accountGap: 10, minAttemptGap: 10, maxAttempts: 6 },
-  codeartsThinking: { status: 'loading', on: false },
+  codeartsThinking: { status: 'loading', level: '' },
   sanitize: { status: 'loading', on: false },
   prompt: {
     status: 'loading',
@@ -1008,11 +1008,11 @@ export async function saveCodeartsCap(raw: string): Promise<void> {
 export function renderCodeartsThinking(data?: unknown): void {
   if (data === undefined) return
   if (!data || typeof data !== 'object') {
-    publish({ codeartsThinking: { status: 'unavailable', on: false } })
+    publish({ codeartsThinking: { status: 'unavailable', level: '' } })
     return
   }
-  const raw = (data as { codeartsDisableThinking?: unknown }).codeartsDisableThinking
-  publish({ codeartsThinking: { status: 'ready', on: raw === true } })
+  const raw = (data as { codeartsThinkingLevel?: unknown }).codeartsThinkingLevel
+  publish({ codeartsThinking: { status: 'ready', level: typeof raw === 'string' ? raw : '' } })
 }
 
 async function loadCodeartsThinking(): Promise<void> {
@@ -1024,17 +1024,17 @@ async function loadCodeartsThinking(): Promise<void> {
   }
 }
 
-/** 码道「禁用思考」：开了就注入 thinking:{type:"disabled"}（思考归 0、正文直出）。 */
-export async function saveCodeartsThinking(enabled: boolean): Promise<void> {
+/** 码道思考档位：注入 thinking:{type:level}（空串 = 不注入，由上游按默认档跑）。 */
+export async function saveCodeartsThinking(level: string): Promise<void> {
   if (busyScope) { repaint(); return }
   beginBusy('codeartsThinking')
-  publish({ codeartsThinking: { ...snapshot.codeartsThinking, on: enabled } })
+  publish({ codeartsThinking: { ...snapshot.codeartsThinking, level } })
   try {
     const saved = await bridgeOrApi('saveCodeartsThinking', '/api/codeartsThinking', {
-      codeartsDisableThinking: enabled,
+      codeartsThinkingLevel: level,
     })
     renderCodeartsThinking(saved)
-    toast(enabled ? '✅ 已开启：码道请求将禁用思考（正文直出、不再烧思考 token）' : '✅ 已关闭：恢复为给思考预留额度')
+    toast(level ? `✅ 已保存：码道思考档位 ${level}` : '✅ 已保存：不注入思考档位（上游默认）')
   } catch (error) {
     toast(`保存失败: ${errorMessage(error)}`, 'err')
     await loadCodeartsThinking()

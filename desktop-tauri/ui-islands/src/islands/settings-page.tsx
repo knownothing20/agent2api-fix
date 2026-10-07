@@ -1150,24 +1150,46 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               onCommit={raw => saveCodeartsCap(raw)}
             />
           </div>
-          {/* 禁用思考（2026-10-07）：glm 这类模型的思考长度无底洞 —— 实测一次烧
-              35155 思考 token、耗时 7.7 分钟才出 8927 字正文；开了这个开关就对上游
-              注入 thinking:{type:"disabled"}（上游认这一格，reasoning 归 0）。 */}
-          <div className='settings-switches'>
-            <SwitchRow
-              id='settings-codearts-thinking'
-              label='禁用思考（思考归 0、正文直出）'
-              checked={snap.codeartsThinking.on}
-              disabled={snap.codeartsThinking.status !== 'ready' || snap.busy === 'codeartsThinking'}
-              onCheckedChange={next => void saveCodeartsThinking(next)}
-            />
+          {/* 思考档位（2026-10-07）：glm 这类模型的思考长度无底洞 —— 实测一次烧
+              35155 思考 token、耗时 7.7 分钟才出 8927 字正文。先试过「关掉思考」，
+              被上游明确拒绝（该模型始终思考，不支持关闭思考；请使用 low、high 或
+              max），所以这里做成**档位**：low 是最省的那档。 */}
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label htmlFor='settings-codearts-thinking'>思考档位</label>
+              <span className='prompt-input'>
+                <Select
+                  value={snap.codeartsThinking.level || 'default'}
+                  onValueChange={next =>
+                    void saveCodeartsThinking(!next || next === 'default' ? '' : next)
+                  }
+                >
+                  <SelectTrigger
+                    id='settings-codearts-thinking'
+                    className='w-[180px]'
+                    disabled={snap.codeartsThinking.status !== 'ready' || snap.busy === 'codeartsThinking'}
+                    aria-label='码道思考档位'
+                  >
+                    <SelectValue>
+                      {CODEARTS_THINKING_LABELS[snap.codeartsThinking.level || 'default'] ??
+                        CODEARTS_THINKING_LABELS.default}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(CODEARTS_THINKING_LABELS).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+            </div>
           </div>
           <div className='settings-state'>
             {snap.codeartsThinking.status === 'unavailable'
-              ? '未能读取「禁用思考」设置，请稍后重试'
-              : snap.codeartsThinking.on
-                ? '已开启：请求注入 thinking:{type:"disabled"}，模型不再思考（正文直出、快且省）。关掉思考会改变模型行为，请确认这是你要的。'
-                : '未开启：照常思考 —— 客户端额度撑不下时自动抬到 +32768（默认）。glm 这类模型思考可达 3 万 token、单次数分钟，想快就开上面这个开关。'}
+              ? '未能读取思考档位，请稍后重试'
+              : snap.codeartsThinking.level
+                ? `已注入 thinking:{"type":"${snap.codeartsThinking.level}"} —— 档位越低思考越少、越快越省；调档会改变模型行为，请确认这是你要的。`
+                : '不注入（默认）：由上游按默认档跑；客户端额度撑不下时网关会自动抬到 +32768。glm 这类模型思考可达 3 万 token、单次数分钟 —— 想快就选 low。'}
           </div>
           <div className='hint retention-note'>{NOTES.codeartsCap}</div>
         </div>
@@ -1586,6 +1608,14 @@ function RetentionConfirmDialog({ confirm }: { confirm: { head: string } | null 
 }
 
 /* ─── 页面 ─────────────────────────────────── */
+
+/** 码道思考档位的展示文案（取值与上游 400 文案里列的逐字一致）。 */
+const CODEARTS_THINKING_LABELS: Record<string, string> = {
+  default: '不注入（上游默认）',
+  low: 'low（思考最少，最快）',
+  high: 'high（思考较多）',
+  max: 'max（思考最多）',
+}
 
 function SettingsPage() {
   const snap = useSettings()

@@ -375,9 +375,15 @@ impl ProviderAdapter for CodeArtsAdapter {
             //     不抬的话上游把额度全花在 reasoning 上，客户端收到一次「成功的空回答」
             //     （实测 glm 5/5 全空、deepseek 4/5 空）。
             // 思考关掉时不需要预留，所以用 else if。
-            if crate::server::config::current().codearts_disable_thinking() {
-                out_body["thinking"] = serde_json::json!({ "type": "disabled" });
-            } else if let Some((from, to)) =
+            // 档位是上游自己列的（low / high / max）——试过 disabled 被明确拒绝
+            // （InferHub.malformed_json.400：该模型始终思考，不支持关闭思考）。
+            let thinking_level = crate::server::config::current().codearts_thinking_level();
+            if !thinking_level.is_empty() {
+                out_body["thinking"] = serde_json::json!({ "type": thinking_level });
+            }
+            // 额度预留照旧：档位调低后思考变少、正文更容易出来，但档位为空时
+            // 它就是唯一的保障 —— 两件事不冲突，都做。
+            if let Some((from, to)) =
                 chat::reserve_for_thinking(&mut out_body, model.max_output_tokens)
             {
                 crate::server::logging::verbose(

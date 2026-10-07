@@ -142,8 +142,8 @@ pub struct RuntimeConfig {
     /// 码道的 max_tokens 硬顶（0 = 不钳制，见 `KEY_CODEARTS_MAX_TOKENS_CAP`）。
     /// 码道特有：钳制动作在码道适配器里，别家不读它。
     codearts_max_tokens_cap: u64,
-    /// 码道：是否注入 `thinking:{type:"disabled"}`（默认关，见 `KEY_CODEARTS_DISABLE_THINKING`）。
-    codearts_disable_thinking: bool,
+    /// 码道：思考档位（空串 = 不注入，见 `KEY_CODEARTS_THINKING_LEVEL`）。
+    codearts_thinking_level: String,
     /// 自动领福利（码道）：账号之间的间隔（分钟；0 = 不等待）。
     welfare_account_gap_minutes: u64,
     /// 自动领福利（码道）：同一账号两次写尝试的最小间隔（分钟）。
@@ -229,9 +229,9 @@ impl RuntimeConfig {
         }
     }
 
-    /// 码道是否禁用思考（转发层逐请求读快照，见 `KEY_CODEARTS_DISABLE_THINKING`）。
-    pub fn codearts_disable_thinking(&self) -> bool {
-        self.codearts_disable_thinking
+    /// 码道思考档位（空串 = 不注入；转发层逐请求读快照）。
+    pub fn codearts_thinking_level(&self) -> &str {
+        &self.codearts_thinking_level
     }
 
     /// 自动领福利：账号之间的间隔（`0` = 不等待）。见 `KEY_WELFARE_ACCOUNT_GAP_MINUTES`。
@@ -502,11 +502,13 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .filter(|value| (CODEARTS_MAX_TOKENS_CAP_MIN..=CODEARTS_MAX_TOKENS_CAP_MAX)
                 .contains(value))
             .unwrap_or(CODEARTS_MAX_TOKENS_CAP_DEFAULT),
-        // 只有字面 `true` 算开启（默认关：关思考会改变模型行为，要用户主动选）
-        codearts_disable_thinking: raw
-            .get(KEY_CODEARTS_DISABLE_THINKING)
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        // 只认三个合法档位，其余（含缺失、拼错、旧值）一律回落空串 = 不注入
+        codearts_thinking_level: raw
+            .get(KEY_CODEARTS_THINKING_LEVEL)
+            .and_then(Value::as_str)
+            .filter(|value| CODEARTS_THINKING_LEVELS.contains(value))
+            .unwrap_or_default()
+            .to_string(),
         // 福利三个旋钮：越界一律回落默认（与 forward_mode / max_tokens 同一取向）
         welfare_account_gap_minutes: raw
             .get(KEY_WELFARE_ACCOUNT_GAP_MINUTES)
@@ -1344,12 +1346,13 @@ pub fn set_forward_mode(mode: &str) -> bool {
 }
 
 /// 写入「不下发思考」开关（与 `set_debug_mode` 同一模式：内存快照 + raw 底稿一起改）。
-pub fn set_codearts_disable_thinking(enabled: bool) -> bool {
+pub fn set_codearts_thinking_level(level: &str) -> bool {
     update(|config| {
-        config
-            .raw
-            .insert(KEY_CODEARTS_DISABLE_THINKING.to_string(), Value::Bool(enabled));
-        config.codearts_disable_thinking = enabled;
+        config.raw.insert(
+            KEY_CODEARTS_THINKING_LEVEL.to_string(),
+            Value::String(level.to_string()),
+        );
+        config.codearts_thinking_level = level.to_string();
     })
 }
 
