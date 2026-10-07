@@ -49,6 +49,14 @@ pub const LEDGER_VERSION: i64 = 2;
 pub const MAX_ATTEMPTS_PER_DAY: i64 = 6;
 /// 两次写尝试的最小间隔。
 pub const MIN_ATTEMPT_GAP: Duration = Duration::from_secs(10 * 60);
+/// 自动领福利：**账号之间**的间隔（2026-10-07 用户要求 10 分钟）。
+///
+/// 与 `MIN_ATTEMPT_GAP` 不是一回事，别合并：那个防的是「**同一个账号**反复写
+/// 上游」（每天 6 次上限 + 至少隔 10 分钟）；这个防的是「同 IP 一口气把 N 个
+/// 账号的写请求打完」—— 账号紧挨着发（每账号约 1.2s，全是请求耗时）是批量
+/// 操作最显眼的特征。代价是整轮要 (N-1)×10 分钟，期间任务处于「运行中」
+/// （调度器的 running 守卫会跳过重复触发，不会叠加）。
+const WELFARE_ACCOUNT_GAP: Duration = Duration::from_secs(10 * 60);
 /// 活动列表按哪个时区算「今天」：上游的活动周期是北京时间零点。
 const DAY_ZONE_OFFSET_SECONDS: i32 = 8 * 60 * 60;
 
@@ -625,11 +633,21 @@ pub async fn claim_all(
         crate::server::core::usage_query::resolve_batch_targets(store, Some("codearts"), None)
             .map_err(|error| error.message)?;
     let (mut confirmed, mut already, mut not_eligible, mut limited, mut failed) = (0, 0, 0, 0, 0);
-    for account in targets {
+    for (index, account) in targets.iter().enumerate() {
         let Some(account_id) = account.get("id").and_then(Value::as_str) else {
             continue;
         };
         let now = logging::now_ms();
+        // 账号之间隔 10 分钟（见 WELFARE_ACCOUNT_GAP 的说明）；第一个不等。
+        // **已领过的账号不等**：它不会写上游（进去就走 Already），等它纯属白等 ——
+        // 「今天已领完」是每天凌晨之后的常态，不判断的话每轮会白等 (N-1)×10 分钟。
+        // 台账读不到时按「没领过」处理（保守：宁可等）。
+        let already_accepted = ledger_of(store, account_id, now)
+            .map(|ledger| ledger.accepted)
+            .unwrap_or(false);
+        if index > 0 && !already_accepted {
+            tokio::time::sleep(WELFARE_ACCOUNT_GAP).await;
+        }
         match claim_account(store, account_id, base, now, false).await {
             Ok(Outcome::Confirmed) => confirmed += 1,
             Ok(Outcome::Already) => already += 1,
