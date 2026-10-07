@@ -367,6 +367,24 @@ impl ProviderAdapter for CodeArtsAdapter {
                     out_body["max_tokens"] = Value::from(cap);
                 }
             }
+            // 思考预留（2026-10-07 从上游 v2.9.2 移植，阈值放宽见 chat.rs 的说明）：
+            // 客户端额度撑不下这个模型的思考时抬到 +预留 —— 不抬的话上游会把额度
+            // 全花在 reasoning 上，客户端收到一次「成功的空回答」（实测 glm 5/5 全空）。
+            if let Some((from, to)) =
+                chat::reserve_for_thinking(&mut out_body, model.max_output_tokens)
+            {
+                crate::server::logging::verbose(
+                    "[CodeArts]",
+                    &format!(
+                        "客户端 max_tokens {from} 撑不下这个模型的思考，抬到 {to}（该模型上限 {}）",
+                        if model.max_output_tokens > 0 {
+                            model.max_output_tokens.to_string()
+                        } else {
+                            "未声明".to_string()
+                        }
+                    ),
+                );
+            }
             let (url, headers, payload) =
                 match chat::build_upstream_request(models::DEFAULT_BASE_URL, &upstream_model, out_body, true, benefit, &profile, Some(&credential)) {
                     Ok(built) => built,

@@ -1111,3 +1111,63 @@ mod catalog_fixtures {
         }
     }
 }
+
+/* ─── 思考预留（2026-10-07 从上游 v2.9.2 移植；阈值按本地实测放宽）───────────
+ *
+ * ⚠️ 与上游原版的**唯一差异**是下面两个常量的值（上游都是 1024）：
+ * 上游只在「客户端额度低于 1024」时抬，理由是「给得起大额度的客户端不关它的事」；
+ * 但 2026-10-06 的本地实测推翻了这条 —— **deepseek / glm 在 max_tokens=10000 时
+ * 推理照样吃满 10000、正文 0 字**（glm 5/5 全空、deepseek 4/5 空，见当日测试报告）。
+ * 所以阈值放宽到 16384（覆盖常见客户端设置，含 10000 这一档）、预留给到 4096
+ * （抬完 = 客户端值 + 4096；实测 glm 思考约 1 万时，10000+4096 足够留出正文空间）。
+ * 按模型声明上限截顶那层保护照旧 —— 放宽阈值不会让请求超模型声明。
+ */
+pub const SHORT_OUTPUT_TOKENS: i64 = 16384;
+pub const THINKING_RESERVE: i64 = 4096;
+
+/// 某些模型**一定先思考**，而思考与正文共用 `max_tokens` 这一个额度。
+///
+/// 实测（2026-10-02，同一句提示、同一个福利模型）：
+///
+/// | 客户端写法 | 结果 |
+/// |---|---|
+/// | `max_tokens:60` | 正文 **0 字**、reasoning 100 字、`finish=length`（用量 35/60） |
+/// | `max_tokens:1084` | 正文 102 字、reasoning 387 字、`finish=stop` |
+/// | 加 `thinking:{type:"disabled"}` | 正文 81 字、reasoning 0 —— 上游认这一格 |
+/// | 加 `reasoning_effort:"minimal"` / `thinking.budget:32` | **上游不理**，照样想满、正文空 |
+///
+/// 所以「让它少想点」这条路在上游不存在，而「关掉思考」会改变模型行为（同一个
+/// 名字在同一个客户端里两种表现）。抬上限是唯一既不动模型行为、又能让正文出来的救法。
+///
+/// 三条边界：
+///   · **只在客户端额度低于 [`SHORT_OUTPUT_TOKENS`] 时抬** —— 那种请求要的是短回答，
+///     思考模型给不出「又短又有正文」；给得起大额度（含没给）的客户端不关它的事；
+///   · 按该模型声明的 `max_output_tokens` **截顶**，`0`（未声明）时不截 ——
+///     与目录出口「不编一个数」同一口径；
+///   · 只可能把额度**变大**：截顶后仍不大于原值时原样不动（把客户端的 60 改成
+///     更小是替客户端做主，不在本函数的权限里）。
+///
+/// 两种写法都认（`max_tokens` / `max_completion_tokens`），改的是**客户端用了的那个键**，
+/// 不会替客户端新造一个键。返回 `Some((抬前, 抬后))` 让调用方有话可写。
+pub fn reserve_for_thinking(payload: &mut Value, max_output_tokens: i64) -> Option<(i64, i64)> {
+    let key = ["max_tokens", "max_completion_tokens"]
+        .into_iter()
+        .find(|name| payload.get(*name).and_then(Value::as_i64).is_some())?;
+    let client = payload.get(key).and_then(Value::as_i64)?;
+    if client <= 0 || client >= SHORT_OUTPUT_TOKENS {
+        return None;
+    }
+    let wanted = client.saturating_add(THINKING_RESERVE);
+    let next = if max_output_tokens > 0 {
+        wanted.min(max_output_tokens)
+    } else {
+        wanted
+    };
+    if next <= client {
+        return None;
+    }
+    payload
+        .as_object_mut()?
+        .insert(key.to_string(), Value::from(next));
+    Some((client, next))
+}
