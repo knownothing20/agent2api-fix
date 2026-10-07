@@ -71,6 +71,7 @@ pub mod scheduling;
 pub mod codearts_max_tokens;
 pub mod forward_mode;
 pub mod hide_reasoning;
+pub mod welfare_settings;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod session;

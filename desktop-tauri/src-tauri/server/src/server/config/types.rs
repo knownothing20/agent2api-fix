@@ -131,6 +131,30 @@ pub const CODEARTS_MAX_TOKENS_CAP_DEFAULT: u64 = 65536;
 pub const CODEARTS_MAX_TOKENS_CAP_MIN: u64 = 0;
 pub const CODEARTS_MAX_TOKENS_CAP_MAX: u64 = 1_000_000;
 
+/// 自动领福利（码道）：**账号之间**的间隔（分钟）。`0` = 不等待（改造前的行为）。
+///
+/// 三个「间隔」各管各的，别混（2026-10-07 用户要求把后两个做成可配）：
+///   ① 任务的 `interval`（面板上那个）= 多久扫一轮账号列表；
+///   ② 本键 = 账号之间等多久 —— 防「同 IP 一口气把 N 个账号的写请求打完」；
+///   ③ `KEY_WELFARE_MIN_ATTEMPT_GAP_MINUTES` = 同一账号两次写尝试的最小间隔。
+pub const KEY_WELFARE_ACCOUNT_GAP_MINUTES: &str = "welfareAccountGapMinutes";
+/// 默认 10 分钟：账号紧挨着发是同 IP 批量操作最显眼的特征。
+pub const WELFARE_ACCOUNT_GAP_MINUTES_DEFAULT: u64 = 10;
+pub const WELFARE_ACCOUNT_GAP_MINUTES_MIN: u64 = 0;
+pub const WELFARE_ACCOUNT_GAP_MINUTES_MAX: u64 = 1440;
+
+/// 自动领福利（码道）：**同一账号**两次写尝试的最小间隔（分钟）。
+pub const KEY_WELFARE_MIN_ATTEMPT_GAP_MINUTES: &str = "welfareMinAttemptGapMinutes";
+pub const WELFARE_MIN_ATTEMPT_GAP_MINUTES_DEFAULT: u64 = 10;
+pub const WELFARE_MIN_ATTEMPT_GAP_MINUTES_MIN: u64 = 1;
+pub const WELFARE_MIN_ATTEMPT_GAP_MINUTES_MAX: u64 = 1440;
+
+/// 自动领福利（码道）：**同一账号**每天的写尝试上限（次）。
+pub const KEY_WELFARE_MAX_ATTEMPTS_PER_DAY: &str = "welfareMaxAttemptsPerDay";
+pub const WELFARE_MAX_ATTEMPTS_PER_DAY_DEFAULT: u64 = 6;
+pub const WELFARE_MAX_ATTEMPTS_PER_DAY_MIN: u64 = 1;
+pub const WELFARE_MAX_ATTEMPTS_PER_DAY_MAX: u64 = 100;
+
 /// 机器人校验开关的键（config.json 键，ALTCHA proof-of-work，见 `server::altcha`）。
 ///
 /// **默认开启**：登录 / 注册是公开的认证边界，脚本可以无限打（暴破密码、

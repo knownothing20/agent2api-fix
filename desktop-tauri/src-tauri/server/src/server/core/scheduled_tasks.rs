@@ -121,7 +121,7 @@ pub const TASKS: [TaskDef; 8] = [
     TaskDef {
         id: TASK_CODEARTS_WELFARE,
         label: "自动领福利（码道）",
-        description: "定期遍历 CodeArts 账号，把当天可领的运营福利领掉（delivery → claim → confirm → 回读确认到账）。发写请求的次数由本地台账兜住：每天最多 6 次、间隔至少 10 分钟，所以间隔调小只会「看得更勤」，不会把上游打多。面板上的「领福利」按钮不受这两个闸约束，随时可手动领。",
+        description: "定期遍历 CodeArts 账号，把当天可领的运营福利领掉（delivery → claim → confirm → 回读确认到账）。这里有三个不同的「间隔」，别混：① 本任务的间隔（上面那个输入框）＝多久扫一轮账号列表；② 账号之间的间隔（默认 10 分钟，设置页「码道」里可改）＝领完一个账号隔多久再领下一个，防「同 IP 一口气把多个账号的写请求打完」；③ 单账号写闸（默认 10 分钟 / 每天 6 次，同处可改）＝同一个账号两次写至少隔多久、一天最多写几次。所以①调小只会「看得更勤」，不会把上游打多；②③ 只约束自动领取，面板上那颗「领福利」按钮随时可手动领。",
         unit: "minutes",
         runner: Runner::Backend,
         min: config::INTERVAL_MIN_MINUTES,

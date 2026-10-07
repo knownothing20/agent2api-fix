@@ -142,6 +142,12 @@ pub struct RuntimeConfig {
     /// 码道的 max_tokens 硬顶（0 = 不钳制，见 `KEY_CODEARTS_MAX_TOKENS_CAP`）。
     /// 码道特有：钳制动作在码道适配器里，别家不读它。
     codearts_max_tokens_cap: u64,
+    /// 自动领福利（码道）：账号之间的间隔（分钟；0 = 不等待）。
+    welfare_account_gap_minutes: u64,
+    /// 自动领福利（码道）：同一账号两次写尝试的最小间隔（分钟）。
+    welfare_min_attempt_gap_minutes: u64,
+    /// 自动领福利（码道）：同一账号每天的写尝试上限（次）。
+    welfare_max_attempts_per_day: u64,
     /// 面板机器人校验开关（设置页「通用 → 机器人校验」，ALTCHA proof-of-work）。
     ///
     /// 与 `debug_mode` 同一理由：登录 / 注册端点逐请求判一次（改完开关下一个
@@ -219,6 +225,21 @@ impl RuntimeConfig {
             0 => None,
             value => Some(value),
         }
+    }
+
+    /// 自动领福利：账号之间的间隔（`0` = 不等待）。见 `KEY_WELFARE_ACCOUNT_GAP_MINUTES`。
+    pub fn welfare_account_gap(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.welfare_account_gap_minutes * 60)
+    }
+
+    /// 自动领福利：同一账号两次写尝试的最小间隔。
+    pub fn welfare_min_attempt_gap(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.welfare_min_attempt_gap_minutes * 60)
+    }
+
+    /// 自动领福利：同一账号每天的写尝试上限。
+    pub fn welfare_max_attempts_per_day(&self) -> i64 {
+        self.welfare_max_attempts_per_day as i64
     }
 
     /// **这一条请求最终走不走流式** —— 三个转发入口（Chat / Responses / Anthropic）
@@ -474,6 +495,29 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .filter(|value| (CODEARTS_MAX_TOKENS_CAP_MIN..=CODEARTS_MAX_TOKENS_CAP_MAX)
                 .contains(value))
             .unwrap_or(CODEARTS_MAX_TOKENS_CAP_DEFAULT),
+        // 福利三个旋钮：越界一律回落默认（与 forward_mode / max_tokens 同一取向）
+        welfare_account_gap_minutes: raw
+            .get(KEY_WELFARE_ACCOUNT_GAP_MINUTES)
+            .and_then(Value::as_u64)
+            .filter(|value| {
+                (WELFARE_ACCOUNT_GAP_MINUTES_MIN..=WELFARE_ACCOUNT_GAP_MINUTES_MAX).contains(value)
+            })
+            .unwrap_or(WELFARE_ACCOUNT_GAP_MINUTES_DEFAULT),
+        welfare_min_attempt_gap_minutes: raw
+            .get(KEY_WELFARE_MIN_ATTEMPT_GAP_MINUTES)
+            .and_then(Value::as_u64)
+            .filter(|value| {
+                (WELFARE_MIN_ATTEMPT_GAP_MINUTES_MIN..=WELFARE_MIN_ATTEMPT_GAP_MINUTES_MAX)
+                    .contains(value)
+            })
+            .unwrap_or(WELFARE_MIN_ATTEMPT_GAP_MINUTES_DEFAULT),
+        welfare_max_attempts_per_day: raw
+            .get(KEY_WELFARE_MAX_ATTEMPTS_PER_DAY)
+            .and_then(Value::as_u64)
+            .filter(|value| {
+                (WELFARE_MAX_ATTEMPTS_PER_DAY_MIN..=WELFARE_MAX_ATTEMPTS_PER_DAY_MAX).contains(value)
+            })
+            .unwrap_or(WELFARE_MAX_ATTEMPTS_PER_DAY_DEFAULT),
         // 只有字面 `false` 算关闭：**默认开**。登录 / 注册的暴破与抢注防护
         // 宁可多一道不可少一道（见 KEY_CAPTCHA_ENABLED 的说明）。配置项缺失
         // 时环境变量兜底：登录页人机验证组件环境变量，默认为1开启，0为关闭
@@ -1288,6 +1332,31 @@ pub fn set_forward_mode(mode: &str) -> bool {
 }
 
 /// 写入「不下发思考」开关（与 `set_debug_mode` 同一模式：内存快照 + raw 底稿一起改）。
+/// 写三个福利旋钮（一次性写全，避免三次落盘之间出现半新半旧的组合）。
+pub fn set_welfare_settings(
+    account_gap_minutes: u64,
+    min_attempt_gap_minutes: u64,
+    max_attempts_per_day: u64,
+) -> bool {
+    update(|config| {
+        config.raw.insert(
+            KEY_WELFARE_ACCOUNT_GAP_MINUTES.to_string(),
+            Value::from(account_gap_minutes),
+        );
+        config.raw.insert(
+            KEY_WELFARE_MIN_ATTEMPT_GAP_MINUTES.to_string(),
+            Value::from(min_attempt_gap_minutes),
+        );
+        config.raw.insert(
+            KEY_WELFARE_MAX_ATTEMPTS_PER_DAY.to_string(),
+            Value::from(max_attempts_per_day),
+        );
+        config.welfare_account_gap_minutes = account_gap_minutes;
+        config.welfare_min_attempt_gap_minutes = min_attempt_gap_minutes;
+        config.welfare_max_attempts_per_day = max_attempts_per_day;
+    })
+}
+
 pub fn set_hide_reasoning(enabled: bool) -> bool {
     update(|config| {
         config

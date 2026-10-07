@@ -413,6 +413,15 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::codearts_max_tokens::get_codearts_max_tokens_cap)
                 .put(api::codearts_max_tokens::put_codearts_max_tokens_cap),
         )
+        // ── 福利节流三个旋钮 ──
+        // 码道特有：① 账号之间的间隔 ② 单账号写闸（间隔 + 每日上限）。
+        // GET 读 / PUT 写，与 /api/codeartsMaxTokensCap 同形；面板「设置 → 码道」里改。
+        // （第三个「间隔」——任务的扫描周期——在 /api/scheduled-tasks 里，不是这一条。）
+        .route(
+            "/api/welfareSettings",
+            get(api::welfare_settings::get_welfare_settings)
+                .put(api::welfare_settings::put_welfare_settings),
+        )
         // ── 转发模式开关 ──
         // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。

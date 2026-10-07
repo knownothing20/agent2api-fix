@@ -49,14 +49,30 @@ pub const LEDGER_VERSION: i64 = 2;
 pub const MAX_ATTEMPTS_PER_DAY: i64 = 6;
 /// 两次写尝试的最小间隔。
 pub const MIN_ATTEMPT_GAP: Duration = Duration::from_secs(10 * 60);
-/// 自动领福利：**账号之间**的间隔（2026-10-07 用户要求 10 分钟）。
+/// 三个节流旋钮一律**读配置**（面板「设置 → 码道」可改，2026-10-07）；
+/// 上面的常量只是**缺省值**，配置缺失或越界时由 config 层回落。
 ///
-/// 与 `MIN_ATTEMPT_GAP` 不是一回事，别合并：那个防的是「**同一个账号**反复写
-/// 上游」（每天 6 次上限 + 至少隔 10 分钟）；这个防的是「同 IP 一口气把 N 个
-/// 账号的写请求打完」—— 账号紧挨着发（每账号约 1.2s，全是请求耗时）是批量
-/// 操作最显眼的特征。代价是整轮要 (N-1)×10 分钟，期间任务处于「运行中」
-/// （调度器的 running 守卫会跳过重复触发，不会叠加）。
-const WELFARE_ACCOUNT_GAP: Duration = Duration::from_secs(10 * 60);
+/// 账号之间：领完一个隔多久再领下一个 —— 防「同 IP 一口气把 N 个账号的写请求
+/// 打完」（账号紧挨着发是批量操作最显眼的特征）。`0` = 不等待。
+fn account_gap() -> Duration {
+    crate::server::config::current().welfare_account_gap()
+}
+
+/// 同一账号两次写尝试的最小间隔（单账号写闸之一）。
+fn min_attempt_gap() -> Duration {
+    crate::server::config::current().welfare_min_attempt_gap()
+}
+
+/// 同一账号每天的写尝试上限（单账号写闸之二）。
+fn max_attempts_per_day() -> i64 {
+    crate::server::config::current().welfare_max_attempts_per_day()
+}
+
+/// 台账校验用的**固定**宽松上限：`attempts` 超过它才认为台账读不懂。
+///
+/// 刻意与可配的每日上限分开：那个可以调小（6→3），而旧台账里记着 6 次不该
+/// 因此被判成「读不懂的台账」—— 那会让当天已有的领取记录全部作废。
+const LEDGER_ATTEMPTS_SANE_MAX: i64 = 1_000;
 /// 活动列表按哪个时区算「今天」：上游的活动周期是北京时间零点。
 const DAY_ZONE_OFFSET_SECONDS: i32 = 8 * 60 * 60;
 
@@ -306,7 +322,9 @@ impl Ledger {
         // 日期本身要能解析：一个读不懂的 day 不能当成「不是今天」
         chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok()?;
         let attempts = value.get("attempts").and_then(Value::as_i64)?;
-        if value.get("version").and_then(Value::as_i64)? != LEDGER_VERSION || !(0..=MAX_ATTEMPTS_PER_DAY).contains(&attempts) {
+        if value.get("version").and_then(Value::as_i64)? != LEDGER_VERSION
+            || !(0..=LEDGER_ATTEMPTS_SANE_MAX).contains(&attempts)
+        {
             return None;
         }
         let mut campaigns = HashMap::new();
@@ -382,7 +400,7 @@ pub async fn preview(store: &AccountStore, account_id: &str, base: &str, now_ms:
     Ok(json!({
         "day": ledger.day,
         "attempts": ledger.attempts,
-        "attemptsLeft": (MAX_ATTEMPTS_PER_DAY - ledger.attempts).max(0),
+        "attemptsLeft": (max_attempts_per_day() - ledger.attempts).max(0),
         "nextAttemptInMs": gap_remaining(&ledger, now_ms).map(|millis| millis as i64).unwrap_or(0),
         "acceptedToday": ledger.accepted,
         "campaigns": daily
@@ -467,7 +485,7 @@ pub fn gap_remaining(ledger: &Ledger, now_ms: i64) -> Option<u64> {
     // 全程 saturating：`lastAttemptMs` 是从账号记录里读出来的（账号可以被导入 /
     // 手工编辑），一个极端值不该让减法绕回一个看起来"早就不等了"的小数。
     let elapsed = now_ms.saturating_sub(ledger.last_attempt_ms);
-    let gap = i64::try_from(MIN_ATTEMPT_GAP.as_millis()).unwrap_or(i64::MAX);
+    let gap = i64::try_from(min_attempt_gap().as_millis()).unwrap_or(i64::MAX);
     if elapsed >= gap { None } else { Some(gap.saturating_sub(elapsed) as u64) }
 }
 
@@ -513,7 +531,7 @@ pub async fn claim_account(
         return Ok(Outcome::Already);
     }
     // 限流只管**写**：读资格、判确认永远放行
-    if !manual && (ledger.attempts >= MAX_ATTEMPTS_PER_DAY || gap_remaining(&ledger, now_ms).is_some()) {
+    if !manual && (ledger.attempts >= max_attempts_per_day() || gap_remaining(&ledger, now_ms).is_some()) {
         return Ok(Outcome::Skipped);
     }
     if !daily.iter().any(Campaign::has_work) {
@@ -645,8 +663,10 @@ pub async fn claim_all(
         let already_accepted = ledger_of(store, account_id, now)
             .map(|ledger| ledger.accepted)
             .unwrap_or(false);
-        if index > 0 && !already_accepted {
-            tokio::time::sleep(WELFARE_ACCOUNT_GAP).await;
+        // 间隔为 0 = 不等待（改造前的行为，面板可配）
+        let gap = account_gap();
+        if index > 0 && !already_accepted && !gap.is_zero() {
+            tokio::time::sleep(gap).await;
         }
         match claim_account(store, account_id, base, now, false).await {
             Ok(Outcome::Confirmed) => confirmed += 1,
