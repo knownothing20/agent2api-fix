@@ -150,6 +150,18 @@ pub const WELFARE_MIN_ATTEMPT_GAP_MINUTES_MIN: u64 = 1;
 pub const WELFARE_MIN_ATTEMPT_GAP_MINUTES_MAX: u64 = 1440;
 
 /// 自动领福利（码道）：**同一账号**每天的写尝试上限（次）。
+/// 码道：对「先思考」的模型注入 `thinking:{type:"disabled"}`（默认关）。
+///
+/// 为什么需要它（2026-10-07 实测）：glm 这类模型思考长度无底洞 —— 抬到 42768
+/// 的额度里它烧掉 35155 思考、正文才 8927 字，单次 464.7 秒（7.7 分钟），
+/// 远超常见客户端超时；思考还计入用量（成本≈正文 4 倍）。
+/// 上游的实测记录（`codearts/chat.rs` 的 `reserve_for_thinking` 注释）指出：
+/// **上游认 `thinking:{type:"disabled"}`**（reasoning 归 0、正文正常出），
+/// 而 `reasoning_effort:"minimal"` / `thinking.budget` 上游不理。
+/// 默认关：关掉思考会改变模型行为（同一个模型在同一个客户端里两种表现），
+/// 该由使用者在知道代价后自己选。
+pub const KEY_CODEARTS_DISABLE_THINKING: &str = "codeartsDisableThinking";
+
 pub const KEY_WELFARE_MAX_ATTEMPTS_PER_DAY: &str = "welfareMaxAttemptsPerDay";
 pub const WELFARE_MAX_ATTEMPTS_PER_DAY_DEFAULT: u64 = 6;
 pub const WELFARE_MAX_ATTEMPTS_PER_DAY_MIN: u64 = 1;

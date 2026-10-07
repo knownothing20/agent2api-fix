@@ -81,6 +81,7 @@ import {
   restoreCategory,
   saveCaptcha,
   saveCodeartsCap,
+  saveCodeartsThinking,
   saveDebug,
   saveForwardMode,
   saveHideReasoning,
@@ -1148,6 +1149,25 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
               disabled={snap.codeartsCap.status !== 'ready' || snap.busy === 'codeartsCap'}
               onCommit={raw => saveCodeartsCap(raw)}
             />
+          </div>
+          {/* 禁用思考（2026-10-07）：glm 这类模型的思考长度无底洞 —— 实测一次烧
+              35155 思考 token、耗时 7.7 分钟才出 8927 字正文；开了这个开关就对上游
+              注入 thinking:{type:"disabled"}（上游认这一格，reasoning 归 0）。 */}
+          <div className='settings-switches'>
+            <SwitchRow
+              id='settings-codearts-thinking'
+              label='禁用思考（思考归 0、正文直出）'
+              checked={snap.codeartsThinking.on}
+              disabled={snap.codeartsThinking.status !== 'ready' || snap.busy === 'codeartsThinking'}
+              onCheckedChange={next => void saveCodeartsThinking(next)}
+            />
+          </div>
+          <div className='settings-state'>
+            {snap.codeartsThinking.status === 'unavailable'
+              ? '未能读取「禁用思考」设置，请稍后重试'
+              : snap.codeartsThinking.on
+                ? '已开启：请求注入 thinking:{type:"disabled"}，模型不再思考（正文直出、快且省）。关掉思考会改变模型行为，请确认这是你要的。'
+                : '未开启：照常思考 —— 客户端额度撑不下时自动抬到 +32768（默认）。glm 这类模型思考可达 3 万 token、单次数分钟，想快就开上面这个开关。'}
           </div>
           <div className='hint retention-note'>{NOTES.codeartsCap}</div>
         </div>

@@ -417,6 +417,14 @@ pub fn panel_router(state: ServerState) -> Router {
         // 码道特有：① 账号之间的间隔 ② 单账号写闸（间隔 + 每日上限）。
         // GET 读 / PUT 写，与 /api/codeartsMaxTokensCap 同形；面板「设置 → 码道」里改。
         // （第三个「间隔」——任务的扫描周期——在 /api/scheduled-tasks 里，不是这一条。）
+        // ── 码道「禁用思考」开关 ──
+        // 与 /api/hideReasoning 同形的单开关（GET 读 / PUT 写）：开了就对上游注入
+        // `thinking:{type:"disabled"}`（上游认这一格，reasoning 归 0）。默认关。
+        .route(
+            "/api/codeartsThinking",
+            get(api::codearts_thinking::get_codearts_thinking)
+                .put(api::codearts_thinking::put_codearts_thinking),
+        )
         .route(
             "/api/welfareSettings",
             get(api::welfare_settings::get_welfare_settings)

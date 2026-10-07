@@ -367,10 +367,17 @@ impl ProviderAdapter for CodeArtsAdapter {
                     out_body["max_tokens"] = Value::from(cap);
                 }
             }
-            // 思考预留（2026-10-07 从上游 v2.9.2 移植，阈值放宽见 chat.rs 的说明）：
-            // 客户端额度撑不下这个模型的思考时抬到 +预留 —— 不抬的话上游会把额度
-            // 全花在 reasoning 上，客户端收到一次「成功的空回答」（实测 glm 5/5 全空）。
-            if let Some((from, to)) =
+            // 思考控制（2026-10-07）——**两种策略二选一，不叠加**：
+            //   · 开了「禁用思考」→ 注入 `thinking:{type:"disabled"}`。上游的实测
+            //     记录认这一格（reasoning 归 0、正文正常出）；glm 这类思考无底洞的
+            //     模型靠它把 7.7 分钟压回秒级，也不再多烧 3.5 万思考 token。
+            //   · 否则 → 抬额度给思考留空间（见 `reserve_for_thinking`）——
+            //     不抬的话上游把额度全花在 reasoning 上，客户端收到一次「成功的空回答」
+            //     （实测 glm 5/5 全空、deepseek 4/5 空）。
+            // 思考关掉时不需要预留，所以用 else if。
+            if crate::server::config::current().codearts_disable_thinking() {
+                out_body["thinking"] = serde_json::json!({ "type": "disabled" });
+            } else if let Some((from, to)) =
                 chat::reserve_for_thinking(&mut out_body, model.max_output_tokens)
             {
                 crate::server::logging::verbose(
