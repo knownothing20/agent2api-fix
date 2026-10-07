@@ -377,7 +377,11 @@ impl ProviderAdapter for CodeArtsAdapter {
             // 思考关掉时不需要预留，所以用 else if。
             // 档位是上游自己列的（low / high / max）——试过 disabled 被明确拒绝
             // （InferHub.malformed_json.400：该模型始终思考，不支持关闭思考）。
-            let thinking_level = crate::server::config::current().codearts_thinking_level();
+            // 注意：`config::current()` 返回的是**临时快照**，借它的 `&str` 会在
+            // 语句结束时就失效（E0716）—— 先 to_string 拿到自己的值再判空。
+            let thinking_level = crate::server::config::current()
+                .codearts_thinking_level()
+                .to_string();
             if !thinking_level.is_empty() {
                 out_body["thinking"] = serde_json::json!({ "type": thinking_level });
             }
