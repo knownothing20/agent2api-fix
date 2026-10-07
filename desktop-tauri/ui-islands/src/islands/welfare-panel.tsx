@@ -89,11 +89,29 @@ type WelfareLimits = {
 type WelfareLimitKey = keyof WelfareLimits
 const WELFARE_LIMITS: Record<
   WelfareLimitKey,
-  { label: string; unit: string; min: number; max: number }
+  { label: string; unit: string; min: number; max: number; hint: string }
 > = {
-  welfareAccountGapMinutes: { label: '账号之间的间隔', unit: '分钟', min: 0, max: 1440 },
-  welfareMinAttemptGapMinutes: { label: '单账号写闸·间隔', unit: '分钟', min: 1, max: 1440 },
-  welfareMaxAttemptsPerDay: { label: '单账号写闸·每日上限', unit: '次', min: 1, max: 100 },
+  welfareAccountGapMinutes: {
+    label: '账号之间的间隔',
+    unit: '分钟',
+    min: 0,
+    max: 1440,
+    hint: '领完一个账号隔多久再领下一个（0 = 不等待）',
+  },
+  welfareMinAttemptGapMinutes: {
+    label: '单账号写闸·间隔',
+    unit: '分钟',
+    min: 1,
+    max: 1440,
+    hint: '同一账号两次写至少隔多久',
+  },
+  welfareMaxAttemptsPerDay: {
+    label: '单账号写闸·每日上限',
+    unit: '次',
+    min: 1,
+    max: 100,
+    hint: '同一账号一天最多写几次',
+  },
 }
 const WELFARE_LIMIT_KEYS = Object.keys(WELFARE_LIMITS) as WelfareLimitKey[]
 
@@ -357,8 +375,10 @@ function WelfarePage(): React.ReactElement {
 
   return (
     <div className='flex flex-col gap-4'>
-      {/* 提供商 tab：现在只有码道；加别家时往 WELFARE_TABS 里加一项即可 */}
-      {tabs.length > 1 ? (
+      {/* 提供商 tab：现在只有码道；加别家时往 WELFARE_TABS 里加一项即可。
+          只有一个 tab 也显示（2026-10-07 用户要求）：它标明了「这块内容属于哪一家」，
+          以后加别家就是并列的第二个 tab，位置不跳。 */}
+      {tabs.length > 0 ? (
         <div className='flex items-center gap-1 border-b border-border'>
           {tabs.map(item => (
             <button
@@ -430,12 +450,12 @@ function WelfarePage(): React.ReactElement {
         </p>
         {/* 节流三旋钮（2026-10-07）：与上面那个「间隔」不是一回事 —— 那个管
             「多久看一次」，这三个管「一轮里怎么发写请求」。 */}
-        <div className='mt-3 flex flex-wrap items-end gap-3'>
+        <div className='mt-3 flex flex-col gap-2'>
           {WELFARE_LIMIT_KEYS.map(key => {
             const spec = WELFARE_LIMITS[key]
             return (
-              <label key={key} className='flex items-center gap-2 text-[13px]'>
-                {spec.label}
+              <div key={key} className='flex flex-wrap items-center gap-2 text-[13px]'>
+                <span className='w-[124px] shrink-0'>{spec.label}</span>
                 <Input
                   type='number'
                   min={spec.min}
@@ -447,7 +467,7 @@ function WelfarePage(): React.ReactElement {
                     setLimitDrafts(prev => ({ ...prev, [key]: event.target.value }))
                   }
                 />
-                {spec.unit}
+                <span className='text-subtle'>{spec.unit}</span>
                 <Button
                   variant='outline'
                   disabled={limitsBusy || limits === null}
@@ -455,7 +475,8 @@ function WelfarePage(): React.ReactElement {
                 >
                   保存
                 </Button>
-              </label>
+                <span className='text-subtle'>{spec.hint}</span>
+              </div>
             )
           })}
         </div>
