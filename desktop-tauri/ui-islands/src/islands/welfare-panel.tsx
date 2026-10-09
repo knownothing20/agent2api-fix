@@ -132,9 +132,36 @@ function limitsToDrafts(limits: WelfareLimits | null): Record<WelfareLimitKey, s
  */
 const WELFARE_TABS = [
   { id: 'codearts', label: '码道', available: true },
+  { id: 'trae', label: 'Trae', available: true },
 ] as const
 
 type WelfareTabId = (typeof WELFARE_TABS)[number]['id']
+
+/* ─── Trae 每日签到（2026-10-09）─────────────────────────────── */
+
+type TraeAccountStatus = {
+  name: string
+  uid: string
+  /** already / success / pending / fail（见后端 checkin::AccountOutcome） */
+  status: string
+  credits: number | null
+  delta: number
+  message: string
+  errorType: string | null
+}
+
+type TraeStatus = {
+  traeCheckinGapMinutes: number
+  accounts: TraeAccountStatus[]
+  error?: string
+}
+
+const TRAE_STATUS_TEXT: Record<string, string> = {
+  already: '今日已签',
+  success: '刚签到',
+  pending: '未签到',
+  fail: '失败',
+}
 
 /**
  * 本岛用到的桥方法（**各岛自己声明自己用的那几个**，与 tasks-panel 同一约定）：
@@ -396,6 +423,8 @@ function WelfarePage(): React.ReactElement {
           ))}
         </div>
       ) : null}
+      {tab === 'codearts' ? (
+        <>
       {/* ── 自动领福利 ── */}
       <section className='panel'>
         <div className='panel-head'>
@@ -586,6 +615,10 @@ function WelfarePage(): React.ReactElement {
           官方确认到账后本机会不再重复领。
         </p>
       </section>
+        </>
+      ) : (
+        <TraeCheckinPanel />
+      )}
     </div>
   )
 }
@@ -611,3 +644,134 @@ window.wbWelfarePanel = { load: mount }
 // 万一将来被挪到前面，退化成等 DOM 解析完再挂。
 if (document.querySelector(PAGE_SELECTOR)) mount()
 else document.addEventListener('DOMContentLoaded', mount, { once: true })
+
+/**
+ * Trae 签到卡片。
+ *
+ * 状态一律**实时读上游**（`GET /api/traeCheckin` 逐账号发一个只读预检）——
+ * 「今天签没签」只有上游知道，本地台账会漂。手动签到走**任务触发端点**
+ * （`POST /api/scheduled-tasks/traeCheckin/run`），与自动签到共用同一段代码 ——
+ * 另开一条手动路径迟早会出现「手动能签、自动不能」的分叉，那种问题最难查。
+ */
+function TraeCheckinPanel(): React.ReactElement {
+  const [data, setData] = React.useState<TraeStatus | null>(null)
+  const [gapDraft, setGapDraft] = React.useState('10')
+  const [busy, setBusy] = React.useState(false)
+  const [running, setRunning] = React.useState(false)
+  const [note, setNote] = React.useState('')
+
+  const load = React.useCallback(async () => {
+    try {
+      const payload = await manage<TraeStatus>('GET', '/api/traeCheckin')
+      setData(payload)
+      setGapDraft(String(payload.traeCheckinGapMinutes ?? 10))
+      setNote(payload.error ? `读取账号列表失败：${payload.error}` : '')
+    } catch (error) {
+      setNote(`读取失败：${describeError(error)}`)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void load()
+  }, [load])
+
+  async function saveGap(): Promise<void> {
+    const value = Number(gapDraft)
+    if (!Number.isInteger(value) || value < 0 || value > 1440) {
+      setNote('账号间隔必须是 0 到 1440 的整数（分钟）')
+      return
+    }
+    setBusy(true)
+    try {
+      await manage('PUT', '/api/traeCheckin', { traeCheckinGapMinutes: value })
+      setNote(`已保存：账号之间隔 ${value} 分钟`)
+      await load()
+    } catch (error) {
+      setNote(`保存失败：${describeError(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runNow(): Promise<void> {
+    setRunning(true)
+    setNote('签到中…（需要签的账号之间会按上面的间隔逐个进行）')
+    try {
+      const result = await manage<{ summary?: string }>(
+        'POST',
+        '/api/scheduled-tasks/traeCheckin/run',
+      )
+      setNote(result?.summary ? `本轮结果：${result.summary}` : '本轮已完成')
+      await load()
+    } catch (error) {
+      setNote(`签到失败：${describeError(error)}`)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const accounts = data?.accounts ?? []
+
+  return (
+    <section className='panel'>
+      <div className='panel-head'>
+        <h2>自动签到（Trae）</h2>
+        <div className='head-actions'>
+          <Button variant='outline' disabled={busy || running} onClick={() => void load()}>
+            刷新状态
+          </Button>
+          <Button disabled={running} onClick={() => void runNow()}>
+            {running ? '签到中…' : '立即签到'}
+          </Button>
+        </div>
+      </div>
+      <p className='detail'>
+        签到每天只有一次有效，所以「多久扫一轮」只决定<strong>多快发现可以签了</strong> ——
+        已签的账号只花一个只读预检，不会重复写上游。定时任务在「定时任务」页
+        （默认 6 小时一轮，可改）。
+      </p>
+
+      {accounts.length === 0 ? (
+        <p className='detail'>还没有 Trae 账号。先去「账号」页添加。</p>
+      ) : (
+        <div className='flex flex-col gap-1'>
+          {accounts.map(item => (
+            <div
+              key={item.uid || item.name}
+              className='flex flex-wrap items-center gap-3 text-[13px]'
+            >
+              <span className='w-[160px] shrink-0'>{item.name}</span>
+              <span className='w-[72px] shrink-0'>
+                {TRAE_STATUS_TEXT[item.status] ?? item.status}
+              </span>
+              <span className='text-subtle'>
+                {item.credits === null ? '积分 —' : `积分 ${item.credits}`}
+                {item.delta > 0 ? `（本轮 +${item.delta}）` : ''}
+              </span>
+              {item.message ? <span className='text-subtle'>{item.message}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className='mt-3 flex flex-wrap items-center gap-2 text-[13px]'>
+        <span className='w-[124px] shrink-0'>账号之间的间隔</span>
+        <Input
+          type='number'
+          min={0}
+          max={1440}
+          className='max-w-[90px]'
+          value={gapDraft}
+          disabled={busy}
+          onChange={event => setGapDraft(event.target.value)}
+        />
+        <span className='text-subtle'>分钟</span>
+        <Button variant='outline' disabled={busy} onClick={() => void saveGap()}>
+          保存
+        </Button>
+        <span className='text-subtle'>签完一个账号隔多久再签下一个（0 = 不等待）</span>
+      </div>
+      {note ? <p className='detail mt-1'>{note}</p> : null}
+    </section>
+  )
+}

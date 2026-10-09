@@ -146,6 +146,8 @@ pub struct RuntimeConfig {
     codearts_thinking_level: String,
     /// 自动领福利（码道）：账号之间的间隔（分钟；0 = 不等待）。
     welfare_account_gap_minutes: u64,
+    /// Trae 签到：账号之间的间隔（分钟；0 = 不等待）。
+    trae_checkin_gap_minutes: u64,
     /// 自动领福利（码道）：同一账号两次写尝试的最小间隔（分钟）。
     welfare_min_attempt_gap_minutes: u64,
     /// 自动领福利（码道）：同一账号每天的写尝试上限（次）。
@@ -237,6 +239,11 @@ impl RuntimeConfig {
     /// 自动领福利：账号之间的间隔（`0` = 不等待）。见 `KEY_WELFARE_ACCOUNT_GAP_MINUTES`。
     pub fn welfare_account_gap(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.welfare_account_gap_minutes * 60)
+    }
+
+    /// Trae 签到：账号之间的间隔（分钟；`0` = 不等待）。
+    pub fn trae_checkin_gap_minutes(&self) -> i64 {
+        self.trae_checkin_gap_minutes as i64
     }
 
     /// 自动领福利：同一账号两次写尝试的最小间隔。
@@ -509,6 +516,14 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .filter(|value| CODEARTS_THINKING_LEVELS.contains(value))
             .unwrap_or_default()
             .to_string(),
+        // Trae 签到账号间隔：越界一律回落默认（与福利那三个旋钮同一取向）
+        trae_checkin_gap_minutes: raw
+            .get(KEY_TRAE_CHECKIN_GAP_MINUTES)
+            .and_then(Value::as_u64)
+            .filter(|value| {
+                (TRAE_CHECKIN_GAP_MINUTES_MIN..=TRAE_CHECKIN_GAP_MINUTES_MAX).contains(value)
+            })
+            .unwrap_or(TRAE_CHECKIN_GAP_MINUTES_DEFAULT),
         // 福利三个旋钮：越界一律回落默认（与 forward_mode / max_tokens 同一取向）
         welfare_account_gap_minutes: raw
             .get(KEY_WELFARE_ACCOUNT_GAP_MINUTES)
@@ -1353,6 +1368,16 @@ pub fn set_codearts_thinking_level(level: &str) -> bool {
             Value::String(level.to_string()),
         );
         config.codearts_thinking_level = level.to_string();
+    })
+}
+
+pub fn set_trae_checkin_gap_minutes(minutes: u64) -> bool {
+    update(|config| {
+        config.raw.insert(
+            KEY_TRAE_CHECKIN_GAP_MINUTES.to_string(),
+            Value::from(minutes),
+        );
+        config.trae_checkin_gap_minutes = minutes;
     })
 }
 

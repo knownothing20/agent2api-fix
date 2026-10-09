@@ -214,6 +214,12 @@ pub(super) fn scheduled_from(map: &Map<String, Value>) -> ScheduledSettings {
             INTERVAL_MIN_MINUTES,
             INTERVAL_MAX_MINUTES,
         ),
+        trae_checkin: task(
+            KEY_TRAE_CHECKIN,
+            defaults.trae_checkin.interval,
+            INTERVAL_MIN_MINUTES,
+            INTERVAL_MAX_MINUTES,
+        ),
     }
 }
 

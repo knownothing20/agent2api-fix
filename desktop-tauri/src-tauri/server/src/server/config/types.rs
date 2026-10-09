@@ -471,6 +471,21 @@ pub const KEY_USAGE_QUERY: &str = "usageQuery";
 /// 三接口两状态一个幂等键，见 `providers::codearts::welfare` 模块头）。
 /// 形状不同 ⇒ 各自一条任务，但都挂在同一个「间隔型任务」框架下。
 pub const KEY_CODEARTS_WELFARE: &str = "codeartsWelfare";
+/// Trae 每日签到在 `scheduledTasks` 下的子键（后端定时给全部 Trae 账号签到）。
+///
+/// 与 CodeArts 福利同属「间隔型任务」，但形状不同：Trae 签到是**两个接口一次调用**
+/// （status 预检 → claim），幂等由服务端的 `checked_in` 保证 —— 而 CodeArts 是
+/// 三接口两状态的活动交付（见 `providers::codearts::welfare` 模块头）。各挂一条。
+pub const KEY_TRAE_CHECKIN: &str = "traeCheckin";
+/// Trae 签到：**账号之间**的间隔（分钟）。`0` = 不等待。
+///
+/// 与 CodeArts 的 `welfareAccountGapMinutes` 同一个理由：本家多个 Trae 账号共用
+/// 同一个出口 IP，一口气把 N 个账号的写请求打完是批量操作最显眼的特征。
+/// 默认 10 分钟（比参考实现的 3 秒保守得多 —— 它是桌面端，我们是服务器）。
+pub const KEY_TRAE_CHECKIN_GAP_MINUTES: &str = "traeCheckinGapMinutes";
+pub const TRAE_CHECKIN_GAP_MINUTES_DEFAULT: u64 = 10;
+pub const TRAE_CHECKIN_GAP_MINUTES_MIN: u64 = 0;
+pub const TRAE_CHECKIN_GAP_MINUTES_MAX: u64 = 1440;
 
 /// 凭证维护默认间隔（分钟）：与改造前的硬编码 600 秒一致
 pub const DEFAULT_CREDENTIAL_MAINTENANCE_MINUTES: i64 = 10;
@@ -511,6 +526,13 @@ pub const DEFAULT_USAGE_QUERY_MINUTES: i64 = 10;
 /// 30 分钟 = 一天最多看 48 次，台账最多放行 6 次 ⇒ 既不会漏掉当天上线的活动，
 /// 也不会把上游打成筛子。资格每次重读，所以看得勤不会漏、看得稀也不会误领。
 pub const DEFAULT_CODEARTS_WELFARE_MINUTES: i64 = 30;
+/// Trae 每日签到的默认间隔（分钟）。
+///
+/// 为什么是 6 小时而不是跟余额查询同档的 10 分钟：签到**每天只有一次有效** ——
+/// 服务端 `checked_in` 一旦为 true，后续轮次全部空转（只花一个只读预检）。
+/// 所以这一档只决定「当天多快发现可以签了」，不影响上游负载。6 小时 = 一天 4 次，
+/// 最坏晚 6 小时签到；对「全天可签」的每日活动足够，也不会让日志被空轮刷满。
+pub const DEFAULT_TRAE_CHECKIN_MINUTES: i64 = 360;
 
 /// 间隔型任务的取值范围。上下限分两套（分钟 / 秒），因为两类任务的合理区间
 /// 差着量级：后端维护任务按分钟（1 分钟～1 天），前端刷新按秒（1 秒～10 分钟）。
@@ -549,6 +571,8 @@ pub struct ScheduledSettings {
     pub usage_query: IntervalTask,
     /// 自动领福利（CodeArts）。与其余后端任务同一形状：开关 + 间隔。
     pub codearts_welfare: IntervalTask,
+    /// Trae 每日签到。与上一条同形状（开关 + 间隔），只是形状不同的另一条链。
+    pub trae_checkin: IntervalTask,
 }
 
 impl Default for ScheduledSettings {
@@ -589,6 +613,14 @@ impl Default for ScheduledSettings {
             codearts_welfare: IntervalTask {
                 enabled: true,
                 interval: DEFAULT_CODEARTS_WELFARE_MINUTES,
+            },
+            // 与其余后端任务一致：默认**开启**。理由同 CodeArts 那条 —— 替用户签
+            // 他自己账号上本来就有的每日签到（不是替谁做决定），且「无人值守地
+            // 签到」在本项目已有先例。写请求只有每天一次，账号间隔默认 10 分钟
+            // 兜住批量特征。
+            trae_checkin: IntervalTask {
+                enabled: true,
+                interval: DEFAULT_TRAE_CHECKIN_MINUTES,
             },
         }
     }

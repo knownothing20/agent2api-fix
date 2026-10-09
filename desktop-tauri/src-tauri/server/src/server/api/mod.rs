@@ -72,6 +72,7 @@ pub mod codearts_max_tokens;
 pub mod forward_mode;
 pub mod hide_reasoning;
 pub mod welfare_settings;
+pub mod trae_checkin;
 pub mod codearts_thinking;
 pub mod sanitize;
 pub mod scheduled_tasks;

@@ -430,6 +430,16 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::welfare_settings::get_welfare_settings)
                 .put(api::welfare_settings::put_welfare_settings),
         )
+        // ── Trae 签到（面板入口）──
+        // GET 读（账号间隔 + 全部 Trae 账号的实时签到状态，只读预检）/ PUT 写（账号间隔）。
+        // **手动签到不在这条** —— 走任务触发端点
+        // `POST /api/scheduled-tasks/traeCheckin/run`，与自动签到共用
+        // `checkin::run_round` 一段代码（避免"手动能签、自动不能"的分叉）。
+        .route(
+            "/api/traeCheckin",
+            get(api::trae_checkin::get_trae_checkin)
+                .put(api::trae_checkin::put_trae_checkin),
+        )
         // ── 转发模式开关 ──
         // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。

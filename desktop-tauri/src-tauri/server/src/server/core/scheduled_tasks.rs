@@ -76,8 +76,9 @@ pub const TASK_LOGS_AUTO_REFRESH: &str = config::KEY_LOGS_AUTO_REFRESH;
 pub const TASK_REQUESTS_AUTO_REFRESH: &str = config::KEY_REQUESTS_AUTO_REFRESH;
 pub const TASK_REPORT_AUTO_REFRESH: &str = config::KEY_REPORT_AUTO_REFRESH;
 pub const TASK_CODEARTS_WELFARE: &str = config::KEY_CODEARTS_WELFARE;
+pub const TASK_TRAE_CHECKIN: &str = config::KEY_TRAE_CHECKIN;
 
-pub const TASKS: [TaskDef; 8] = [
+pub const TASKS: [TaskDef; 9] = [
     TaskDef {
         id: TASK_CREDENTIAL_MAINTENANCE,
         label: "凭证自动维护",
@@ -129,6 +130,16 @@ pub const TASKS: [TaskDef; 8] = [
         default_interval: config::DEFAULT_CODEARTS_WELFARE_MINUTES,
     },
     TaskDef {
+        id: TASK_TRAE_CHECKIN,
+        label: "自动签到（Trae）",
+        description: "定期遍历 Trae 账号，给当天还没签的账号签到（status 预检 → claim）。签到每天只有一次有效，所以这一档只决定「多快发现可以签了」—— 已签的账号只花一个只读预检，不会重复写上游。账号之间默认隔 10 分钟（福利页「Trae」标签里可改），防「同 IP 一口气把多个账号的写请求打完」。面板上那颗「立即签到」按钮随时可手动签。",
+        unit: "minutes",
+        runner: Runner::Backend,
+        min: config::INTERVAL_MIN_MINUTES,
+        max: config::INTERVAL_MAX_MINUTES,
+        default_interval: config::DEFAULT_TRAE_CHECKIN_MINUTES,
+    },
+    TaskDef {
         id: TASK_LOGS_AUTO_REFRESH,
         label: "日志页自动刷新",
         description: "停留在「日志」页时按此间隔重新拉取系统事件；页面不可见时不请求。",
@@ -171,6 +182,7 @@ fn settings_of(settings: config::ScheduledSettings, id: &str) -> config::Interva
         TASK_UPDATE_CHECK => settings.update_check,
         TASK_USAGE_QUERY => settings.usage_query,
         TASK_CODEARTS_WELFARE => settings.codearts_welfare,
+        TASK_TRAE_CHECKIN => settings.trae_checkin,
         TASK_LOGS_AUTO_REFRESH => settings.logs_auto_refresh,
         TASK_REQUESTS_AUTO_REFRESH => settings.requests_auto_refresh,
         TASK_REPORT_AUTO_REFRESH => settings.report_auto_refresh,
@@ -387,6 +399,26 @@ async fn run_backend(
                     (summary, failed == 0)
                 }
                 Err(message) => (format!("领取失败：{message}"), false),
+            }
+        }
+        TASK_TRAE_CHECKIN => {
+            // 签到是「预检 → 需要才签」两段式，幂等由服务端的 checked_in 保证；
+            // 账号之间的间隔读配置（福利页「Trae」标签可改），防同 IP 批量特征。
+            let gap = config::current().trae_checkin_gap_minutes();
+            match crate::server::core::providers::trae::checkin::run_round(store, gap).await {
+                Ok(summary) => {
+                    let text = summary.summary_text();
+                    // 「全部已签」是每天的常态，不该刷日志；只有真签了或有失败才记。
+                    if summary.ok > 0 || summary.failed > 0 {
+                        logging::log_with_level(
+                            "[Trae]",
+                            &format!("自动签到：{text}"),
+                            if summary.failed > 0 { "error" } else { "info" },
+                        );
+                    }
+                    (text, summary.failed == 0)
+                }
+                Err(message) => (format!("签到失败：{message}"), false),
             }
         }
         _ => return Err("未知后端任务".to_string()),
