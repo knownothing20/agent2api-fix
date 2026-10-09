@@ -153,7 +153,13 @@ function SegmentedControl<Value extends string>({
             'group/seg relative z-[1] inline-flex h-6 items-center gap-[5px] rounded-sm border-0 bg-transparent px-2.5',
             'text-xs font-medium whitespace-nowrap text-subtle select-none',
             'transition-[background-color,color] duration-150 ease-out',
-            'hover:bg-nav-hover hover:text-foreground',
+            // hover **只提文字色、不上底色**：这一族的底色是「选中」的专用表达
+            // （由滑块画，见文件头说明）。悬停也上底色，会让未选中的那一项看起来
+            // 也选中了 —— 2026-10-09 用户实测：两组控件并排时，「按模型」（选中）
+            // 与「按账号」（悬停）都带底色，被读成「同一组里选了两个」（「与」），
+            // 而它们其实分属两组、各自互斥（「或」）。
+            // 用 headless 渲染（无鼠标）对照可复现：去掉 hover 后「按账号」是白底。
+            'hover:text-foreground',
             // 选中项让出底色（底色归滑块画），只留文字色
             'data-checked:bg-transparent data-checked:text-primary-fg data-checked:hover:bg-transparent',
             'data-disabled:cursor-not-allowed data-disabled:opacity-40',
