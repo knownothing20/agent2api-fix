@@ -438,82 +438,84 @@ function WelfarePage(): React.ReactElement {
             </Button>
           </div>
         </div>
-        <p className='detail'>
-          「探测全部」是<strong>只读</strong>的：它只问上游「现在有哪些活动、每个账号领没领」，
-          不会消耗任何领取机会，可以随手点。真正的领取是<strong>写操作</strong>，按账号单独点「领取」。
-        </p>
-        <div className='flex flex-wrap items-center gap-3'>
-          <label className='flex items-center gap-2 text-[13px]'>
-            <Switch
-              checked={Boolean(task?.enabled)}
-              aria-label='自动领福利开关'
-              onCheckedChange={next => void saveTask({ enabled: next === true })}
-            />
-            自动领取
-          </label>
-          <label className='flex items-center gap-2 text-[13px]'>
-            间隔
-            <Input
-              type='number'
-              className='max-w-[90px]'
-              value={intervalDraft}
-              onChange={event => setIntervalDraft(event.target.value)}
-            />
-            分钟
-          </label>
-          <Button
-            variant='outline'
-            disabled={taskBusy || !task || String(task.interval) === intervalDraft}
-            onClick={() => void saveTask({ interval: Number(intervalDraft) })}
-          >
-            保存间隔
-          </Button>
+        <div className='panel-body'>
+          <p className='detail'>
+            「探测全部」是<strong>只读</strong>的：它只问上游「现在有哪些活动、每个账号领没领」，
+            不会消耗任何领取机会，可以随手点。真正的领取是<strong>写操作</strong>，按账号单独点「领取」。
+          </p>
+          <div className='flex flex-wrap items-center gap-3'>
+            <label className='flex items-center gap-2 text-[13px]'>
+              <Switch
+                checked={Boolean(task?.enabled)}
+                aria-label='自动领福利开关'
+                onCheckedChange={next => void saveTask({ enabled: next === true })}
+              />
+              自动领取
+            </label>
+            <label className='flex items-center gap-2 text-[13px]'>
+              间隔
+              <Input
+                type='number'
+                className='max-w-[90px]'
+                value={intervalDraft}
+                onChange={event => setIntervalDraft(event.target.value)}
+              />
+              分钟
+            </label>
+            <Button
+              variant='outline'
+              disabled={taskBusy || !task || String(task.interval) === intervalDraft}
+              onClick={() => void saveTask({ interval: Number(intervalDraft) })}
+            >
+              保存间隔
+            </Button>
+          </div>
+          <p className='detail mt-1'>
+            上次：{task?.lastResult || '未执行'}（{agoText(task?.lastSuccessAt)}）
+            {task?.nextRunAt ? ` · 下次 ${agoText(task.nextRunAt).replace('前', '后')}` : ''}
+          </p>
+          <p className='detail'>
+            间隔只决定「多久看一次资格」；真正发写请求的次数由本地台账兜住
+            （每天最多 6 次、间隔至少 10 分钟），所以调小不会把上游打多。
+          </p>
+          {/* 节流三旋钮（2026-10-07）：与上面那个「间隔」不是一回事 —— 那个管
+              「多久看一次」，这三个管「一轮里怎么发写请求」。 */}
+          <div className='mt-3 flex flex-col gap-2'>
+            {WELFARE_LIMIT_KEYS.map(key => {
+              const spec = WELFARE_LIMITS[key]
+              return (
+                <div key={key} className='flex flex-wrap items-center gap-2 text-[13px]'>
+                  <span className='w-[124px] shrink-0'>{spec.label}</span>
+                  <Input
+                    type='number'
+                    min={spec.min}
+                    max={spec.max}
+                    className='max-w-[90px]'
+                    disabled={limits === null}
+                    value={limitDrafts[key]}
+                    onChange={event =>
+                      setLimitDrafts(prev => ({ ...prev, [key]: event.target.value }))
+                    }
+                  />
+                  <span className='text-subtle'>{spec.unit}</span>
+                  <Button
+                    variant='outline'
+                    disabled={limitsBusy || limits === null}
+                    onClick={() => void saveLimit(key, limitDrafts[key])}
+                  >
+                    保存
+                  </Button>
+                  <span className='text-subtle'>{spec.hint}</span>
+                </div>
+              )
+            })}
+          </div>
+          <p className='detail mt-1'>
+            ② <strong>账号之间的间隔</strong>：领完一个账号隔多久再领下一个 —— 防「同 IP 一口气把多个账号的写请求打完」；
+            ③ <strong>单账号写闸</strong>：同一个账号两次写至少隔多久、一天最多写几次。
+            两者都只约束<strong>自动</strong>领取，行内那颗「领取」按钮随时可手动领。
+          </p>
         </div>
-        <p className='detail mt-1'>
-          上次：{task?.lastResult || '未执行'}（{agoText(task?.lastSuccessAt)}）
-          {task?.nextRunAt ? ` · 下次 ${agoText(task.nextRunAt).replace('前', '后')}` : ''}
-        </p>
-        <p className='detail'>
-          间隔只决定「多久看一次资格」；真正发写请求的次数由本地台账兜住
-          （每天最多 6 次、间隔至少 10 分钟），所以调小不会把上游打多。
-        </p>
-        {/* 节流三旋钮（2026-10-07）：与上面那个「间隔」不是一回事 —— 那个管
-            「多久看一次」，这三个管「一轮里怎么发写请求」。 */}
-        <div className='mt-3 flex flex-col gap-2'>
-          {WELFARE_LIMIT_KEYS.map(key => {
-            const spec = WELFARE_LIMITS[key]
-            return (
-              <div key={key} className='flex flex-wrap items-center gap-2 text-[13px]'>
-                <span className='w-[124px] shrink-0'>{spec.label}</span>
-                <Input
-                  type='number'
-                  min={spec.min}
-                  max={spec.max}
-                  className='max-w-[90px]'
-                  disabled={limits === null}
-                  value={limitDrafts[key]}
-                  onChange={event =>
-                    setLimitDrafts(prev => ({ ...prev, [key]: event.target.value }))
-                  }
-                />
-                <span className='text-subtle'>{spec.unit}</span>
-                <Button
-                  variant='outline'
-                  disabled={limitsBusy || limits === null}
-                  onClick={() => void saveLimit(key, limitDrafts[key])}
-                >
-                  保存
-                </Button>
-                <span className='text-subtle'>{spec.hint}</span>
-              </div>
-            )
-          })}
-        </div>
-        <p className='detail mt-1'>
-          ② <strong>账号之间的间隔</strong>：领完一个账号隔多久再领下一个 —— 防「同 IP 一口气把多个账号的写请求打完」；
-          ③ <strong>单账号写闸</strong>：同一个账号两次写至少隔多久、一天最多写几次。
-          两者都只约束<strong>自动</strong>领取，行内那颗「领取」按钮随时可手动领。
-        </p>
       </section>
 
       {/* ── 账号 × 活动 ── */}
@@ -525,95 +527,97 @@ function WelfarePage(): React.ReactElement {
             {probing ? ' · 探测中…' : ` · 现在可领 ${accounts.reduce((sum, a) => sum + claimable(previews[a.id]), 0)} 项`}
           </span>
         </div>
-        {accounts.length === 0 ? (
-          <p className='detail'>还没有码道账号。先去「账号」页添加。</p>
-        ) : (
-          <div className='flex flex-col gap-3'>
-            {accounts.map(account => {
-              const preview = previews[account.id]
-              // 展示**全量**活动（后端 allCampaigns）：客户端「活动福利」那一列有 6 条，
-              // 只显示「该自动领的」那一类会让人以为别的活动没了。老后端没有这个字段时
-              // 退回 campaigns（不会空白）。
-              const campaigns = preview?.allCampaigns || preview?.campaigns || []
-              const failure = errors[account.id]
-              return (
-                <div key={account.id} className='rounded-lg border border-border p-3'>
-                  <div className='flex flex-wrap items-center gap-3'>
-                    <b className='text-[13px]'>{account.name || account.id}</b>
-                    {failure ? (
-                      <span className='badge bad'>探测失败</span>
-                    ) : (
-                      <span className={`badge ${claimable(preview) > 0 ? 'warn' : ''}`}>
-                        {claimable(preview) > 0 ? `${claimable(preview)} 项可领` : '暂无可领'}
-                      </span>
-                    )}
-                    {account.enabled === false ? <span className='badge'>已禁用</span> : null}
-                    <div className='ml-auto flex items-center gap-2'>
-                      <Button
-                        variant='outline'
-                        disabled={probing}
-                        onClick={() => void probeAll([account])}
-                      >
-                        探测
-                      </Button>
-                      <Button
-                        disabled={claiming === account.id}
-                        onClick={() => void claim(account)}
-                      >
-                        {claiming === account.id ? '领取中…' : '领取'}
-                      </Button>
+        <div className='panel-body'>
+          {accounts.length === 0 ? (
+            <p className='detail'>还没有码道账号。先去「账号」页添加。</p>
+          ) : (
+            <div className='flex flex-col gap-3'>
+              {accounts.map(account => {
+                const preview = previews[account.id]
+                // 展示**全量**活动（后端 allCampaigns）：客户端「活动福利」那一列有 6 条，
+                // 只显示「该自动领的」那一类会让人以为别的活动没了。老后端没有这个字段时
+                // 退回 campaigns（不会空白）。
+                const campaigns = preview?.allCampaigns || preview?.campaigns || []
+                const failure = errors[account.id]
+                return (
+                  <div key={account.id} className='rounded-lg border border-border p-3'>
+                    <div className='flex flex-wrap items-center gap-3'>
+                      <b className='text-[13px]'>{account.name || account.id}</b>
+                      {failure ? (
+                        <span className='badge bad'>探测失败</span>
+                      ) : (
+                        <span className={`badge ${claimable(preview) > 0 ? 'warn' : ''}`}>
+                          {claimable(preview) > 0 ? `${claimable(preview)} 项可领` : '暂无可领'}
+                        </span>
+                      )}
+                      {account.enabled === false ? <span className='badge'>已禁用</span> : null}
+                      <div className='ml-auto flex items-center gap-2'>
+                        <Button
+                          variant='outline'
+                          disabled={probing}
+                          onClick={() => void probeAll([account])}
+                        >
+                          探测
+                        </Button>
+                        <Button
+                          disabled={claiming === account.id}
+                          onClick={() => void claim(account)}
+                        >
+                          {claiming === account.id ? '领取中…' : '领取'}
+                        </Button>
+                      </div>
                     </div>
+                    {failure ? (
+                      <p className='detail text-destructive'>{failure}</p>
+                    ) : (
+                      <>
+                        <p className='detail mt-1'>
+                          今天（北京时间 {preview?.day || '—'}）已试 {preview?.attempts ?? 0} 次，
+                          还能试 {preview?.attemptsLeft ?? 0} 次
+                          {preview?.nextAttemptInMs
+                            ? `，最快 ${Math.ceil(preview.nextAttemptInMs / 60000)} 分钟后可再试`
+                            : ''}
+                        </p>
+                        {/* 活动做成 chip：一眼看清有几项、各自什么状态。
+                            `list-none pl-0` 是必须的 —— 默认 ul 有左内边距，
+                            会让活动比账号名缩进一截，看着像没对齐。 */}
+                        <ul className='mt-2 flex list-none flex-wrap gap-2 pl-0'>
+                          {campaigns.length === 0 ? (
+                            <li className='detail'>没有可自动领的活动</li>
+                          ) : (
+                            campaigns.map((item, index) => {
+                              const badge = campaignBadge(item)
+                              return (
+                                <li
+                                  key={`${account.id}-${index}`}
+                                  className='flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[13px]'
+                                  title={item.status || ''}
+                                >
+                                  {item.name ? <b>{item.name}</b> : null}
+                                  <b>{campaignLabel(item)}</b>
+                                  <span className={`badge ${badge.tone}`}>{badge.text}</span>
+                                  {item.autoClaim ? (
+                                    <span className='detail'>可自动领</span>
+                                  ) : (
+                                    <span className='detail'>{item.kind || ''}</span>
+                                  )}
+                                </li>
+                              )
+                            })
+                          )}
+                        </ul>
+                      </>
+                    )}
                   </div>
-                  {failure ? (
-                    <p className='detail text-destructive'>{failure}</p>
-                  ) : (
-                    <>
-                      <p className='detail mt-1'>
-                        今天（北京时间 {preview?.day || '—'}）已试 {preview?.attempts ?? 0} 次，
-                        还能试 {preview?.attemptsLeft ?? 0} 次
-                        {preview?.nextAttemptInMs
-                          ? `，最快 ${Math.ceil(preview.nextAttemptInMs / 60000)} 分钟后可再试`
-                          : ''}
-                      </p>
-                      {/* 活动做成 chip：一眼看清有几项、各自什么状态。
-                          `list-none pl-0` 是必须的 —— 默认 ul 有左内边距，
-                          会让活动比账号名缩进一截，看着像没对齐。 */}
-                      <ul className='mt-2 flex list-none flex-wrap gap-2 pl-0'>
-                        {campaigns.length === 0 ? (
-                          <li className='detail'>没有可自动领的活动</li>
-                        ) : (
-                          campaigns.map((item, index) => {
-                            const badge = campaignBadge(item)
-                            return (
-                              <li
-                                key={`${account.id}-${index}`}
-                                className='flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[13px]'
-                                title={item.status || ''}
-                              >
-                                {item.name ? <b>{item.name}</b> : null}
-                                <b>{campaignLabel(item)}</b>
-                                <span className={`badge ${badge.tone}`}>{badge.text}</span>
-                                {item.autoClaim ? (
-                                  <span className='detail'>可自动领</span>
-                                ) : (
-                                  <span className='detail'>{item.kind || ''}</span>
-                                )}
-                              </li>
-                            )
-                          })
-                        )}
-                      </ul>
-                    </>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <p className='detail'>
-          领到的是<strong>套餐赠送积分</strong>，不会增加福利模型的 token 池；领取按账号计，
-          官方确认到账后本机会不再重复领。
-        </p>
+                )
+              })}
+            </div>
+          )}
+          <p className='detail'>
+            领到的是<strong>套餐赠送积分</strong>，不会增加福利模型的 token 池；领取按账号计，
+            官方确认到账后本机会不再重复领。
+          </p>
+        </div>
       </section>
         </>
       ) : (
@@ -725,53 +729,55 @@ function TraeCheckinPanel(): React.ReactElement {
           </Button>
         </div>
       </div>
-      <p className='detail'>
-        签到每天只有一次有效，所以「多久扫一轮」只决定<strong>多快发现可以签了</strong> ——
-        已签的账号只花一个只读预检，不会重复写上游。定时任务在「定时任务」页
-        （默认 6 小时一轮，可改）。
-      </p>
+      <div className='panel-body'>
+        <p className='detail'>
+          签到每天只有一次有效，所以「多久扫一轮」只决定<strong>多快发现可以签了</strong> ——
+          已签的账号只花一个只读预检，不会重复写上游。定时任务在「定时任务」页
+          （默认 6 小时一轮，可改）。
+        </p>
 
-      {accounts.length === 0 ? (
-        <p className='detail'>还没有 Trae 账号。先去「账号」页添加。</p>
-      ) : (
-        <div className='flex flex-col gap-1'>
-          {accounts.map(item => (
-            <div
-              key={item.uid || item.name}
-              className='flex flex-wrap items-center gap-3 text-[13px]'
-            >
-              <span className='w-[160px] shrink-0'>{item.name}</span>
-              <span className='w-[72px] shrink-0'>
-                {TRAE_STATUS_TEXT[item.status] ?? item.status}
-              </span>
-              <span className='text-subtle'>
-                {item.credits === null ? '积分 —' : `积分 ${item.credits}`}
-                {item.delta > 0 ? `（本轮 +${item.delta}）` : ''}
-              </span>
-              {item.message ? <span className='text-subtle'>{item.message}</span> : null}
-            </div>
-          ))}
+        {accounts.length === 0 ? (
+          <p className='detail'>还没有 Trae 账号。先去「账号」页添加。</p>
+        ) : (
+          <div className='flex flex-col gap-1'>
+            {accounts.map(item => (
+              <div
+                key={item.uid || item.name}
+                className='flex flex-wrap items-center gap-3 text-[13px]'
+              >
+                <span className='w-[160px] shrink-0'>{item.name}</span>
+                <span className='w-[72px] shrink-0'>
+                  {TRAE_STATUS_TEXT[item.status] ?? item.status}
+                </span>
+                <span className='text-subtle'>
+                  {item.credits === null ? '积分 —' : `积分 ${item.credits}`}
+                  {item.delta > 0 ? `（本轮 +${item.delta}）` : ''}
+                </span>
+                {item.message ? <span className='text-subtle'>{item.message}</span> : null}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className='mt-3 flex flex-wrap items-center gap-2 text-[13px]'>
+          <span className='w-[124px] shrink-0'>账号之间的间隔</span>
+          <Input
+            type='number'
+            min={0}
+            max={1440}
+            className='max-w-[90px]'
+            value={gapDraft}
+            disabled={busy}
+            onChange={event => setGapDraft(event.target.value)}
+          />
+          <span className='text-subtle'>分钟</span>
+          <Button variant='outline' disabled={busy} onClick={() => void saveGap()}>
+            保存
+          </Button>
+          <span className='text-subtle'>签完一个账号隔多久再签下一个（0 = 不等待）</span>
         </div>
-      )}
-
-      <div className='mt-3 flex flex-wrap items-center gap-2 text-[13px]'>
-        <span className='w-[124px] shrink-0'>账号之间的间隔</span>
-        <Input
-          type='number'
-          min={0}
-          max={1440}
-          className='max-w-[90px]'
-          value={gapDraft}
-          disabled={busy}
-          onChange={event => setGapDraft(event.target.value)}
-        />
-        <span className='text-subtle'>分钟</span>
-        <Button variant='outline' disabled={busy} onClick={() => void saveGap()}>
-          保存
-        </Button>
-        <span className='text-subtle'>签完一个账号隔多久再签下一个（0 = 不等待）</span>
+        {note ? <p className='detail mt-1'>{note}</p> : null}
       </div>
-      {note ? <p className='detail mt-1'>{note}</p> : null}
     </section>
   )
 }
