@@ -30,10 +30,12 @@ pub async fn get_trae_checkin(State(state): State<ServerState>) -> Response {
     match checkin::status_all(state.store()).await {
         Ok(outcomes) => ok_json(json!({
             config::KEY_TRAE_CHECKIN_GAP_MINUTES: gap,
+            config::KEY_TRAE_CHECKIN_TIME: config::current().trae_checkin_time(),
             "accounts": outcomes.iter().map(|item| item.to_json()).collect::<Vec<_>>(),
         })),
         Err(message) => ok_json(json!({
             config::KEY_TRAE_CHECKIN_GAP_MINUTES: gap,
+            config::KEY_TRAE_CHECKIN_TIME: config::current().trae_checkin_time(),
             "accounts": [],
             "error": message,
         })),
@@ -49,26 +51,61 @@ pub async fn put_trae_checkin(State(_state): State<ServerState>, body: Bytes) ->
     let Some(object) = payload.as_object() else {
         return errors::management_error(400, "请求体必须是 JSON 对象");
     };
-    let key = config::KEY_TRAE_CHECKIN_GAP_MINUTES;
-    let minutes = object
-        .get(key)
-        .and_then(Value::as_u64)
-        .filter(|value| (TRAE_CHECKIN_GAP_MINUTES_MIN..=TRAE_CHECKIN_GAP_MINUTES_MAX).contains(value));
-    let Some(minutes) = minutes else {
+    // 部分更新：给哪个改哪个（前端是两个独立的「保存」按钮）。
+    let gap_key = config::KEY_TRAE_CHECKIN_GAP_MINUTES;
+    let time_key = config::KEY_TRAE_CHECKIN_TIME;
+    let mut changed = false;
+
+    if let Some(raw) = object.get(gap_key) {
+        let minutes = raw
+            .as_u64()
+            .filter(|v| (TRAE_CHECKIN_GAP_MINUTES_MIN..=TRAE_CHECKIN_GAP_MINUTES_MAX).contains(v));
+        let Some(minutes) = minutes else {
+            return errors::management_error(
+                400,
+                format!(
+                    "{gap_key} 必须是 {} 到 {} 的整数（0 = 不等待）",
+                    TRAE_CHECKIN_GAP_MINUTES_MIN, TRAE_CHECKIN_GAP_MINUTES_MAX
+                ),
+            );
+        };
+        if !config::set_trae_checkin_gap_minutes(minutes) {
+            logging::log("[Config]", "⚠️  Trae 签到账号间隔写入失败，本次运行内仍生效");
+        }
+        logging::log("[Config]", &format!("Trae 签到账号间隔已设为 {minutes} 分钟"));
+        changed = true;
+    }
+
+    if let Some(raw) = object.get(time_key) {
+        let Some(text) = raw.as_str() else {
+            return errors::management_error(400, format!("{time_key} 必须是 HH:MM 字符串"));
+        };
+        // 与 config 层同一口径校验（那里也会兜一次，这里先给明确报错）
+        let valid = text.len() == 5
+            && text.as_bytes()[2] == b':'
+            && text[..2].parse::<u32>().map(|h| h < 24).unwrap_or(false)
+            && text[3..].parse::<u32>().map(|m| m < 60).unwrap_or(false);
+        if !valid {
+            return errors::management_error(
+                400,
+                format!("{time_key} 必须是 HH:MM（00:00-23:59），收到 {text:?}"),
+            );
+        }
+        if !config::set_trae_checkin_time(text) {
+            logging::log("[Config]", "⚠️  Trae 定点时刻写入失败，本次运行内仍生效");
+        }
+        logging::log("[Config]", &format!("Trae 定点签到时刻已设为 {text}"));
+        changed = true;
+    }
+
+    if !changed {
         return errors::management_error(
             400,
-            format!(
-                "{key} 必须是 {} 到 {} 的整数（0 = 不等待）",
-                TRAE_CHECKIN_GAP_MINUTES_MIN, TRAE_CHECKIN_GAP_MINUTES_MAX
-            ),
+            format!("至少要给 {gap_key} 或 {time_key} 之一"),
         );
-    };
-    if !config::set_trae_checkin_gap_minutes(minutes) {
-        logging::log("[Config]", "⚠️  Trae 签到账号间隔写入失败，本次运行内仍生效");
     }
-    logging::log(
-        "[Config]",
-        &format!("Trae 签到账号间隔已设为 {minutes} 分钟"),
-    );
-    ok_json(json!({ key: minutes }))
+    ok_json(json!({
+        gap_key: config::current().trae_checkin_gap_minutes(),
+        time_key: config::current().trae_checkin_time(),
+    }))
 }

@@ -152,6 +152,8 @@ type TraeAccountStatus = {
 
 type TraeStatus = {
   traeCheckinGapMinutes: number
+  /** 定点时刻 HH:MM（2026-10-10 加；与「间隔」并存） */
+  traeCheckinTime?: string
   accounts: TraeAccountStatus[]
   error?: string
 }
@@ -660,6 +662,7 @@ else document.addEventListener('DOMContentLoaded', mount, { once: true })
 function TraeCheckinPanel(): React.ReactElement {
   const [data, setData] = React.useState<TraeStatus | null>(null)
   const [gapDraft, setGapDraft] = React.useState('10')
+  const [timeDraft, setTimeDraft] = React.useState('09:00')
   const [busy, setBusy] = React.useState(false)
   const [running, setRunning] = React.useState(false)
   const [note, setNote] = React.useState('')
@@ -669,6 +672,7 @@ function TraeCheckinPanel(): React.ReactElement {
       const payload = await manage<TraeStatus>('GET', '/api/traeCheckin')
       setData(payload)
       setGapDraft(String(payload.traeCheckinGapMinutes ?? 10))
+      setTimeDraft(payload.traeCheckinTime || '09:00')
       setNote(payload.error ? `读取账号列表失败：${payload.error}` : '')
     } catch (error) {
       setNote(`读取失败：${describeError(error)}`)
@@ -689,6 +693,25 @@ function TraeCheckinPanel(): React.ReactElement {
     try {
       await manage('PUT', '/api/traeCheckin', { traeCheckinGapMinutes: value })
       setNote(`已保存：账号之间隔 ${value} 分钟`)
+      await load()
+    } catch (error) {
+      setNote(`保存失败：${describeError(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 保存定点时刻（HH:MM）。与「账号之间的间隔」是两个独立的保存动作。 */
+  async function saveTime(): Promise<void> {
+    const text = timeDraft.trim()
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) {
+      setNote('签到时刻要填 HH:MM（00:00-23:59），例如 09:00')
+      return
+    }
+    setBusy(true)
+    try {
+      await manage('PUT', '/api/traeCheckin', { traeCheckinTime: text })
+      setNote(`已保存：每天 ${text} 定点签到（间隔轮仍会兜底）`)
       await load()
     } catch (error) {
       setNote(`保存失败：${describeError(error)}`)
@@ -760,6 +783,21 @@ function TraeCheckinPanel(): React.ReactElement {
         )}
 
         <div className='mt-3 flex flex-wrap items-center gap-2 text-[13px]'>
+          <span className='w-[124px] shrink-0'>签到时刻</span>
+          <Input
+            type='time'
+            className='max-w-[130px]'
+            value={timeDraft}
+            disabled={busy}
+            onChange={event => setTimeDraft(event.target.value)}
+          />
+          <Button variant='outline' disabled={busy} onClick={() => void saveTime()}>
+            保存
+          </Button>
+          <span className='text-subtle'>每天到点签一次（启动时当天没签会自动补）</span>
+        </div>
+
+        <div className='mt-2 flex flex-wrap items-center gap-2 text-[13px]'>
           <span className='w-[124px] shrink-0'>账号之间的间隔</span>
           <Input
             type='number'

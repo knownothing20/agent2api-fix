@@ -501,3 +501,67 @@ pub async fn run_round(store: &AccountStore, gap_minutes: i64) -> Result<RoundSu
 
     Ok(summary)
 }
+
+// ── 定点签到（每天 HH:MM 跑一轮）────────────────────────────────
+//
+// 与「间隔型」的 `traeCheckin` 任务**并存**（2026-10-10 用户选择「定点 + 间隔都留」）：
+//   · **定点**负责「到点就签」—— 用户能明确知道几点签（间隔型只能回答「多久一轮」）；
+//   · **间隔**负责兜底 —— 万一定点那一轮失败（网络抖、上游 5xx），下一轮间隔还能补上。
+// 两者都调 `run_round`，而它靠服务端 `checked_in` 幂等 ⇒ 不会重复签。
+//
+// 骨架照 `core::auto_checkin`（轮询 + 当天去重 + 启动补签），理由见那里的注释：
+// 单个定时器在休眠 / 锁屏 / 改时钟后会漂移甚至整段错过，每 30 秒比一次**墙上时钟**
+// 才自愈。补签是**有意**的：开着开关却整天没签到才是反直觉的结果，而重复签到无害。
+
+/// 定点轮询间隔（与 `auto_checkin::TICK_MS` 同值）。
+const DAILY_TICK: Duration = Duration::from_secs(30);
+
+/// 当天已触发过的日期键（进程内存）。
+///
+/// 有意不落盘：重启后为空 ⇒ 启动补签一次（与 `auto_checkin` 的补签语义一致）。
+static LAST_FIRED_DAY: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+fn last_fired() -> &'static std::sync::Mutex<Option<String>> {
+    LAST_FIRED_DAY.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 启动定点签到循环（进程内一次；由 `ServerState::bootstrap` 调用）。
+///
+/// 每一轮都从**墙上时钟**重新判定，因此机器休眠、锁屏、改时钟之后能自动补上
+/// （与 `auto_checkin` 同一套语义）。时刻读配置快照，改完下一轮立即生效。
+pub fn spawn_daily(store: AccountStore) {
+    crate::spawn_task(async move {
+        loop {
+            let now = chrono::Local::now();
+            let today = now.format("%Y-%m-%d").to_string();
+            let configured = crate::server::config::current()
+                .trae_checkin_time()
+                .to_string();
+            let fired = last_fired().lock().map(|slot| slot.clone()).unwrap_or(None);
+            // 「今天还没跑过」且「当前时刻已过配置时刻」⇒ 跑（后者让启动补签也成立）
+            let due = !configured.is_empty()
+                && fired.as_deref() != Some(today.as_str())
+                && now.format("%H:%M").to_string().as_str() >= configured.as_str();
+            if due {
+                if let Ok(mut slot) = last_fired().lock() {
+                    *slot = Some(today);
+                }
+                let gap = crate::server::config::current().trae_checkin_gap_minutes();
+                logging::log("[Trae]", &format!("定点签到触发（{configured}）：开始一轮"));
+                match run_round(&store, gap).await {
+                    Ok(summary) => logging::log(
+                        "[Trae]",
+                        &format!("定点签到完成：{}", summary.summary_text()),
+                    ),
+                    Err(message) => logging::log_with_level(
+                        "[Trae]",
+                        &format!("定点签到失败：{message}"),
+                        "error",
+                    ),
+                }
+            }
+            tokio::time::sleep(DAILY_TICK).await;
+        }
+    });
+}

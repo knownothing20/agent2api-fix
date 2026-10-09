@@ -431,6 +431,10 @@ impl ServerState {
             store.clone(),
             billing.clone(),
         ));
+        // Trae 的**定点签到**循环（2026-10-10）：与 auto_checkin 同构（轮询 + 当天
+        // 去重 + 启动补签），只是它调 `trae::checkin::run_round`。与「间隔型」的
+        // `traeCheckin` 任务并存 —— 定点负责到点就签、间隔负责兜底，两者都幂等。
+        core::providers::trae::checkin::spawn_daily(store.clone());
         // 更新管理器：下载目录 `{config_dir}/updates`，与壳侧 update::download_dir() 同源
         let update = core::update::init_global(UpdateManager::new(config_dir.clone()));
 

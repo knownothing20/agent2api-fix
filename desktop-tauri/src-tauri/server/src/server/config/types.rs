@@ -483,6 +483,14 @@ pub const KEY_TRAE_CHECKIN: &str = "traeCheckin";
 /// 同一个出口 IP，一口气把 N 个账号的写请求打完是批量操作最显眼的特征。
 /// 默认 10 分钟（比参考实现的 3 秒保守得多 —— 它是桌面端，我们是服务器）。
 pub const KEY_TRAE_CHECKIN_GAP_MINUTES: &str = "traeCheckinGapMinutes";
+/// Trae 签到的**定点时刻**（`HH:MM`，空串 = 不启用定点）。
+///
+/// 与「间隔型」的 `traeCheckin` 任务**并存**（2026-10-10 用户选择「定点 + 间隔都留」）：
+/// 定点负责「到点就签」（直观），间隔负责兜底（万一定点那轮失败，下一轮还能补）。
+/// 两者都调同一个 `run_round`，靠服务端 `checked_in` 幂等 ⇒ 不会重复签。
+pub const KEY_TRAE_CHECKIN_TIME: &str = "traeCheckinTime";
+/// 定点时刻的默认值。09:00 是「一天开始后、用户多半已开机」的稳妥点。
+pub const TRAE_CHECKIN_TIME_DEFAULT: &str = "09:00";
 pub const TRAE_CHECKIN_GAP_MINUTES_DEFAULT: u64 = 10;
 pub const TRAE_CHECKIN_GAP_MINUTES_MIN: u64 = 0;
 pub const TRAE_CHECKIN_GAP_MINUTES_MAX: u64 = 1440;

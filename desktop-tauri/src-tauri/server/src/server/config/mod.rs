@@ -148,6 +148,8 @@ pub struct RuntimeConfig {
     welfare_account_gap_minutes: u64,
     /// Trae 签到：账号之间的间隔（分钟；0 = 不等待）。
     trae_checkin_gap_minutes: u64,
+    /// Trae 签到：定点时刻（`HH:MM`，空串 = 不启用）。
+    trae_checkin_time: String,
     /// 自动领福利（码道）：同一账号两次写尝试的最小间隔（分钟）。
     welfare_min_attempt_gap_minutes: u64,
     /// 自动领福利（码道）：同一账号每天的写尝试上限（次）。
@@ -244,6 +246,11 @@ impl RuntimeConfig {
     /// Trae 签到：账号之间的间隔（分钟；`0` = 不等待）。
     pub fn trae_checkin_gap_minutes(&self) -> i64 {
         self.trae_checkin_gap_minutes as i64
+    }
+
+    /// Trae 签到：定点时刻（`HH:MM`；空串 = 不启用定点）。
+    pub fn trae_checkin_time(&self) -> &str {
+        &self.trae_checkin_time
     }
 
     /// 自动领福利：同一账号两次写尝试的最小间隔。
@@ -515,6 +522,15 @@ fn build(raw: Map<String, Value>) -> RuntimeConfig {
             .and_then(Value::as_str)
             .filter(|value| CODEARTS_THINKING_LEVELS.contains(value))
             .unwrap_or_default()
+            .to_string(),
+        // Trae 定点时刻：只认 `HH:MM`（00:00-23:59），其余（含空串）一律回落默认。
+        // 空串**不是**合法配置值 —— 想关定点就把 enabled 关掉，别用空串表达
+        //（空串与「没配过」无法区分，会让「关掉」变成「回到默认 09:00」）。
+        trae_checkin_time: raw
+            .get(KEY_TRAE_CHECKIN_TIME)
+            .and_then(Value::as_str)
+            .filter(|value| is_hhmm(value))
+            .unwrap_or(TRAE_CHECKIN_TIME_DEFAULT)
             .to_string(),
         // Trae 签到账号间隔：越界一律回落默认（与福利那三个旋钮同一取向）
         trae_checkin_gap_minutes: raw
@@ -1368,6 +1384,29 @@ pub fn set_codearts_thinking_level(level: &str) -> bool {
             Value::String(level.to_string()),
         );
         config.codearts_thinking_level = level.to_string();
+    })
+}
+
+/// `HH:MM`（00:00-23:59）校验。与 `core::auto_checkin::normalize_time` 同口径。
+fn is_hhmm(value: &str) -> bool {
+    let Some((hour, minute)) = value.split_once(':') else {
+        return false;
+    };
+    if hour.len() != 2 || minute.len() != 2 {
+        return false;
+    }
+    matches!(
+        (hour.parse::<u32>(), minute.parse::<u32>()),
+        (Ok(h), Ok(m)) if h < 24 && m < 60
+    )
+}
+
+pub fn set_trae_checkin_time(time: &str) -> bool {
+    update(|config| {
+        config
+            .raw
+            .insert(KEY_TRAE_CHECKIN_TIME.to_string(), Value::String(time.to_string()));
+        config.trae_checkin_time = time.to_string();
     })
 }
 
