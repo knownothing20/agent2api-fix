@@ -591,6 +591,28 @@ type PageData = { summary: StatsSummary | null; error: string | null }
 
 const EMPTY_DATA: PageData = { summary: null, error: null }
 
+/** 每日用量图的四个互斥档位（2026-10-09：由「指标 × 维度」两组合成一档）。 */
+type UsageView = 'tokens' | 'requests' | 'model' | 'account'
+
+const USAGE_VIEW_OPTIONS = [
+  { value: 'tokens', label: '按 Token' },
+  { value: 'requests', label: '按请求数' },
+  { value: 'model', label: '按模型' },
+  { value: 'account', label: '按账号' },
+] as const
+
+/** 面板头那句副标题：把当前档位说清（总量 / 拆开、以及拆开时的口径）。 */
+const USAGE_VIEW_SUBTITLE: Record<UsageView, string> = {
+  tokens: '每日 Token 总量',
+  requests: '每日请求数总量',
+  model: 'Token 用量 · 按模型拆开',
+  account: 'Token 用量 · 按账号拆开',
+}
+
+function isUsageView(value: string): value is UsageView {
+  return value === 'tokens' || value === 'requests' || value === 'model' || value === 'account'
+}
+
 function ReportPage() {
   const [data, setData] = React.useState<PageData>(EMPTY_DATA)
   const [range, setRange] = React.useState<string>(readRange)
@@ -733,14 +755,23 @@ function ReportPage() {
   const heatView = summary ? heatmapView(heatmapDays, heatWidth[1]) : null
   const trendView = summary ? cacheTrendView(cacheTrendHours, trendWidth[1]) : null
   const dailyView = summary ? dailyTrendView(dailyDays, dailyWidth[1]) : null
-  // 每日用量曲线：维度可切（模型 / 账号）。默认按模型 —— 「钱花在哪个模型上」
-  // 是这张图最常被问的问题，账号维度是下一层。
-  const [usageDim, setUsageDim] = React.useState<'model' | 'account'>('model')
-  // 指标维度：Token 用量 / 请求次数。两个数后端都给了（trendByModel / trendByAccount
-  // 每条都带 tokens 与 requests），所以切换只是换个字段取数，不用再请求一次。
-  const [usageMetric, setUsageMetric] = React.useState<UsageMetric>('tokens')
-  const usagePoints = usageDim === 'model' ? summary?.trendByModel : summary?.trendByAccount
-  const usageView = summary
+  // 每日用量视图：**四个互斥档位，每次只选一个**（2026-10-09 用户要求）。
+  //
+  // 此前是两组独立控件（指标 × 维度），能同时选中 —— 用户看到的「按模型」+「按 Token」
+  // 两个都亮，被读成「一组里选了两个」。合成一档之后语义更直白：
+  //   · 按 Token / 按请求数 → **每日总量**（单条线，数据来自 dailyTrend）；
+  //   · 按模型 / 按账号     → 按该维度**拆开的多条线**，都用 **Token 口径**
+  //     （用户原话：「按模型 和 按账号 的 token 时间曲线」）。
+  // 三种数据后端都已给（dailyTrend / trendByModel / trendByAccount），切换不发请求。
+  const [usageView, setUsageView] = React.useState<UsageView>('tokens')
+  const usagePoints =
+    usageView === 'model'
+      ? summary?.trendByModel
+      : usageView === 'account'
+        ? summary?.trendByAccount
+        : summary?.dailyTrend
+  const usageMetric: UsageMetric = usageView === 'requests' ? 'requests' : 'tokens'
+  const usageChart = summary
     ? dailyUsageView(usagePoints, dailyWidth[1], usageMetric, rangeWindowOf(range))
     : null
 
@@ -771,25 +802,16 @@ function ReportPage() {
       <section className='panel'>
         <div className='panel-head'>
           <h2>每日用量</h2>
-          <span className='panel-sub'>按 {usageDim === 'model' ? '模型' : '账号'}拆开</span>
+          <span className='panel-sub'>{USAGE_VIEW_SUBTITLE[usageView]}</span>
           <div className='head-actions'>
+            {/* 四个档位**互斥**（2026-10-09 用户要求「每次只能选一个」）：
+                此前是两组独立控件、可同时选中 —— 「按模型」与「按 Token」两个都亮着，
+                被读成「一组里选了两个」（「与」）。合成一档后语义直白：总量 / 拆开。 */}
             <SegmentedControl
-              aria-label='用量指标'
-              options={[
-                { value: 'tokens', label: '按 Token' },
-                { value: 'requests', label: '按请求数' },
-              ]}
-              value={usageMetric}
-              onValueChange={value => setUsageMetric(value === 'requests' ? 'requests' : 'tokens')}
-            />
-            <SegmentedControl
-              aria-label='用量维度'
-              options={[
-                { value: 'model', label: '按模型' },
-                { value: 'account', label: '按账号' },
-              ]}
-              value={usageDim}
-              onValueChange={value => setUsageDim(value === 'account' ? 'account' : 'model')}
+              aria-label='每日用量视图'
+              options={USAGE_VIEW_OPTIONS}
+              value={usageView}
+              onValueChange={value => setUsageView(isUsageView(value) ? value : 'tokens')}
             />
           </div>
         </div>
@@ -798,13 +820,13 @@ function ReportPage() {
             ⇒ 永远测不到宽度 ⇒ 退回兜底宽度，图只画到一半、右边留一大块空白
             （2026-10-04 用户截图反馈「右边空白啊」）。老图表是无条件渲染的，所以没这问题。 */}
         <div className='chart-wrap tall' ref={dailyWidth[0]}>
-          {usageView ? <DailyUsageChart view={usageView} /> : placeholder('所选范围内暂无用量')}
+          {usageChart ? <DailyUsageChart view={usageChart} /> : placeholder('所选范围内暂无用量')}
         </div>
-        {usageView ? (
+        {usageChart ? (
           <>
             {/* 图例：颜色与曲线一致，读数按用量从多到少 —— 与环形图同一口径 */}
             <div className='flex flex-wrap gap-x-4 gap-y-1'>
-              {usageView.series.map(line => (
+              {usageChart.series.map(line => (
                 <span className='flex items-center gap-1.5 text-[13px]' key={line.name}>
                   <i className='inline-block h-2.5 w-2.5 rounded-sm' style={{ background: line.color }} />
                   {line.name}
