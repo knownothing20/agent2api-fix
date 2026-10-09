@@ -33,7 +33,7 @@ use super::{
     chat_frame, content_parts, content_text, is_truthy, json_text, native_tool, random_id,
     string_field, string_value, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
 };
-use super::anthropic::{parse_json_object, tool_result_text, DEFAULT_MAX_TOKENS};
+use super::anthropic::{parse_json_object, tool_result_parts, DEFAULT_MAX_TOKENS, ToolResultParts};
 use super::responses::ConvertError;
 use crate::server::core::model_rules;
 
@@ -201,6 +201,28 @@ pub fn anthropic_request_from_chat(chat: &Value, model: &str) -> Result<Value, C
     Ok(Value::Object(out))
 }
 
+/// 拆开的工具结果 → Anthropic 的 `tool_result.content`。
+///
+/// ── 与入站方向相反的取舍（不是笔误）──────────────────────────
+/// 入站（`anthropic.rs`）图片**必须**挪出 tool 消息：Chat 不许 `tool` 角色带
+/// 图片（OpenAI 直接 400，见 `responses::PendingImages`），所以那边图片落到
+/// 相邻的 user 消息上。出站这边不用搬 —— Anthropic 的 `tool_result.content`
+/// 本来就接受嵌套内容块（官方收 `text` / `image` / `document` / `search_result`），
+/// 图片留在结果里才是保真形态。
+///
+/// 没有图片时保持字符串形态：字符串对各家上游最友好，也是原来就在发的形状。
+fn tool_result_content(parts: ToolResultParts) -> Value {
+    if parts.images.is_empty() {
+        return Value::String(parts.text);
+    }
+    let mut blocks: Vec<Value> = Vec::new();
+    if !parts.text.is_empty() {
+        blocks.push(json!({ "type": "text", "text": parts.text }));
+    }
+    blocks.extend(parts.images);
+    Value::Array(blocks)
+}
+
 /// 一条非 system 的 chat 消息 → Anthropic 内容块数组。
 fn anthropic_blocks_of(message: &Value, role: &str) -> Vec<Value> {
     // tool 消息 → tool_result 块（挂在 user 消息上；Anthropic 要求
@@ -216,7 +238,10 @@ fn anthropic_blocks_of(message: &Value, role: &str) -> Vec<Value> {
         let mut block = json!({
             "type": "tool_result",
             "tool_use_id": string_field(message, "tool_call_id"),
-            "content": tool_result_text(message.get("content").unwrap_or(&Value::Null)),
+            "content": tool_result_content(tool_result_parts(
+                message.get("content").unwrap_or(&Value::Null),
+                image_to_anthropic,
+            )),
         });
         if let Some(object) = block.as_object_mut() {
             if is_error {

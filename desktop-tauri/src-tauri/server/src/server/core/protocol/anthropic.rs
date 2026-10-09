@@ -29,7 +29,8 @@ use serde_json::{json, Map, Value};
 
 use super::{
     content_parts, content_text, event_frame, is_truthy, json_text, native_tool, random_id,
-    string_field, string_value, tool_plan, SseLineBuffer, FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
+    string_field, string_value, tool_plan, SseLineBuffer, TOOL_IMAGE_PLACEHOLDER,
+    FIELD_CACHE_CONTROL, FIELD_IS_ERROR,
 };
 use super::responses::ConvertError;
 use crate::server::logging;
@@ -274,6 +275,12 @@ fn convert_message(messages: &mut Vec<Value>, message: &Value) -> Result<(), Con
     // beginning of this message"）。Anthropic 自身的规范顺序同样是 tool_result
     // 在前、正文在后 —— 先推正文会把用户消息插进 assistant 与其结果之间，
     // 严格上游因此对之后每条请求都 400，整条会话报废。
+    //
+    // 工具结果里的图片：Chat 的 tool 消息不许带图（OpenAI 直接 400，理由见
+    // `responses::PendingImages`），所以攒起来、在本轮工具结果**全部**落地之后
+    // 落成一条 user 消息。不需要跨 Anthropic 消息暂存 —— Anthropic 要求一条
+    // assistant 的全部 tool_result 都在紧接着的那条 user 消息里。
+    let mut tool_result_images: Vec<Value> = Vec::new();
     for (index, result) in tool_results.iter().enumerate() {
         let tool_use_id = string_field(result, "tool_use_id");
         let output = result.get("content").unwrap_or(&Value::Null);
@@ -282,6 +289,8 @@ fn convert_message(messages: &mut Vec<Value>, message: &Value) -> Result<(), Con
         // 恢复；OpenAI 形出口没有这个概念，随 strip 剥离。
         let is_error = result.get("is_error").and_then(Value::as_bool) == Some(true);
         let cache = tool_result_caches.get(index).cloned().flatten();
+        let parts = tool_result_parts(output, image_to_chat);
+        tool_result_images.extend(parts.images);
         let mut entry = Map::new();
         entry.insert("role".to_string(), Value::String("tool".to_string()));
         entry.insert(
@@ -290,7 +299,12 @@ fn convert_message(messages: &mut Vec<Value>, message: &Value) -> Result<(), Con
         );
         entry.insert(
             "content".to_string(),
-            Value::String(tool_result_text(output)),
+            // 只有图片时 `text` 是空串，占位文案理由见 [`TOOL_IMAGE_PLACEHOLDER`]
+            Value::String(if parts.text.is_empty() {
+                TOOL_IMAGE_PLACEHOLDER.to_string()
+            } else {
+                parts.text
+            }),
         );
         if is_error {
             entry.insert(FIELD_IS_ERROR.to_string(), Value::Bool(true));
@@ -299,6 +313,12 @@ fn convert_message(messages: &mut Vec<Value>, message: &Value) -> Result<(), Con
             entry.insert(FIELD_CACHE_CONTROL.to_string(), cache);
         }
         messages.push(Value::Object(entry));
+    }
+    // 结果之后、正文之前：图属于工具结果，挨着它最近的位置是这里。
+    // （客户端自己的正文随后照旧成一条消息，两条连续 user 消息不做合并 ——
+    // 上游接受这种形状，合并反而会把我们的合成内容融进客户端的消息）
+    if !tool_result_images.is_empty() {
+        messages.push(json!({ "role": "user", "content": Value::Array(tool_result_images) }));
     }
 
     // 工具调用：必须挂在 assistant 消息上（Anthropic 的 tool_use 只在 assistant 里）
@@ -339,31 +359,73 @@ fn convert_message(messages: &mut Vec<Value>, message: &Value) -> Result<(), Con
     Ok(())
 }
 
-/// 工具结果内容 → 文本（Chat 的 tool 消息 content 只接受字符串）
+/// 工具结果拆出来的两部分（见 [`tool_result_parts`]）
+pub(super) struct ToolResultParts {
+    /// 文本部分（可能为空串 —— 只有图片时由调用方决定补什么）
+    pub(super) text: String,
+    /// 图片块，**已按调用方给的转换器转成目标协议的形态**
+    pub(super) images: Vec<Value>,
+}
+
+/// 工具结果内容 → 文本 + 图片块。
+///
+/// `convert` 是该方向「图片块 → 目标协议形态」的转换器（入站给
+/// [`image_to_chat`]，出站给 `image_to_anthropic`）：转不出来的块在这里就被
+/// 剔除，所以调用方拿到的 `images` 一定落得下去，不必再判一次。
+///
+/// ── 为什么必须拆开（与 responses.rs 的 issue #76 同一类）──────
+/// Anthropic 的 `tool_result.content` 允许**嵌套内容块数组**，官方收
+/// `text` / `image` / `document` / `search_result` 四类，图片是真实用法
+/// （Claude Code 读一张截图、MCP 的截图类工具都这么回）。原实现一律走
+/// [`content_text`] 取文本，**图片被静默丢掉**；只有图片时则退化成 `json_text`
+/// 把 base64 拍平成正文 —— 前者症状是模型看不到图却照上下文编答案（比 token
+/// 暴涨更隐蔽，因为连 token 数都不涨），后者与 issue #76 完全同病。
+///
+/// 拆开之后：文本进 Chat 的 tool 消息，图片由调用方转交相邻的 user 消息
+/// （Chat 的 tool 消息不许带图，理由见 `responses::PendingImages`）。
 ///
 /// `pub(super)`：出站方向（`anthropic_outbound`）把 chat 的 tool 消息折回
-/// user 消息里的 tool_result 块时用同一口径。
-pub(super) fn tool_result_text(content: &Value) -> String {
+/// `tool_result` 时用同一口径，两处各写一份迟早分叉。
+pub(super) fn tool_result_parts(
+    content: &Value,
+    convert: fn(&Value) -> Option<Value>,
+) -> ToolResultParts {
+    let text_only = |text: String| ToolResultParts { text, images: Vec::new() };
     match content {
         Value::String(text) => {
-            if text.is_empty() { "(empty)".to_string() } else { text.clone() }
+            if text.is_empty() { text_only("(empty)".to_string()) } else { text_only(text.clone()) }
         }
-        Value::Null => "(empty)".to_string(),
-        Value::Array(_) => {
+        Value::Null => text_only("(empty)".to_string()),
+        Value::Array(parts) => {
+            let images: Vec<Value> = parts
+                .iter()
+                .filter(|part| is_image_block(part))
+                .filter_map(|part| convert(part))
+                .collect();
             let text = content_text(content);
-            if text.is_empty() {
-                // 结构化结果（图片等）：拍平成 JSON
+            if text.is_empty() && images.is_empty() {
+                // 一个块都落不下来（例如 Anthropic Files API 的 `file` 源图片、
+                // 只有 `search_result` / `document` 的结果）：保持原来的拍平
+                // 兜底，免得整段结果凭空消失
                 let raw = json_text(content);
-                if raw.is_empty() { "(empty)".to_string() } else { raw }
-            } else {
-                text
+                return text_only(if raw.is_empty() { "(empty)".to_string() } else { raw });
             }
+            ToolResultParts { text, images }
         }
         other => {
             let raw = json_text(other);
-            if raw.is_empty() { "(empty)".to_string() } else { raw }
+            text_only(if raw.is_empty() { "(empty)".to_string() } else { raw })
         }
     }
+}
+
+/// 是不是图片块（Anthropic 的 `image` 与 Chat 的 `image_url` / `input_image`
+/// 都认 —— 两个方向的输入各是其中一种，转不转得出来交给 `convert` 判）
+fn is_image_block(part: &Value) -> bool {
+    matches!(
+        string_field(part, "type").to_lowercase().as_str(),
+        "image" | "image_url" | "input_image"
+    )
 }
 
 /// Anthropic 的 image 块 → Chat 的 image_url 块。

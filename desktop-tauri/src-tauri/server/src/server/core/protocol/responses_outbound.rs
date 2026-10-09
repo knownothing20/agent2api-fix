@@ -28,7 +28,7 @@ use super::{
     chat_frame, content_parts, content_text, is_truthy, json_number_of, json_text, native_tool,
     random_id, string_field, string_value, SseLineBuffer, FIELD_ENCRYPTED_CONTENT,
 };
-use super::responses::{image_url_of, tool_output_text, ConvertError};
+use super::responses::{image_url_of, tool_output_parts, ConvertError, ToolOutput};
 use super::tool_plan;
 
 // ─── 请求：Chat → Responses ─────────────────────────────────
@@ -83,7 +83,7 @@ pub fn responses_request_from_chat(chat: &Value, model: &str) -> Result<Value, C
                 items.push(json!({
                     "type": "function_call_output",
                     "call_id": string_field(message, "tool_call_id"),
-                    "output": tool_output_text(message.get("content")),
+                    "output": tool_output_to_responses(tool_output_parts(message.get("content"))),
                 }));
             }
             "assistant" => push_assistant_items(&mut items, message),
@@ -260,6 +260,38 @@ fn push_assistant_items(items: &mut Vec<Value>, message: &Value) {
             }));
         }
     }
+}
+
+/// 拆开的工具输出 → Responses 的 `function_call_output.output`。
+///
+/// ── 与入站方向相反的取舍（不是笔误）──────────────────────────
+/// 入站（`responses.rs`）图片**必须**挪出 tool 消息：Chat 不许 `tool` 角色带
+/// 图片（OpenAI 直接 400，见 `responses::PendingImages`）。出站这边不用 ——
+/// Responses 官方 schema 里 `output` 本来就是
+/// `String | Array[ResponseInputText | ResponseInputImage | …]`，图表留在工具结果
+/// 里才是保真形态（DeepSeek 的 Responses 文档同样声明 `input_image` 按真图片
+/// 处理）。所以这边只是「别把它拍平成 JSON 文本」，不搬消息。
+///
+/// 没有图片时保持字符串形态：字符串对各家上游最友好，也是原来就在发的形状。
+fn tool_output_to_responses(output: ToolOutput) -> Value {
+    if output.images.is_empty() {
+        return Value::String(output.text);
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    if !output.text.is_empty() {
+        parts.push(json!({ "type": "input_text", "text": output.text }));
+    }
+    for image in &output.images {
+        let url = image_url_of(image);
+        if !url.is_empty() {
+            parts.push(json!({ "type": "input_image", "image_url": url }));
+        }
+    }
+    if parts.is_empty() {
+        // 图片块全都取不到 url（只剩 file_id 之类）：退回文本，别发空数组上去
+        return Value::String(output.text);
+    }
+    Value::Array(parts)
 }
 
 /// Chat content（字符串或块数组）→ Responses 的 input content。

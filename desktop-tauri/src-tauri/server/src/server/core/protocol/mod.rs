@@ -71,6 +71,17 @@ pub fn string_field(value: &Value, key: &str) -> String {
     value.get(key).map(string_value).unwrap_or_default()
 }
 
+/// 工具结果只有图片、没有文本时，在 Chat 的 `tool` 消息里留的占位正文。
+///
+/// 不能让 content 空着：tool 消息的 content 是必填，空串在部分上游会被拒；
+/// 这句话同时告诉模型「图在紧接着的那条消息里」—— 否则它只看得到工具返回了空。
+///
+/// 两处入站翻译共用同一句（Responses 的 `function_call_output`、Anthropic 的
+/// `tool_result`）：它们把图片挪出 tool 消息的理由与落点完全一样，文案也就不该
+/// 分家 —— 排查时在同一处看到这句话，就知道是同一类处理。
+pub const TOOL_IMAGE_PLACEHOLDER: &str =
+    "(the tool returned an image; it is attached in the following message)";
+
 /// JS 的 `jsonText(value)`：字符串原样返回，其余 JSON 序列化。
 ///
 /// 用途是「把任意 JSON 塞进一个字符串字段」（工具参数、工具输出）。
