@@ -329,13 +329,12 @@ pub async fn status_all(store: &AccountStore) -> Result<Vec<AccountOutcome>, Str
         };
         let proxy = account_proxy(&record).ok().flatten();
         let pre = status_of(&credential, proxy.as_ref()).await;
+        // already 的文案固定用「今日已签到」：上游那一格的 message 恒是通用回执
+        // （实测为 `"success"`），拿它当状态说明没有任何信息量。
         let (status, message) = if !pre.ok {
             ("fail", format!("查询失败：{}", pre.message))
         } else if pre.checked_in {
-            (
-                "already",
-                if pre.message.is_empty() { "今日已签到".to_string() } else { pre.message },
-            )
+            ("already", "今日已签到".to_string())
         } else {
             ("pending", "今日未签到".to_string())
         };
@@ -438,7 +437,7 @@ pub async fn run_round(store: &AccountStore, gap_minutes: i64) -> Result<RoundSu
                 status: "already",
                 credits: pre.credits,
                 delta: 0,
-                message: if pre.message.is_empty() { "今日已签到".to_string() } else { pre.message },
+                message: "今日已签到".to_string(),
                 error_type: None,
             });
             continue;
