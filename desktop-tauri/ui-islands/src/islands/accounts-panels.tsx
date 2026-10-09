@@ -442,9 +442,15 @@ function BalanceDetailDialog({
   const subscription = (data.subscription && typeof data.subscription === 'object'
     ? data.subscription
     : {}) as Record<string, unknown>
-  // 整期结束时间：键名各家/各版本不一样，都兜住；取不到就不显示倒计时
-  const endRaw = data.endDate || data.resetDate || data.end_date || subscription.endDate
-  const endAt = endRaw ? new Date(String(endRaw)) : null
+  // 整期结束时间：键名各家/各版本不一样，都兜住；取不到就不显示倒计时。
+  // ⚠️ 本家（Trae）后端把整期结束放在 `subscription.expireAt`（**毫秒**，
+  // 见 usage.rs 的 `document()`）。此前这里只找 endDate/resetDate/end_date 一族
+  // ⇒ 恒取不到 ⇒ 那行「本周期 … 结束（还剩 N 天）」从来没显示过
+  //（2026-10-09 用户截图问「有没有积分过期时间的列表」时才发现）。
+  const endRaw =
+    data.endDate || data.resetDate || data.end_date || subscription.endDate || subscription.expireAt
+  const endAt = endRaw ? new Date(typeof endRaw === 'number' ? endRaw : String(endRaw)) : null
+  const endValid = Boolean(endAt && !Number.isNaN(endAt.getTime()))
   const daysLeft = endAt && !Number.isNaN(endAt.getTime())
     ? Math.ceil((endAt.getTime() - Date.now()) / 86400000)
     : null
@@ -468,7 +474,8 @@ function BalanceDetailDialog({
               : `可用 ${numberOrDash(data.available)} ${String(data.unit || '积分')}`}
             {daysLeft !== null ? (
               <span className='detail'>
-                {' '}· 本周期 {String(endRaw)} 结束（还剩 {daysLeft} 天）
+                {' '}· 本周期 {endValid && endAt ? endAt.toLocaleDateString('zh-CN') : String(endRaw)} 结束
+                （还剩 {daysLeft} 天）
               </span>
             ) : null}
           </p>
