@@ -7,8 +7,13 @@
 
 use serde_json::Value;
 
-/// 默认仓库（本项目的上游）；fork 后可自行覆盖（Node 版 DEFAULT_REPO）
-pub const DEFAULT_REPO: &str = "aimod-cc/agent2api";
+/// 默认仓库：**本仓库自己**（2026-10-10 由上游改为本仓库）。
+///
+/// 原先是上游 —— 本仓库当时是 private，匿名读 GitHub API 一律 404，指过去只会让
+/// 「最新版本」变成空，所以更新检查只好读上游。改为 **public 之后本仓库匿名可读**，
+/// 便指回自己（`WORKBUDDY_UPDATE_REPO` 仍可覆盖它，见 `core/update/mod.rs` 的解析顺序）。
+/// 这样面板「版本」页显示的就是**本仓库的版本与更新**，而不是别人的。
+pub const DEFAULT_REPO: &str = "knownothing20/agent2api-fix";
 
 /// GitHub API 根（Node 版 GITHUB_API）
 pub const GITHUB_API: &str = "https://api.github.com";

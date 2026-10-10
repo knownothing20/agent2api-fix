@@ -56,22 +56,20 @@ import { showUpdateModal } from './update-modal'
 const POLL_MS = 1000
 
 /**
- * 两个仓库地址（都是展示用常量，不参与任何检查或下载）。
+ * 本项目仓库地址（展示用常量）。
  *
- * ── 为什么本项目仓库是常量而不是后端返回的 repository ──────────
- * 后端返回的 `repository` 是**更新检查实际去读的那个仓库**，由
- * `WORKBUDDY_UPDATE_REPO` 决定。本项目（私有 fork）把它指向**上游**：
- * 上游是公开仓库，匿名即可读 Release，检查更新因此零凭据可用；
- * 而我们自己的仓库是私有的，匿名读一律 404，指过去只会让「最新版本」
- * 变成空。所以：
- *   · 本项目仓库 = 这里写死的 fork 地址（我们自己的那份代码）
- *   · 参考仓库   = 后端 repository（= 上游，版本信息与更新日志的来源）
- * 两者不是同一个值，别合并 —— 合并后要么版本信息空掉，要么显示错仓库。
+ * ── 更新检查读的是谁 ────────────────────────────────────────
+ * 后端返回的 `repository` 是**更新检查实际去读的那个仓库**，由环境变量
+ * `WORKBUDDY_UPDATE_REPO` 决定，默认值见后端 `core/update/version.rs` 的
+ * `DEFAULT_REPO`。
+ *
+ * 本仓库原先是 private，匿名读 GitHub API 一律 404 ⇒ 当初把更新检查指向
+ * 上游（公开仓库）才拿得到版本号；**2026-10-10 本仓库改为 public 后**，
+ * 已改回读**自己**（`.env` 的 `WORKBUDDY_UPDATE_REPO` 与本处常量一致），
+ * 因此不再需要「参考仓库」这一栏 —— 原来那栏显示的是上游的版本，会让人
+ * 以为「别人的系统有更新」。
  */
 const PROJECT_REPO = 'knownothing20/agent2api-fix'
-
-/** 参考仓库（上游）：版本检查与更新日志的来源 */
-const REFERENCE_REPO = 'aimod-cc/agent2api'
 
 /** 徽章语义色记号（app.js 的 renderTopbarStatus 优先读 data-tone，见其 mirror 注释） */
 type BadgeTone = '' | 'ok' | 'warn' | 'bad'
@@ -627,7 +625,6 @@ function UpdatePanel() {
 
   // 两个仓库地址都固定取常量（理由见文件头 PROJECT_REPO 的说明）
   const projectUrl = `https://github.com/${PROJECT_REPO}`
-  const referenceUrl = `https://github.com/${REFERENCE_REPO}`
   const updatedLabel = formatDateTime(snap.info?.publishedAt)
   const latestLabel = snap.info?.latestVersion
     ? `${snap.info.latestVersion}${snap.info.prerelease ? '（预发布）' : ''}`
@@ -639,7 +636,7 @@ function UpdatePanel() {
         <h2>版本</h2>
         <span
           className='tip-q'
-          data-tip='本页只显示仓库地址、版本与最近更新时间。「检查更新」读的是参考仓库（上游，公开仓库）；本项目仓库是私有仓库，匿名读不到它的发布信息，所以版本与时间都以参考仓库为准。'
+          data-tip='本页只显示仓库地址、版本与最近更新时间。「检查更新」读的就是本仓库的发布信息（本仓库已公开，匿名即可读）。'
         ></span>
         {/* id 保留：app.js 的 renderTopbarStatus 按 id 镜像徽章文案与语义色（配色经
             data-tone 传；设置页顶栏那枚镜像目前还不读它，保持一致没坏处） */}
@@ -655,8 +652,8 @@ function UpdatePanel() {
         </div>
       </div>
       <div className='panel-body'>
-        {/* 三样信息：仓库地址（本项目 / 参考）、版本（当前 / 参考仓库最新）、最近更新。
-            读数固定五行，不折叠也不做卡片嵌套 —— 一眼看完就是本页的全部内容 */}
+        {/* 三样信息：仓库地址（本项目）、版本（当前 / 最新）、最近更新。
+            读数固定四行，不折叠也不做卡片嵌套 —— 一眼看完就是本页的全部内容 */}
         <div className='update-facts' id='update-facts'>
           <div className='update-fact'>
             <span className='k'>本项目仓库</span>
@@ -667,19 +664,11 @@ function UpdatePanel() {
             </span>
           </div>
           <div className='update-fact'>
-            <span className='k'>参考仓库</span>
-            <span className='v'>
-              <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
-                {REFERENCE_REPO}
-              </a>
-            </span>
-          </div>
-          <div className='update-fact'>
             <span className='k'>当前版本</span>
             <span className='v' id='update-current'>{snap.info?.currentVersion || '—'}</span>
           </div>
           <div className='update-fact'>
-            <span className='k'>参考仓库最新版本</span>
+            <span className='k'>最新版本</span>
             <span className='v' id='update-latest'>{latestLabel}</span>
           </div>
           <div className='update-fact'>
