@@ -183,13 +183,13 @@ services:
 
 再往下是趋势区：近 24 小时的**缓存命中率**（左轴，折线）与 **Token 消耗**（右轴，面积）叠在同一张图上，便于判断命中率下滑是流量结构变化还是缓存失效；底部是按天 Token 柱状图，范围随顶部时间窗切换：
 
-![报表趋势：缓存命中率与 Token 消耗双轴趋势、按天 Token 柱状图](./assets/screenshots/report-trends.png)
+![报表趋势：活跃热力图、缓存命中率与 Token 消耗双轴趋势](./assets/screenshots/report-trends.png)
 
 ### 定时任务
 
 后台任务在「定时任务」页统一管理：开关、执行间隔、上次执行结果与下次触发时间都在这里，也可以绕过间隔手动「立即执行」一次。任务清单本身保存在 `~/.agent2api/config.json` 的 `scheduledTasks` 字段，改动立即生效，不需要重启程序。
 
-![定时任务页：自动签到、凭证维护、模型目录刷新等后台任务的开关与间隔](./assets/screenshots/scheduled-tasks.png)
+![定时任务页：Trae 每日签到、凭证维护、模型目录刷新等后台任务的开关与间隔](./assets/screenshots/scheduled-tasks.png)
 
 ---
 

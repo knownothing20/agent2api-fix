@@ -172,13 +172,13 @@ The overview gives total requests, success rate, total tokens and the top model,
 
 Further down are the trends: the last 24 hours of **cache hit rate** (left axis, line) and **token consumption** (right axis, area) are overlaid in one chart so a dip in hit rate can be read as a change in traffic mix versus a cache miss; at the bottom is a per-day token bar chart whose range follows the time window at the top:
 
-![Report trends: dual-axis cache hit rate and token consumption, per-day token bars](./assets/screenshots/report-trends.png)
+![Report trends: activity heatmap, dual-axis cache hit rate and token consumption](./assets/screenshots/report-trends.png)
 
 ### Scheduled Tasks
 
 Background tasks are managed on one page: toggle, interval, last result and next fire time all live here, and you can also run one immediately without waiting out the interval. The task list itself is stored in the `scheduledTasks` field of `~/.agent2api/config.json`, and edits take effect immediately — no restart needed.
 
-![Scheduled tasks page: toggles and intervals for check-in, credential maintenance, model catalog refresh and more](./assets/screenshots/scheduled-tasks.png)
+![Scheduled tasks page: toggles and intervals for daily check-in (incl. Trae), credential maintenance, model catalog refresh and more](./assets/screenshots/scheduled-tasks.png)
 
 ---
 
