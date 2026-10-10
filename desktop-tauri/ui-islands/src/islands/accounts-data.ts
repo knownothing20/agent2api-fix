@@ -554,6 +554,13 @@ export async function checkinAll(): Promise<void> {
  */
 export async function runCheckin(id: string): Promise<void> {
   const label = displayNameOf(findAccount(id)) || id
+  // Trae 的签到是**另一条链**（`checkin_credits/status` → `claim`，走 `traeCheckin` 任务），
+  // 与通用的 `/api/checkin` 不通用 ⇒ 按 provider 分流。两条都靠服务端 `checked_in`
+  // 幂等，重复点不会签两次。
+  if (domain.providerOf(findAccount(id)) === 'trae') {
+    await runTraeCheckin(id, label)
+    return
+  }
   try {
     const data = await checkinFor(id)
     const rows = Array.isArray(data?.results) ? data.results : []
@@ -569,6 +576,42 @@ export async function runCheckin(id: string): Promise<void> {
     bump()
     // 签到会改变余额读数：此刻刷新余额（静默，见 refreshUsageAfterCheckin）。
     // 只查这一行 —— 用户点的是这个账号，别的行没动过
+    void refreshUsageAfterCheckin(id)
+    void shared().wbApp?.refresh?.()
+  } catch (error) {
+    const message = errorMessage(error)
+    checkinErrors.set(id, message)
+    bump()
+    toast(`签到失败：${label}：${message}`, 'err')
+  }
+}
+
+/**
+ * Trae 单账号签到（2026-10-10 新增）。
+ *
+ * ── 为什么不复用通用那条 ────────────────────────────────────
+ * Trae 的签到走 `checkin_credits/status`（只读预检）→ `checkin_credits/claim`，
+ * 由后端的 `traeCheckin` 任务承载 —— 与 WorkBuddy 系的 `/api/checkin` 不是一套。
+ * 后端为此给任务触发端点加了 `?accountId=`（`run_round` 的 `only_id`），
+ * 于是这里只是「带 id 触发一次」，**手动与自动共用同一段代码**（不会出现
+ * 「手动能签、自动不能」这类分叉）。
+ *
+ * 走通用请求入口 `customRequest` 而不是具名桥：带 query 的具名方法要同时改
+ * web_shim 与桌面壳两处，而通用入口两边都有（与福利页同一取舍）。
+ */
+async function runTraeCheckin(id: string, label: string): Promise<void> {
+  try {
+    const providers = shared().wbProviders as unknown as {
+      customRequest?<T>(method: string, path: string, body?: unknown): Promise<T>
+    } | undefined
+    if (!providers?.customRequest) throw new Error('目录模块未就绪')
+    const data = await providers.customRequest<{ summary?: string }>(
+      'POST',
+      `/api/scheduled-tasks/traeCheckin/run?accountId=${encodeURIComponent(id)}`,
+    )
+    checkinErrors.delete(id)
+    toast(data?.summary ? `${label}：${data.summary}` : `✅ ${label} 签到完成`, 'ok')
+    bump()
     void refreshUsageAfterCheckin(id)
     void shared().wbApp?.refresh?.()
   } catch (error) {

@@ -51,7 +51,8 @@ pub async fn entry(State(state): State<ServerState>, request: axum::extract::Req
         Ok(bytes) => bytes,
         Err(error) => return bad_request(format!("请求体读取失败或过大: {error}")),
     };
-    dispatch(&state, method, &path, &body).await
+    let query = request.uri().query().unwrap_or("").to_string();
+    dispatch(&state, method, &path, &body, &query).await
 }
 
 /// 路径分发。
@@ -59,7 +60,13 @@ pub async fn entry(State(state): State<ServerState>, request: axum::extract::Req
 /// 两条带 id 的路径用**手工切分**而不是 axum 的 `Path<String>`：路由注册成
 /// `any({*rest})` 之后拿不到具名参数，而这里的形态很规整（前缀 + 一段 id +
 /// 可选的动作段），切分比再注册一层路由更直白。
-async fn dispatch(state: &ServerState, method: Method, path: &str, body: &Bytes) -> Response {
+async fn dispatch(
+    state: &ServerState,
+    method: Method,
+    path: &str,
+    body: &Bytes,
+    query: &str,
+) -> Response {
     // 前缀之后的部分：`""`（无尾段）、`"credentialMaintenance"`、`"…/run"`
     let rest = path
         .strip_prefix("/api/scheduled-tasks")
@@ -83,7 +90,7 @@ async fn dispatch(state: &ServerState, method: Method, path: &str, body: &Bytes)
         // （沿袭 Node 版，见 http.rs 的 CORS_METHODS），浏览器直连时预检会拦下
         // PATCH，走 Tauri 桥的正式前端两种都能用。
         (Method::PATCH, None) | (Method::POST, None) => configure(id, body),
-        (Method::POST, Some("run")) => run_now(state, id).await,
+        (Method::POST, Some("run")) => run_now(state, id, query).await,
         _ => not_found(method.as_str(), path),
     }
 }
@@ -131,9 +138,13 @@ fn configure(id: &str, body: &Bytes) -> Response {
 /// 响应里带**刷新后的那条任务**（含新的 `lastRunAt` / `lastResult` /
 /// `nextRunAt`）：界面点完按钮就能就地重绘状态栏，不必再跑一趟 GET
 /// （与 `/api/models/refresh` 带着清单返回同一个理由）。
-async fn run_now(state: &ServerState, id: &str) -> Response {
+/// `?accountId=` 只对「自动签到（Trae）」有意义：给了就只签那一个账号
+/// （账号页行内的「签到」按钮），不给就按批次跑全部。
+async fn run_now(state: &ServerState, id: &str, query: &str) -> Response {
     let store = state.store().clone();
-    match scheduled_tasks::run_now(&store, state.update(), id).await {
+    let account_id = crate::server::http::query_param(query, "accountId")
+        .filter(|value| !value.is_empty());
+    match scheduled_tasks::run_now(&store, state.update(), id, account_id.as_deref()).await {
         Ok(summary) => ok_json(json!({
             "summary": summary,
             "task": scheduled_tasks::task_by_id(id),

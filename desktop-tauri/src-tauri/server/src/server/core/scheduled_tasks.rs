@@ -303,12 +303,20 @@ pub fn configure(id: &str, patch: IntervalTaskPatch) -> Result<Value, String> {
     Ok(task_by_id(id))
 }
 
-pub async fn run_now(store: &AccountStore, update: &UpdateManager, id: &str) -> Result<String, String> {
+/// `account_id`：**只对「自动签到（Trae）」有意义** —— `Some(id)` 时只签那一个账号
+/// （账号页行内的「签到」按钮走这条），`None` 时按批次跑全部（工具栏「立即签到」）。
+/// 其余任务忽略它。
+pub async fn run_now(
+    store: &AccountStore,
+    update: &UpdateManager,
+    id: &str,
+    account_id: Option<&str>,
+) -> Result<String, String> {
     let task = find(id).ok_or_else(|| format!("未知的定时任务: {id}"))?;
     if task.runner != Runner::Backend {
         return Err(format!("「{}」由界面自己刷新，无法在后端立即执行", task.label));
     }
-    run_backend(store, update, task, true).await
+    run_backend(store, update, task, true, account_id).await
 }
 
 async fn run_backend(
@@ -316,6 +324,7 @@ async fn run_backend(
     update: &UpdateManager,
     task: &TaskDef,
     manual: bool,
+    account_id: Option<&str>,
 ) -> Result<String, String> {
     // 更新管理器同时承接设置页按钮，排期必须属于它而不是外围定时器。
     if task.id == TASK_UPDATE_CHECK {
@@ -405,7 +414,8 @@ async fn run_backend(
             // 签到是「预检 → 需要才签」两段式，幂等由服务端的 checked_in 保证；
             // 账号之间的间隔读配置（福利页「Trae」标签可改），防同 IP 批量特征。
             let gap = config::current().trae_checkin_gap_minutes();
-            match crate::server::core::providers::trae::checkin::run_round(store, gap).await {
+            // 手动单账号时 `account_id` 有值 ⇒ 只签那一个（见 `run_now` 的说明）
+            match crate::server::core::providers::trae::checkin::run_round(store, gap, account_id).await {
                 Ok(summary) => {
                     let text = summary.summary_text();
                     // 「全部已签」是每天的常态，不该刷日志；只有真签了或有失败才记。
@@ -464,7 +474,7 @@ pub fn spawn(store: AccountStore, update: UpdateManager) {
                 }
                 // 到点：跑一次（`run_backend` 内部按当前间隔重新排期）。
                 // 被跳过（另一进程抢到、或在最短间隔内）不算错误，只留 verbose。
-                if let Err(error) = run_backend(&store, &update, task, false).await {
+                if let Err(error) = run_backend(&store, &update, task, false, None).await {
                     logging::verbose("[Tasks]", &format!("{}：{error}", task.label));
                 }
             }

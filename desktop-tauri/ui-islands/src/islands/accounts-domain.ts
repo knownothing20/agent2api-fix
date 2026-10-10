@@ -132,7 +132,11 @@ const PROVIDER_FEATURES: Record<string, ProviderFeatures> = {
   // `checkin: false` 同样不是省事：签到那条链在参考实现里有把出口 IP 打进封禁的前科，
   // 且它记的「签到钱包」与模型调用真正扣的积分池是两笔钱 —— 不给按钮，免得给一个
   // 点了必然报错（或报出一个对不上官方数字的余额）的入口。
-  trae: { usage: true, checkin: false, edition: false, identifier: 'uid', expiry: 'expiresAt' },
+  // `checkin: true`（2026-10-10 修正）：Trae **有**每日签到（福利页「Trae」标签一直在管它），
+  // 原先标 false ⇒ 账号页那一行既没有「签到」按钮、也不显示「已签到」，
+  // 用户报「trae 也不显示 已领 签到」。签到走 `traeCheckin` 那条专用链
+  // （`checkin_credits/status` → `claim`），不是通用的 `/api/checkin`，见 `runCheckin` 的分流。
+  trae: { usage: true, checkin: true, edition: false, identifier: 'uid', expiry: 'expiresAt' },
 }
 
 /**

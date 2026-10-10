@@ -356,9 +356,19 @@ pub async fn status_all(store: &AccountStore) -> Result<Vec<AccountOutcome>, Str
 /// 单账号失败不中断整轮；返回汇总供任务摘要与面板消费。
 /// `gap_minutes` 是**需要真正写上游的账号之间**的间隔（已签的账号不占），
 /// 传 0 表示不等待。
-pub async fn run_round(store: &AccountStore, gap_minutes: i64) -> Result<RoundSummary, String> {
+/// `only_id`：`Some(id)` = **只签这一个账号**（账号页行内的「签到」按钮走这条）；
+/// `None` = 按批次跑全部 Trae 账号（定时任务与「立即签到」走这条）。
+///
+/// 两条路共用同一个函数体（含预检 → 需要才签的两段式、账号之间的间隔），
+/// 区别只在 `resolve_batch_targets` 的目标集合 —— 这样不会出现
+/// 「手动能签、自动不能」或反过来这类分叉（模块头强调过）。
+pub async fn run_round(
+    store: &AccountStore,
+    gap_minutes: i64,
+    only_id: Option<&str>,
+) -> Result<RoundSummary, String> {
     let (targets, _skipped) =
-        crate::server::core::usage_query::resolve_batch_targets(store, Some("trae"), None)
+        crate::server::core::usage_query::resolve_batch_targets(store, Some("trae"), only_id)
             .map_err(|error| error.message)?;
 
     let mut summary = RoundSummary::default();
@@ -549,7 +559,7 @@ pub fn spawn_daily(store: AccountStore) {
                 }
                 let gap = crate::server::config::current().trae_checkin_gap_minutes();
                 logging::log("[Trae]", &format!("定点签到触发（{configured}）：开始一轮"));
-                match run_round(&store, gap).await {
+                match run_round(&store, gap, None).await {
                     Ok(summary) => logging::log(
                         "[Trae]",
                         &format!("定点签到完成：{}", summary.summary_text()),
