@@ -97,6 +97,124 @@ import {
   exactTokens, formatTokens, normalizeOverrides,
 } from './model-capability'
 import { CapabilityDialog } from './model-capability-dialog'
+
+/* ─── 模型目录「自动刷新」（2026-10-10 用户要求：模型页直接可改，不必去定时任务页）───
+ *
+ * 读写的其实是**定时任务**里的「模型目录刷新」（`modelRefresh`，默认 60 分钟）——
+ * 与任务页是同一份配置，两处改都即时生效。放在这一页只是因为用户在这里找它：
+ * 他点的是「设置」（那是列设置），真正的入口藏在定时任务页，找不到。
+ *
+ * 选项只给五档而不是自由输入：这个值决定「多久去上游拉一次模型清单」，
+ * 给成任意分钟数既没意义（47 分钟？）也容易手滑填成 1 分钟把上游打爆。
+ */
+const MODEL_REFRESH_OPTIONS = [
+  { value: 'off', label: '关闭', enabled: false, interval: 60 },
+  { value: '30', label: '每 30 分钟', enabled: true, interval: 30 },
+  { value: '60', label: '每 1 小时', enabled: true, interval: 60 },
+  { value: '360', label: '每 6 小时', enabled: true, interval: 360 },
+  { value: '1440', label: '每 24 小时', enabled: true, interval: 1440 },
+] as const
+
+type ModelRefreshValue = (typeof MODEL_REFRESH_OPTIONS)[number]['value']
+
+/** 定时任务的读写桥（与 welfare-panel 的 tasksBridge 同一口径）。 */
+type ScheduledTask = { id: string; enabled: boolean; interval: number }
+type TasksBridge = {
+  getScheduledTasks?(): Promise<{ tasks?: ScheduledTask[] } | ScheduledTask[] | null | undefined>
+  saveScheduledTask?(id: string, patch: Record<string, unknown>): Promise<ScheduledTask>
+}
+
+function tasksBridge(): TasksBridge {
+  const holder = window as unknown as { workbuddyDesktop?: TasksBridge }
+  return holder.workbuddyDesktop ?? {}
+}
+
+/** 从当前任务值反推下拉选中项（`interval` 不落在预设档位时按最接近的档显示）。 */
+function refreshValueOf(task: ScheduledTask | null): ModelRefreshValue {
+  if (!task || !task.enabled) return 'off'
+  const hit = MODEL_REFRESH_OPTIONS.find(item => item.enabled && item.interval === task.interval)
+  if (hit) return hit.value
+  const enabledOnes = MODEL_REFRESH_OPTIONS.filter(item => item.enabled)
+  return enabledOnes.reduce((best, item) =>
+    Math.abs(item.interval - task.interval) < Math.abs(best.interval - task.interval) ? item : best
+  ).value
+}
+
+/**
+ * 模型目录自动刷新下拉。
+ *
+ * 三处细节值得留：
+ *   · **读失败就禁用**（而不是显示一个假值）—— 显示「每 1 小时」但实际没开，
+ *     比灰着不可点更糟；
+ *   · 保存成功后**回读后端返回值**再落状态（后端可能钳制 interval），不乐观更新；
+ *   · 桥不可用（网页端没接 Tauri 桥）时整体隐藏 —— 该页其余操作也一样依赖桥。
+ */
+function AutoRefreshSelect(): React.ReactElement | null {
+  const [task, setTask] = React.useState<ScheduledTask | null>(null)
+  const [ready, setReady] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [available, setAvailable] = React.useState(true)
+
+  React.useEffect(() => {
+    let alive = true
+    const api = tasksBridge()
+    if (!api.getScheduledTasks) { setAvailable(false); return }
+    api.getScheduledTasks()
+      .then(raw => {
+        if (!alive) return
+        const list = Array.isArray(raw) ? raw : (raw?.tasks ?? [])
+        setTask(list.find(item => item.id === 'modelRefresh') ?? null)
+        setReady(true)
+      })
+      .catch(() => { if (alive) setReady(false) })
+    return () => { alive = false }
+  }, [])
+
+  if (!available) return null
+
+  const value = refreshValueOf(task)
+
+  async function change(next: string): Promise<void> {
+    const option = MODEL_REFRESH_OPTIONS.find(item => item.value === next)
+    if (!option || busy) return
+    const api = tasksBridge()
+    if (!api.saveScheduledTask) return
+    setBusy(true)
+    try {
+      const saved = await api.saveScheduledTask('modelRefresh', {
+        enabled: option.enabled,
+        interval: option.interval,
+      })
+      setTask(saved)
+      toast(option.enabled ? `✅ 模型目录将每 ${option.interval} 分钟自动刷新` : '✅ 已关闭模型目录自动刷新')
+    } catch (error) {
+      toast(`保存失败：${errorMessage(error)}`, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Select
+      value={value}
+      onValueChange={next => void change(next ?? 'off')}
+      disabled={!ready || busy}
+    >
+      <SelectTrigger
+        className='h-8 w-[136px] text-xs'
+        aria-label='模型目录自动刷新'
+        title='定期拉取各家的模型清单（与「定时任务 → 模型目录刷新」是同一份配置）'
+      >
+        <SelectValue placeholder='自动刷新' />
+      </SelectTrigger>
+      <SelectContent>
+        {MODEL_REFRESH_OPTIONS.map(item => (
+          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
 import { CUSTOM_LEVEL, levels as reasoningLevels } from './models-reasoning'
 import * as customSource from './models-custom-source'
 import type { ManageModel, ManageView } from './models-custom-source'
@@ -612,6 +730,8 @@ function ModelsPage() {
                   onClick={() => refreshModels()}>获取模型</Button>
                 <Button id='btn-add-custom-model' variant='outline' size='sm'
                   onClick={() => openCustomModel()}>＋ 添加模型</Button>
+                {/* 模型目录自动刷新：与「定时任务 → 模型目录刷新」同一份配置 */}
+                <AutoRefreshSelect />
                 {/* 「列设置」按钮由 wbColSettings.register 追加到这个容器的末尾（React 不接管它） */}
               </div>
             </div>
