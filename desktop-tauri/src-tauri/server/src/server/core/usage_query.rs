@@ -303,6 +303,44 @@ pub fn store_snapshot(report: Value) -> (usize, usize) {
 
 /// 最近一次定时查询的快照。从未查过时给 `{at: 0, results: [], skipped: 0}` ——
 /// 界面据此显示「还没有定时查询结果」，而不是把空数组当成「一个账号都没有」。
+/// 把**单账号**查询的结果**合并**进现有快照（不替换整份）。
+///
+/// ── 为什么必须有这个函数（2026-10-10 用户实测报的 bug）─────────
+/// 账号页读的是快照，而每一行的「余额」按钮走的是 `?id=` **单查**。单查原先
+/// **不碰快照**，于是：点一下看到新值 → 刷新 → 读快照 → 那一行退回旧值；
+/// **新加的账号干脆一直显示「未查询」**（它从来没进过任何一次批量快照）。
+/// 用户的原话：「新加的账号，点了额度刷新一下就没了，之前 CodeArts 是这样，
+/// 现在 trae 也是这样」。
+///
+/// ── 为什么是「合并」而不是直接 `store_snapshot` ──────────────
+/// 单查的结果只有一条；整体替换会把**其他行**全部抹掉（界面立刻一片「未查询」）。
+/// 所以按 `id` 定位：命中就替换那一行，没命中就追加。
+///
+/// `at` 仍由 `store_snapshot` 刷新成当前时间 —— 前端靠它判断「这份快照我应用过了没」，
+/// 不更新的话合并结果不会重绘。
+pub fn merge_snapshot(rows: Vec<Value>) -> (usize, usize) {
+    let current = snapshot();
+    let mut results = current
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for row in rows {
+        let Some(id) = row.get("id").and_then(Value::as_str) else { continue };
+        match results
+            .iter()
+            .position(|item| item.get("id").and_then(Value::as_str) == Some(id))
+        {
+            Some(index) => results[index] = row,
+            None => results.push(row),
+        }
+    }
+    store_snapshot(json!({
+        "results": results,
+        "skipped": current.get("skipped").cloned().unwrap_or(Value::from(0)),
+    }))
+}
+
 pub fn snapshot() -> Value {
     if let Ok(slot) = snapshot_slot().lock() {
         if let Some(value) = slot.as_ref() {

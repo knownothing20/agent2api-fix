@@ -19,6 +19,7 @@
 //! 供界面在**不点按钮**的情况下拿到定时那一轮的最新余额（含失败行）。
 
 use axum::response::Response;
+use serde_json::Value;
 
 use crate::server::core::usage_query;
 use crate::server::errors::management_error;
@@ -35,12 +36,25 @@ pub async fn accounts_usage(state: &ServerState, query: &str) -> Response {
     let id = query_param(query, "id").filter(|value| !value.is_empty());
     match usage_query::query_all(state.store(), id.as_deref()).await {
         Ok(report) => {
-            // 手动**批量**查询也要落快照：账号页读的是快照（`/usage/snapshot`），
-            // 只返回结果不落盘的话，用户点完「查询余额」看到新值、**一刷新又变回
-            // 上一轮的旧值**（新账号显示「未查询」）—— 2026-10-04 用户实测报的就是这个。
-            // 单账号查询（`?id=`）**不动快照**：那是一次针对性查询，不代表整批刚查过。
+            // 查询结果**一律**同步进快照：账号页读的是快照（`/usage/snapshot`），
+            // 不落盘的话，用户点完「查询余额」看到新值、**一刷新又变回上一轮的旧值**
+            // （新账号显示「未查询」）—— 2026-10-04 与 2026-10-10 两次用户实测报的都是这个。
+            //
+            // 两条路径的写法不同，因为语义不同：
+            //   · 批量（`id.is_none()`）：这一批就是「全部可用账号」的完整结果 ⇒ **整体替换**；
+            //   · 单查（`?id=`）：只拿到一条 ⇒ **按 id 合并**进现有快照。原先单查干脆不动
+            //     快照（注释理由是「一次针对性查询不代表整批刚查过」），但快照的用途是
+            //     「界面读余额」而不是「标记这一批查过」—— 单查的结果同样是有效数据，
+            //     不合并就会让行内按钮变成「刷新即失效」。整体替换更不行：会把其他行抹掉。
             if id.is_none() {
                 usage_query::store_snapshot(report.clone());
+            } else {
+                let rows = report
+                    .get("results")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                usage_query::merge_snapshot(rows);
             }
             ok_json(report)
         }
