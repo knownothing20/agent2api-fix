@@ -7,6 +7,7 @@ import {
   overviewCells, rankRows, rankTotalText, donutView,
   heatmapView, heatLegendItems, heatThresholdsOf, cacheRateCells,
   cacheTrendView, dailyTrendView, dailyUsageView, rangeWindowOf, usageMetricText,
+  type UsageChartShape,
   type CacheTrendView, type ChartText, type DailyTrendView, type HeatmapView,
   type RankRowView, type DonutView,
   type DailyUsageView, type StatsDay, type StatsGroup, type StatsHour, type StatsSummary,
@@ -425,26 +426,38 @@ function CacheTrendChart({ view }: { view: CacheTrendView }) {
  * 只给**用量 > 0** 的点画圆点（见 `dailyUsageView` 的 dots）；线本身按日铺满、
  * 缺日补 0 —— 断线会被读成「那几天这个模型消失了」，补 0 才贴事实。
  */
-function DailyUsageChart({ view }: { view: DailyUsageView }): React.ReactElement {
+function DailyUsageChart({ view, shape }: { view: DailyUsageView; shape: UsageChartShape }): React.ReactElement {
   const { width, height, plotLeft, plotW, plotTop, plotH } = view
+  // key 带上形态：切换时整块重挂载，CSS 入场动画才会重放（2026-10-10 加动效）
   return (
-    <svg className='report-svg' width={width} height={height}
-      viewBox={`0 0 ${width} ${height}`} role='img' aria-label='每日用量曲线'>
+    <svg className='report-svg' width={width} height={height} key={shape}
+      viewBox={`0 0 ${width} ${height}`} role='img' aria-label='每日用量图'>
       {view.grid.map(item => (
         <line className='chart-grid' x1={item.x1} y1={item.y} x2={item.x2} y2={item.y} key={item.key} />
       ))}
       <ChartLabels items={view.valueTicks} cls='chart-axis' />
-      {view.series.map(line => (
-        <g key={line.name}>
-          <polyline className='chart-line' points={line.points} fill='none' stroke={line.color}
-            strokeWidth={2} strokeLinejoin='round' strokeLinecap='round' />
-          {line.dots.map(dot => (
-            <circle cx={dot.x} cy={dot.y} r={2.5} fill={line.color} key={dot.key}>
-              <title>{dot.tip}</title>
-            </circle>
+      {shape === 'bar'
+        ? view.series.map(line => (
+            <g key={line.name} className='chart-bars'>
+              {line.bars.map(bar => (
+                <rect className='chart-bar' x={bar.x} y={bar.y} width={bar.w} height={bar.h}
+                  rx={2} fill={line.color} key={bar.key} style={{ transformOrigin: `${bar.x + bar.w / 2}px ${plotTop + plotH}px` }}>
+                  <title>{bar.tip}</title>
+                </rect>
+              ))}
+            </g>
+          ))
+        : view.series.map(line => (
+            <g key={line.name} className='chart-curve'>
+              <path className='chart-line' d={line.path} fill='none' stroke={line.color}
+                strokeWidth={2} strokeLinejoin='round' strokeLinecap='round' />
+              {line.dots.map(dot => (
+                <circle className='chart-dot' cx={dot.x} cy={dot.y} r={2.5} fill={line.color} key={dot.key}>
+                  <title>{dot.tip}</title>
+                </circle>
+              ))}
+            </g>
           ))}
-        </g>
-      ))}
       <ChartLabels items={view.dateTicks} cls='chart-axis' />
       {view.blank ? (
         <text className='chart-empty' x={round1(plotLeft + plotW / 2)} y={round1(plotTop + plotH / 2)}
@@ -593,6 +606,12 @@ const EMPTY_DATA: PageData = { summary: null, error: null }
 
 /** 每日用量图的四个互斥档位（2026-10-09：由「指标 × 维度」两组合成一档）。 */
 type UsageView = 'tokens' | 'requests' | 'model' | 'account'
+
+/** 图表形态选项（曲线 / 柱状）。曲线是 Catmull-Rom 平滑，柱状是分组柱。 */
+const SHAPE_OPTIONS = [
+  { value: 'curve', label: '曲线' },
+  { value: 'bar', label: '柱状' },
+] as const
 
 const USAGE_VIEW_OPTIONS = [
   { value: 'tokens', label: '按 Token' },
@@ -764,6 +783,8 @@ function ReportPage() {
   //     （用户原话：「按模型 和 按账号 的 token 时间曲线」）。
   // 三种数据后端都已给（dailyTrend / trendByModel / trendByAccount），切换不发请求。
   const [usageView, setUsageView] = React.useState<UsageView>('tokens')
+  // 图表形态：**默认曲线**（2026-10-10 用户要求把折线改成柔和曲线，并保留柱状可选）
+  const [usageShape, setUsageShape] = React.useState<UsageChartShape>('curve')
   const usagePoints =
     usageView === 'model'
       ? summary?.trendByModel
@@ -813,6 +834,16 @@ function ReportPage() {
               value={usageView}
               onValueChange={value => setUsageView(isUsageView(value) ? value : 'tokens')}
             />
+            {/* 形态切换（2026-10-10 用户要求「两种可选：曲线 和 柱状」）。
+                与左边那组是两个维度：左边选「看什么数据」，这里选「怎么画」——
+                中间加一条细分隔线，避免被读成同一组。 */}
+            <span className='head-sep' aria-hidden='true' />
+            <SegmentedControl
+              aria-label='图表形态'
+              options={SHAPE_OPTIONS}
+              value={usageShape}
+              onValueChange={value => setUsageShape(value === 'bar' ? 'bar' : 'curve')}
+            />
           </div>
         </div>
         {/* ⚠️ 容器**必须始终渲染**：宽度是靠它量的（`useContainerWidth` 只在挂载时测一次，
@@ -820,7 +851,7 @@ function ReportPage() {
             ⇒ 永远测不到宽度 ⇒ 退回兜底宽度，图只画到一半、右边留一大块空白
             （2026-10-04 用户截图反馈「右边空白啊」）。老图表是无条件渲染的，所以没这问题。 */}
         <div className='chart-wrap tall' ref={dailyWidth[0]}>
-          {usageChart ? <DailyUsageChart view={usageChart} /> : placeholder('所选范围内暂无用量')}
+          {usageChart ? <DailyUsageChart view={usageChart} shape={usageShape} /> : placeholder('所选范围内暂无用量')}
         </div>
         {usageChart ? (
           <>

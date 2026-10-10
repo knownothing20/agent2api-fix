@@ -56,6 +56,11 @@
        排在最后：工具类带 !important（原因见 ui-kit/styles/globals.css 顶部），
        顺序其实已不影响结果，但保持「后加载的是更新的体系」这条阅读线索。 -->
   <link rel="stylesheet" href="islands/ui.css">
+
+  <!-- 动效层（2026-10-10）：按钮点击、分段切换、图标展示、图表绘制/生长。
+       排在最末 —— 动效只碰 transform / opacity / stroke-dashoffset，
+       不与任何带 !important 的工具类争属性，放最后只为「读起来是最后一层」。 -->
+  <link rel="stylesheet" href="css/motion.css">
 </head>
 <body>
   <div class="shell">

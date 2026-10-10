@@ -886,9 +886,43 @@ export type StatsUsagePoint = { date?: string; name?: string; tokens?: number; r
 export type DailyUsageSeries = {
   name: string
   color: string
+  /** 折线（`x,y x,y`）—— 保留给「直线」模式与命中区域用 */
   points: string
+  /** 平滑曲线的 SVG path `d`（Catmull-Rom 转三次贝塞尔）—— 「曲线」模式用 */
+  path: string
+  /** 柱状：每根柱子的矩形与读数 —— 「柱状」模式用 */
+  bars: { key: string; x: number; y: number; w: number; h: number; tip: string }[]
   total: number
   dots: { key: string; x: number; y: number; tip: string }[]
+}
+
+/** 图表形态（2026-10-10 用户要求「两种可选：曲线 和 柱状」）。 */
+export type UsageChartShape = 'curve' | 'bar'
+
+/**
+ * 平滑曲线路径：Catmull-Rom 转三次贝塞尔。
+ *
+ * `tension` 取 0.16 而不是常见的 0.5/0.2 —— 用量数据**非负且常有 0**，
+ * 张力大会让曲线在低谷处「过冲」到 0 以下（视觉上像负用量）。0.16 足够柔和
+ * 又基本不过冲；再加 `floor` 兜底把控制点夹回 0 线以上。
+ */
+function smoothPath(pts: { x: number; y: number }[], floor: number): string {
+  if (pts.length < 2) return ''
+  const tension = 0.16
+  const clamp = (y: number) => Math.max(floor, y)
+  let d = `M ${round1(pts[0].x)} ${round1(pts[0].y)}`
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i]
+    const p1 = pts[i]
+    const p2 = pts[i + 1]
+    const p3 = pts[i + 2] || p2
+    const c1x = p1.x + (p2.x - p0.x) * tension
+    const c1y = clamp(p1.y + (p2.y - p0.y) * tension)
+    const c2x = p2.x - (p3.x - p1.x) * tension
+    const c2y = clamp(p2.y - (p3.y - p1.y) * tension)
+    d += ` C ${round1(c1x)} ${round1(c1y)}, ${round1(c2x)} ${round1(c2y)}, ${round1(p2.x)} ${round1(p2.y)}`
+  }
+  return d
 }
 
 export type DailyUsageView = {
@@ -1042,20 +1076,34 @@ export function dailyUsageView(
     })
   })
 
+  // 柱宽：按「每个日期格」分给全部序列（分组柱），留 22% 间隙
+  const groupW = dates.length > 1 ? plotW / (dates.length - 1) : plotW
+  const slot = Math.max(3, groupW * 0.62)
+  const barW = Math.max(2, slot / Math.max(1, ranked.length))
+  const baseline = pad.top + plotH
+
   const series: DailyUsageSeries[] = ranked.map((name, rank) => {
     const row = byName.get(name)!
-    const points = row
-      .map((value, index) => `${round1(xAt(index))},${round1(yAt(value))}`)
-      .join(' ')
-    const dots = row
-      .map((value, index) => ({
-        key: `${name}-${dates[index]}`,
-        x: round1(xAt(index)),
-        y: round1(yAt(value)),
-        tip: `${dayLabel(dates[index])} · ${name} · ${metric === 'requests' ? `${formatInt(value)} 次请求` : `${formatTokens(value)} tokens`}`,
-      }))
+    const tipOf = (index: number) =>
+      `${dayLabel(dates[index])} · ${name} · ${metric === 'requests' ? `${formatInt(row[index])} 次请求` : `${formatTokens(row[index])} tokens`}`
+    const pts = row.map((value, index) => ({ x: xAt(index), y: yAt(value) }))
+    const points = pts.map(p => `${round1(p.x)},${round1(p.y)}`).join(' ')
+    const path = smoothPath(pts, pad.top)
+    const dots = pts
+      .map((p, index) => ({ key: `${name}-${dates[index]}`, x: round1(p.x), y: round1(p.y), tip: tipOf(index) }))
       .filter((_, index) => row[index] > 0)
-    return { name, color: USAGE_COLORS[rank % USAGE_COLORS.length], points, total: totals.get(name) || 0, dots }
+    const bars = pts
+      .map((p, index) => {
+        const w = barW
+        const x = p.x - slot / 2 + rank * barW + (slot - barW * ranked.length) / 2
+        const h = Math.max(0, baseline - p.y)
+        return { key: `${name}-${dates[index]}`, x: round1(x), y: round1(p.y), w: round1(w), h: round1(h), tip: tipOf(index) }
+      })
+      .filter((_, index) => row[index] > 0)
+    return {
+      name, color: USAGE_COLORS[rank % USAGE_COLORS.length],
+      points, path, bars, total: totals.get(name) || 0, dots,
+    }
   })
 
   return { width, height, plotLeft: pad.left, plotTop: pad.top, plotW, plotH, grid, valueTicks, dateTicks, series, blank }

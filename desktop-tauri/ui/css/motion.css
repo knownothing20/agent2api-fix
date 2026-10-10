@@ -1,0 +1,165 @@
+/* ─────────────────────────────────────────────
+   Agent2API · 动效层（2026-10-10 新增）
+
+   用户要求：「加一点动效进去 —— 按钮的点击、切换，图标的展示」。
+
+   ── 三条自律 ──────────────────────────────────
+   1. **短**：交互反馈 120~180ms，入场 280~500ms，绘制类 850ms 封顶。
+      超过这个量级就从「顺手」变成「等它」。
+   2. **只动 transform / opacity**（外加图表用的 stroke-dashoffset）——
+      这两个属性不触发重排重绘，60fps 稳；动 width/height/left/top 会掉帧。
+   3. **尊重 prefers-reduced-motion**：系统里关了动效就全部退化成立即生效
+      （末尾统一兜底，不用每处各写一遍）。
+
+   文件放在 `ui/css/` 手写层而不是组件库 —— 动效横跨两套颜色系统，
+   放这里两边都吃得到，也不必重新编译 ui-kit。
+   ───────────────────────────────────────────── */
+
+/* ── ① 按钮：按下微缩，抬起回弹 ── */
+.btn,
+button:not([data-slot='segmented-item']) {
+  transition:
+    transform 120ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+.btn:active,
+button:not([data-slot='segmented-item']):active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── ② 分段控件：选中态切换的滑动感 ── */
+[data-slot='segmented-item'] {
+  transition:
+    background-color 180ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    color 180ms ease,
+    transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+[data-slot='segmented-item']:active {
+  transform: scale(0.96);
+}
+/* 滑块本体（若该控件用滑块承载选中态）：位置变化走同一条曲线 */
+[data-slot='segmented-thumb'],
+.segmented-thumb {
+  transition:
+    transform 220ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    width 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+/* ── ③ 图标：悬停微放大，导航项悬停时图标先动 ── */
+svg {
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.3, 1), opacity 160ms ease;
+}
+.nav-item:hover svg,
+[data-slot='nav-item']:hover svg {
+  transform: scale(1.1);
+}
+/* 图标「展示」：可点图标按下时缩一下，给出触感 */
+[role='button']:active svg,
+.btn:active svg,
+button:active:not(:disabled) svg {
+  transform: scale(0.92);
+}
+
+/* ── ④ 导航项：悬停轻移（横向 1px，够察觉又不跳） ── */
+.nav-item,
+[data-slot='nav-item'] {
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.nav-item:hover,
+[data-slot='nav-item']:hover {
+  transform: translateX(1px);
+}
+
+/* ── ⑤ 卡片 / 面板：入场轻微上浮淡入 ── */
+@keyframes a2a-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.panel,
+.card,
+.settings-section {
+  animation: a2a-rise 280ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+/* ── ⑥ 表格行：悬停时轻微内推（读长表格时定位更稳） ── */
+tbody tr {
+  transition: background-color 130ms ease, transform 130ms ease;
+}
+tbody tr:hover {
+  transform: translateX(1px);
+}
+
+/* ── ⑦ 图表：曲线「画出来」、柱子「长起来」、点「淡入」 ── */
+@keyframes a2a-draw {
+  from { stroke-dashoffset: var(--a2a-len, 3200); }
+  to   { stroke-dashoffset: 0; }
+}
+.chart-curve .chart-line {
+  stroke-dasharray: var(--a2a-len, 3200);
+  animation: a2a-draw 850ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes a2a-grow {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+.chart-bars .chart-bar {
+  transform: scaleY(0);
+  animation: a2a-grow 500ms cubic-bezier(0.2, 0.9, 0.3, 1.04) both;
+}
+/* 分组柱依次起跳，视觉上像「一列列长出来」；超过 12 根就不再错峰（太慢） */
+.chart-bars .chart-bar:nth-child(2) { animation-delay: 25ms; }
+.chart-bars .chart-bar:nth-child(3) { animation-delay: 50ms; }
+.chart-bars .chart-bar:nth-child(4) { animation-delay: 75ms; }
+.chart-bars .chart-bar:nth-child(5) { animation-delay: 100ms; }
+.chart-bars .chart-bar:nth-child(6) { animation-delay: 125ms; }
+.chart-bars .chart-bar:nth-child(7) { animation-delay: 150ms; }
+.chart-bars .chart-bar:nth-child(8) { animation-delay: 175ms; }
+.chart-bars .chart-bar:nth-child(9) { animation-delay: 200ms; }
+.chart-bars .chart-bar:nth-child(10) { animation-delay: 225ms; }
+
+@keyframes a2a-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.chart-dot {
+  animation: a2a-fade 400ms ease 520ms both;
+}
+
+/* ── ⑧ 图表卡片的读数/图例：切换形态时整体淡入 ── */
+.chart-wrap > svg {
+  animation: a2a-fade 220ms ease both;
+}
+
+/* ── ⑨ 顶部那条细分隔线（分隔「看什么数据」与「怎么画」两组控件） ── */
+.head-sep {
+  width: 1px;
+  height: 18px;
+  flex: none;
+  background: var(--border-strong, rgba(0, 0, 0, 0.18));
+  margin: 0 2px;
+}
+
+/* ── ⑩ 骨架 / 加载态：脉冲（原先若靠 JS 计时，这里给统一的视觉） ── */
+@keyframes a2a-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.loading-pulse {
+  animation: a2a-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── ⑪ 统一兜底：系统关了动效就全部立即生效 ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
