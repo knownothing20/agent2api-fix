@@ -441,6 +441,15 @@ pub async fn run_round(
         let pre = status_of(&credential, proxy.as_ref()).await;
         if pre.ok && pre.checked_in {
             summary.already += 1;
+            // ★ 落 `checkinAt` 台账（2026-10-10）：账号页那行的「签到 / 已签到」判据读的是
+            // `account.checkinAt`（`accounts-domain.ts` 的 `checkedInToday`），而这条台账
+            // 原先**只有通用签到**（WorkBuddy 系）会写 ⇒ Trae 那两行无论签没签都一直显示
+            // 「签到」，用户在福利页看到「今日已签到」、回账号页却还是「签到」。
+            // 「今日已签到」本身就是一次有效状态，所以要落 —— 与 `core::billing::checkin`
+            // 那句 `completed && store.mark_checkin(...)` 同一取向。
+            if !store.mark_checkin(account_id, logging::now_ms()) {
+                logging::log("[Trae]", &format!("签到台账落盘失败：{name}（状态仍如实显示）"));
+            }
             summary.outcomes.push(AccountOutcome {
                 name,
                 uid,
@@ -482,6 +491,10 @@ pub async fn run_round(
             claim_of(&credential, proxy.as_ref(), pre.credits).await;
         if ok {
             summary.ok += 1;
+            // ★ 同上：签到成功也要落 `checkinAt`，否则账号页那行不会变成「已签到」。
+            if !store.mark_checkin(account_id, logging::now_ms()) {
+                logging::log("[Trae]", &format!("签到台账落盘失败：{name}（状态仍如实显示）"));
+            }
             let credits = pre.credits.map(|before| before + delta).or(pre.credits);
             summary.outcomes.push(AccountOutcome {
                 name,
