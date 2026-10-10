@@ -845,7 +845,18 @@ function TasksPanel() {
 
   /** 一条任务都没有：区分「还在加载」与「加载失败 / 后端没返回任务」 */
   const empty = tasks.length === 0 && !checkin
-  const enabledCount = tasks.filter(task => task.enabled).length + (checkin?.enabled === true ? 1 : 0)
+  // 「自动领福利（码道）」与「自动签到（Trae）」**不在本页展示**（2026-10-10 用户指出）：
+  // 这两条是**渠道级**任务，归属「福利」页 —— 那里按渠道分 tab，除了开关/间隔还能看到
+  // **每个账号的领取状态**。同一份配置在「定时任务」和「福利」两处都能改属于重复，
+  // 用户明确要求「有重叠的就不要放了」。
+  //
+  // ⚠️ 只是**不在本页渲染**，任务本身照常在跑（后端那份清单不变、`/api/scheduled-tasks`
+  // 照常返回）—— 福利页读的就是同一份数据。所以这里过滤掉不会让任务失效。
+  const visibleTasks = tasks.filter(
+    task => task.id !== 'codeartsWelfare' && task.id !== 'traeCheckin',
+  )
+  const enabledCount = visibleTasks.filter(task => task.enabled).length
+    + (checkin?.enabled === true ? 1 : 0)
   const badgeText = empty
     ? loaded
       ? '不可用'
@@ -864,7 +875,7 @@ function TasksPanel() {
 
   // 卡片顺序：自动签到在最前（用户最关心的那条），其余按后端给的顺序。
   // 后六条裹进 .task-grid 分两栏（列优先），条数变了只是分栏比例变，不会错位。
-  const cards = [checkinCard(), ...tasks.map(task => taskCard(task))]
+  const cards = [checkinCard(), ...visibleTasks.map(task => taskCard(task))]
   const rest = cards.slice(LEAD_CARDS)
 
   return (
