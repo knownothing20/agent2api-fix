@@ -844,7 +844,6 @@ function TasksPanel() {
   }
 
   /** 一条任务都没有：区分「还在加载」与「加载失败 / 后端没返回任务」 */
-  const empty = visibleTasks.length === 0 && !checkin
   // 「自动领福利（码道）」与「自动签到（Trae）」**不在本页展示**（2026-10-10 用户指出）：
   // 这两条是**渠道级**任务，归属「福利」页 —— 那里按渠道分 tab，除了开关/间隔还能看到
   // **每个账号的领取状态**。同一份配置在「定时任务」和「福利」两处都能改属于重复，
@@ -855,6 +854,8 @@ function TasksPanel() {
   const visibleTasks = tasks.filter(
     task => task.id !== 'codeartsWelfare' && task.id !== 'traeCheckin',
   )
+
+  const empty = visibleTasks.length === 0 && !checkin
   const enabledCount = visibleTasks.filter(task => task.enabled).length
     + (checkin?.enabled === true ? 1 : 0)
   const badgeText = empty
