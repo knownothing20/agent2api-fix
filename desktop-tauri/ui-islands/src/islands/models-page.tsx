@@ -205,7 +205,11 @@ function AutoRefreshSelect(): React.ReactElement | null {
         aria-label='模型目录自动刷新'
         title='定期拉取各家的模型清单（与「定时任务 → 模型目录刷新」是同一份配置）'
       >
-        <SelectValue placeholder='自动刷新' />
+        {/* 显式渲染 label：该 Select 的 SelectValue 不会自动取选中项的文本，
+            只给 value 会显示成「60」而不是「每 1 小时」 */}
+        <SelectValue placeholder='自动刷新'>
+          {MODEL_REFRESH_OPTIONS.find(item => item.value === value)?.label ?? '自动刷新'}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent>
         {MODEL_REFRESH_OPTIONS.map(item => (
