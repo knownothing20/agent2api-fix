@@ -81,7 +81,13 @@ pub async fn put_trae_checkin(State(_state): State<ServerState>, body: Bytes) ->
             return errors::management_error(400, format!("{time_key} 必须是 HH:MM 字符串"));
         };
         // 与 config 层同一口径校验（那里也会兜一次，这里先给明确报错）
-        let valid = text.len() == 5
+        // `is_ascii()` 必须在最前：`text[..2]` / `text[3..]` 是按**字节**切，
+        // 文本里混进多字节字符就会落在字符中间 panic（release 是 panic=abort，
+        // 整个网关退出）。HH:MM 只可能由 ASCII 组成，这一步同时把切片的合法性钉死。
+        // 反例（2026-10-10 自查发现）：`"你:1"` = 3+1+1 = 5 字节，len()==5 ✓、
+        // as_bytes()[2]==b':' ✓ ⇒ 走到 text[..2] 就 panic。
+        let valid = text.is_ascii()
+            && text.len() == 5
             && text.as_bytes()[2] == b':'
             && text[..2].parse::<u32>().map(|h| h < 24).unwrap_or(false)
             && text[3..].parse::<u32>().map(|m| m < 60).unwrap_or(false);

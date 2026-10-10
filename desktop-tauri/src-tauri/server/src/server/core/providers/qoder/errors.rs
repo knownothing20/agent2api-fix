@@ -222,7 +222,17 @@ fn raw_has_code(raw: &str, code: &str) -> bool {
 
 /// 从文本里抠出定价页链接（源实现用正则 `/https?:\/\/[^"\\]*\/pricing[^"\\]*/i`）
 fn pricing_url_of(raw: &str) -> Option<String> {
-    let lowered = raw.to_lowercase();
+    // ── 为什么是 `to_ascii_lowercase`（2026-10-10 从上游 2ccdcc9 合并）──────
+    // 这里拿**折叠后的下标**回切**原文**（`&raw[start..]`），前提是两者逐字节对齐。
+    // `to_lowercase` 是 Unicode 折叠、**不保字节长度**：`ẞ`(U+1E9E) 三字节折成 `ß`
+    // 两字节、`İ`(U+0130) 两字节折成 `i`+U+0307 三字节。下标一回切就可能落在字符
+    // 中间或直接越界 —— release 是 `panic = "abort"`，进程当场死。上游错误正文完全
+    // 不可控（`http_error` 把整段错误体原样喂进来），这条路径等于把「上游文案里出现
+    // 一个小写化会变长的字符」变成「网关整体宕机」。
+    // `to_ascii_lowercase` 只动 ASCII 字节、长度恒定，下标对 `raw` 恒有效；而要匹配的
+    // `http` / `/pricing` 都是 ASCII，非 ASCII 字符的每个字节都 >= 0x80、折叠后不可能
+    // 等于 ASCII 字节，所以只折叠 ASCII 与源实现正则的 `/i` 等价。
+    let lowered = raw.to_ascii_lowercase();
     let mut search_from = 0usize;
     while let Some(offset) = lowered[search_from..].find("http") {
         let start = search_from + offset;
@@ -231,7 +241,7 @@ fn pricing_url_of(raw: &str) -> Option<String> {
             .find(|ch: char| ch == '"' || ch == '\\' || ch.is_whitespace())
             .unwrap_or(rest.len());
         let candidate = &rest[..end];
-        if candidate.to_lowercase().contains("/pricing") {
+        if candidate.to_ascii_lowercase().contains("/pricing") {
             return Some(candidate.to_string());
         }
         search_from = start + 4;
