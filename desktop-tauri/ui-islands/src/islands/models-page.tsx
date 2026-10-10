@@ -254,6 +254,87 @@ function formatCredits(credits: unknown): string {
   return match ? `${match[1]}x` : String(credits || '')
 }
 
+/**
+ * 倍率单元格（2026-10-10）：**可手动填写**。
+ *
+ * ── 为什么能手填 ────────────────────────────────────────────
+ * 倍率只有 CodeArts 的目录自带（`credits`）；Trae 的 98 个上游 API 里没有任何模型
+ * 定价接口（见后端 `RateOverride`），那一列只能显示 `—`。于是给一个手填入口：
+ * 填了存进 `modelRules.rates`，**优先于上游值显示**（用户明确填了就以他的为准），
+ * 并挂一个「手填」小标区分来源。
+ *
+ * ── 交互 ────────────────────────────────────────────────────
+ * 平时渲染成**无边框输入框**（看起来就是一个数字，不额外占位）；获得焦点才显边框。
+ * `Enter` 或失焦保存；`Esc` 放弃本次编辑。清空 = 清除这条覆盖（回到上游值 / `—`）。
+ * 不做格式校验（各家口径不一），只拦长度 —— 与后端同一取向。
+ */
+function RateCell({ model }: { model: ManageModel }): React.ReactElement {
+  const manual = (model as { rateOverride?: string | null }).rateOverride || ''
+  const upstream = model.credits ? formatCredits(model.credits) : ''
+  const shown = manual || upstream
+  const [draft, setDraft] = React.useState(shown)
+  const [editing, setEditing] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+
+  // 外部数据变化（换提供商 / 刷新清单）时同步回显，但**编辑中不打断**
+  React.useEffect(() => {
+    if (!editing) setDraft(shown)
+  }, [shown, editing])
+
+  async function commit(next: string): Promise<void> {
+    setEditing(false)
+    if (busy || next.trim() === manual.trim()) { setDraft(shown); return }
+    // 走目录模块的通用请求入口（`wbProviders.customRequest`）—— 新端点没有具名桥
+    // 方法，而加具名方法要同时改 web_shim 与桌面壳两处；这条通用入口两边都有。
+    // `customRequest` 不在 SharedWindow 的公共声明里（它属于目录模块的对外面），
+    // 按这个文件的既有惯例（具名桥方法就地声明）就地断言。
+    const providers = shared().wbProviders as unknown as {
+      customRequest?<T>(method: string, path: string, body?: unknown): Promise<T>
+    } | undefined
+    if (!providers?.customRequest) { setDraft(shown); return }
+    setBusy(true)
+    try {
+      await providers.customRequest('POST', '/api/models/rate', {
+        provider: model.provider || '',
+        id: model.id,
+        rate: next,
+      })
+      await refreshAll()
+      toast(next.trim() ? `✅ 已保存倍率「${next.trim()}」` : '✅ 已清除手填倍率')
+    } catch (error) {
+      setDraft(shown)
+      toast(`保存失败：${errorMessage(error)}`, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <span className='inline-flex items-center gap-1'>
+      <input
+        className='rate-input'
+        value={draft}
+        disabled={busy}
+        placeholder='—'
+        aria-label={`${model.id} 的倍率（可手填）`}
+        title={upstream
+          ? `上游给的倍率：${upstream}（手填会覆盖它）`
+          : '上游不给这条模型的倍率，可以自己填'}
+        onChange={event => setDraft(event.target.value)}
+        onFocus={() => setEditing(true)}
+        onBlur={event => void commit(event.currentTarget.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') { event.currentTarget.blur(); }
+          if (event.key === 'Escape') { setDraft(shown); setEditing(false); event.currentTarget.blur(); }
+        }}
+      />
+      {manual ? (
+        <span className='binding-default' title='这个倍率是你手填的，优先于上游值'>手填</span>
+      ) : null}
+    </span>
+  )
+}
+
 /** 搜索 / 状态 / 提供商三个条件（口径与旧实现逐条对齐） */
 function matches(model: ManageModel, keyword: string, provider: string, stateFilter: string): boolean {
   if (stateFilter === 'enabled' && !rowEnabled(model)) return false
@@ -580,7 +661,7 @@ function ModelsPage() {
       case 'rate':
         return (
           <td className={cellClass('cell-rate', column.align)}>
-            <span className='rate'>{model.credits ? formatCredits(model.credits) : '—'}</span>
+            <RateCell model={model} />
             {/* 福利池模型：那一列往往是 `—`（上游不给倍率），光看列分不清「没读到」
                 与「不花钱」—— 这个标把后者标出来（走福利池、不扣积分）。 */}
             {model.benefit ? (

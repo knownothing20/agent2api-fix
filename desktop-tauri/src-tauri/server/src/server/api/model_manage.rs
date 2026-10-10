@@ -403,3 +403,52 @@ pub async fn set_capabilities(State(state): State<ServerState>, body: Bytes) -> 
     logging::log("[Models]", &format!("保存模型能力 [{provider}] {id}: {summary}"));
     ok_json(catalog::manage_view(state.store()))
 }
+
+/// POST /api/models/rate
+///
+/// 设 / 清某条模型的**手填倍率**：`{provider, id, rate}`。
+///
+/// ── 为什么有这个接口（2026-10-10）────────────────────────────
+/// 倍率只有 CodeArts 的目录自带（`credits`）；Trae 的 98 个上游 API 里没有任何
+/// 模型定价接口（见 `RateOverride` 的说明），界面那一列只能显示 `—`。
+/// 于是给用户一个自己填的入口：填了就存进 `modelRules.rates`，界面优先显示它。
+///
+/// `rate` 传空串 / 全空白 = **清除**这条覆盖。**不做数值格式校验** —— 各家口径
+/// 不一（`0.5x` / `1.5` / `2` 都有人写），硬套一种只会挡住合理写法；只拦长度。
+pub async fn set_rate(State(state): State<ServerState>, body: Bytes) -> Response {
+    let object = match body_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    let provider = text_field(&object, "provider");
+    let id = text_field(&object, "id");
+    if provider.is_empty() || id.is_empty() {
+        return errors::management_error(400, "缺少提供商或模型 id");
+    }
+    if crate::server::core::providers::kind_from_id(&provider).is_none() {
+        return errors::management_error(
+            400,
+            format!("未知的内置提供商: {provider}（自定义提供商的倍率走整表保存接口）"),
+        );
+    }
+    let rate = match object.get("rate") {
+        None => return errors::management_error(400, "缺少 rate 字段"),
+        Some(Value::String(text)) => text.clone(),
+        Some(_) => return errors::management_error(400, "rate 必须是字符串"),
+    };
+    if rate.trim().chars().count() > 24 {
+        return errors::management_error(400, "倍率过长（最多 24 个字符）");
+    }
+    if let Err(error) = model_rules::set_rate(&provider, &id, &rate) {
+        return errors::management_error(500, error);
+    }
+    let trimmed = rate.trim();
+    logging::log(
+        "[Models]",
+        &format!(
+            "保存模型倍率 [{provider}] {id}: {}",
+            if trimmed.is_empty() { "清除".to_string() } else { trimmed.to_string() }
+        ),
+    );
+    ok_json(catalog::manage_view(state.store()))
+}

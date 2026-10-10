@@ -178,8 +178,16 @@ pub fn manage_view(store: &AccountStore) -> Value {
             // `credits`），用户分不清「没读到」与「不花钱」—— 而福利源恰恰就是
             // 「不扣积分但没倍率」的那一类。别家的清单条目没有这个键 ⇒ false。
             let benefit = item.get("benefit").and_then(Value::as_bool).unwrap_or(false);
+            // 手填倍率（2026-10-10）：上游不给 `credits` 的模型（典型是 Trae 全系）
+            // 由用户自己填一个；界面优先显示它，并在那一格标出「手填」。
+            let rate_override = rules
+                .rates
+                .iter()
+                .find(|entry| entry.matches(provider, &id))
+                .map(|entry| entry.rate.clone());
             models.push(json!({
                 "id": id, "name": item.get("name"), "credits": item.get("credits"),
+                "rateOverride": rate_override,
                 "benefit": benefit,
                 "isDefault": item.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
                 "provider": provider, "providerLabel": super::super::label_of(provider),

@@ -225,6 +225,34 @@ pub struct CapabilityOverride {
     pub values: Map<String, Value>,
 }
 
+/// 手填倍率（2026-10-10）：给「上游不给倍率」的模型（典型是 Trae 全系）补一个
+/// 用户自己填的值。
+///
+/// ── 为什么不从别处算 ────────────────────────────────────────
+/// 逆向文档里 Trae 的 98 个 API 没有任何模型定价接口（`credits` 只有 CodeArts
+/// 的目录自带）。所以倍率只能**用户自己填**；填了就存下来，界面优先显示它。
+/// 与 `capabilities` 同一形态（provider + id + 一个值），清空即整条移除。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateOverride {
+    pub provider: String,
+    pub id: String,
+    /// 用户填的倍率原文（如 `0.5x` / `1.5`）——**不做数值校验**：各家口径不一，
+    /// 硬套一种格式只会挡住合理写法。空串不存在（写侧会移除整条）。
+    pub rate: String,
+}
+
+impl RateOverride {
+    /// 是否命中 `(provider, id)`（都忽略大小写，与 `CustomModel::matches` 同口径）。
+    pub fn matches(&self, provider: &str, id: &str) -> bool {
+        self.provider.eq_ignore_ascii_case(provider) && self.id.eq_ignore_ascii_case(id)
+    }
+
+    /// 落盘的 JSON 形态：`{provider, id, rate}`。
+    pub fn to_value(&self) -> Value {
+        json!({ "provider": self.provider, "id": self.id, "rate": self.rate })
+    }
+}
+
 impl CapabilityOverride {
     /// 是否命中 `(provider, id)`（都忽略大小写，与 `CustomModel::matches` 同口径）。
     ///
@@ -284,6 +312,8 @@ pub struct ModelRules {
     pub custom: Vec<CustomModel>,
     /// 能力位覆盖（对下游出口的纠正，见模块头的「能力位覆盖」）
     pub capabilities: Vec<CapabilityOverride>,
+    /// 手填倍率（对「上游不给倍率」的模型的补充，见 `RateOverride`）
+    pub rates: Vec<RateOverride>,
     pub seeded: Vec<String>,
 }
 
@@ -367,6 +397,31 @@ fn custom_from(value: Option<&Value>) -> Vec<CustomModel> {
 /// 该覆盖哪一家的哪条模型，等于一条永不生效的死数据。非法能力键 / 非法值
 /// 在归一里被丢弃；**归一后为空的条目也丢弃**（它等价于「没有覆盖」，留着
 /// 只会让管理页的「已改」标记与 `capOverrides` 多列几个并不生效的键）。
+/// 从 JSON 数组还原手填倍率列表。
+fn rates_from(value: Option<&Value>) -> Vec<RateOverride> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let provider = item.get("provider").and_then(Value::as_str)?.trim();
+                    let id = item.get("id").and_then(Value::as_str)?.trim();
+                    let rate = item.get("rate").and_then(Value::as_str)?.trim();
+                    if provider.is_empty() || id.is_empty() || rate.is_empty() {
+                        return None;
+                    }
+                    Some(RateOverride {
+                        provider: provider.to_string(),
+                        id: id.to_string(),
+                        rate: rate.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn capabilities_from(value: Option<&Value>) -> Vec<CapabilityOverride> {
     value
         .and_then(Value::as_array)
@@ -454,6 +509,7 @@ impl ModelRules {
             mappings,
             custom: custom_from(object.get("custom")),
             capabilities: capabilities_from(object.get("capabilities")),
+            rates: rates_from(object.get("rates")),
             seeded: object
                 .get("seeded")
                 .and_then(Value::as_array)
@@ -483,6 +539,7 @@ impl ModelRules {
             // 与 `custom` 同一条硬约束：本函数是整份替换，漏写出哪个键，
             // 任何一次写规则都会把那个键的数据整份抹掉。
             "capabilities": self.capabilities.iter().map(CapabilityOverride::to_value).collect::<Vec<_>>(),
+            "rates": self.rates.iter().map(RateOverride::to_value).collect::<Vec<_>>(),
             "seeded": self.seeded,
         })
     }
@@ -934,6 +991,41 @@ pub fn set_capabilities(
         return Err("模型能力保存失败".to_string());
     }
     Ok(rules)
+}
+
+/// 设 / 清一个模型的手填倍率。
+///
+/// `rate` 传空串（或全空白）= **清除**这条覆盖（整条移除，不留空条目）。
+/// 不做数值校验：各家倍率口径不一，硬套格式只会挡住合理写法（见 `RateOverride`）。
+pub fn set_rate(provider: &str, id: &str, rate: &str) -> Result<ModelRules, String> {
+    let mut rules = current();
+    let index = rules.rates.iter().position(|entry| entry.matches(provider, id));
+    let trimmed = rate.trim();
+    match index {
+        Some(index) if trimmed.is_empty() => {
+            rules.rates.remove(index);
+        }
+        Some(index) => rules.rates[index].rate = trimmed.to_string(),
+        None if trimmed.is_empty() => return Ok(rules),
+        None => rules.rates.push(RateOverride {
+            provider: provider.to_string(),
+            id: id.to_string(),
+            rate: trimmed.to_string(),
+        }),
+    }
+    if !save(&rules) {
+        return Err("倍率保存失败".to_string());
+    }
+    Ok(rules)
+}
+
+/// 某模型的手填倍率（没有则 `None`）—— 管理视图注入用。
+pub fn rate_for(provider: &str, id: &str) -> Option<String> {
+    current()
+        .rates
+        .iter()
+        .find(|entry| entry.matches(provider, id))
+        .map(|entry| entry.rate.clone())
 }
 
 /// 该 `(provider, id)` 是否是用户手动登记的自定义模型。

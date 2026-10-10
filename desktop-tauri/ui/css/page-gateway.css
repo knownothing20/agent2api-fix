@@ -194,6 +194,31 @@
 .mname { color: var(--text-3); font-size: 11.5px; }
 .rate { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
+/* 倍率**可手填**（2026-10-10）：平时渲染成一个数字（无边框、透明底），
+   聚焦才显边框 —— 这样一列几十行不会到处是输入框的框线，但每格都能直接改。
+   上游不给倍率的家（Trae 全系）填进去就存下来，见 RateCell 的说明。 */
+.rate-input {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  width: 64px;
+  padding: 2px 5px;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+.rate-input::placeholder { color: var(--text-3); }
+.rate-input:hover:not(:disabled) { border-color: var(--border); background: var(--surface-2); }
+.rate-input:focus {
+  outline: none;
+  color: var(--text);
+  border-color: var(--primary);
+  background: var(--surface);
+}
+.rate-input:disabled { opacity: 0.55; cursor: progress; }
+
 /* ── 能力位两列（「上下文 / 输出」与「能力」）─────────────────────────
    cell 内容是一个按钮：点开「模型能力」弹窗。两列的入口语义相同（能力是一个
    整体，没必要各开一个弹窗），所以共用 .caps-open 外壳 —— 无样式按钮、hover

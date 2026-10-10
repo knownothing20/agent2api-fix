@@ -121,7 +121,7 @@ function limitsToDrafts(limits: WelfareLimits | null): Record<WelfareLimitKey, s
     welfareMinAttemptGapMinutes: String(limits?.welfareMinAttemptGapMinutes ?? 10),
     welfareMaxAttemptsPerDay: String(limits?.welfareMaxAttemptsPerDay ?? 6),
   }
-}
+}
 
 /**
  * 福利页的提供商 tab。
@@ -445,31 +445,24 @@ function WelfarePage(): React.ReactElement {
             「探测全部」是<strong>只读</strong>的：它只问上游「现在有哪些活动、每个账号领没领」，
             不会消耗任何领取机会，可以随手点。真正的领取是<strong>写操作</strong>，按账号单独点「领取」。
           </p>
+          {/* 开关与间隔**只在「定时任务」页改**（2026-10-10 与 Trae tab 对齐）——
+              两处都能改同一份配置是重复的；而且这一页回答的是「每个账号能领什么」，
+              「多久扫一轮」属于调度，看调度台更顺。这里只留一行只读摘要 + 跳转。 */}
           <div className='flex flex-wrap items-center gap-3'>
-            <label className='flex items-center gap-2 text-[13px]'>
-              <Switch
-                checked={Boolean(task?.enabled)}
-                aria-label='自动领福利开关'
-                onCheckedChange={next => void saveTask({ enabled: next === true })}
-              />
-              自动领取
-            </label>
-            <label className='flex items-center gap-2 text-[13px]'>
-              间隔
-              <Input
-                type='number'
-                className='max-w-[90px]'
-                value={intervalDraft}
-                onChange={event => setIntervalDraft(event.target.value)}
-              />
-              分钟
-            </label>
+            <span className='detail'>
+              自动领取：{task?.enabled ? `已开启 · 每 ${task.interval} 分钟` : '已关闭'}
+            </span>
             <Button
               variant='outline'
-              disabled={taskBusy || !task || String(task.interval) === intervalDraft}
-              onClick={() => void saveTask({ interval: Number(intervalDraft) })}
+              size='sm'
+              onClick={() => {
+                const app = shared().wbApp as unknown as {
+                  showPage?: (page: string, options?: { persist?: boolean }) => void
+                } | undefined
+                app?.showPage?.('tasks', { persist: true })
+              }}
             >
-              保存间隔
+              去「定时任务」调整
             </Button>
           </div>
           <p className='detail mt-1'>
