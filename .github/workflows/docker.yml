@@ -1,5 +1,16 @@
 name: docker
 
+# ── 仓库可见性：public（2026-10-10）──────────────────────────────
+# 本仓库原为 private（免费额度 2000 分钟/月）。2026-10-10 因额度/付款问题被停用：
+# 报 "recent account payments have failed or your spending limit needs to be
+# increased"，并且 **GitHub 会把该 workflow 自动置为 `disabled_manually`** ——
+# 表现是 push 不再触发任何 run、手动触发报 422。恢复要两步：
+#   1. `gh workflow enable docker.yml --repo <owner>/<repo>`（重新启用 workflow）
+#   2. 确认仓库可见性/额度（public 仓库的 Actions 免费无限，见 GitHub 官方政策）
+# 本仓库已改为 **public** 以避免再次撞额度；同时删掉了只服务桌面壳的 build.yml
+# （macOS runner 按 10 倍计费、Windows 2 倍，而本项目只用 Docker 部署）。
+# 若将来改回 private，请记得这条流水线每次 push main 都会跑，会重新开始计费。
+
 # 我们自己的镜像流水线（与 deveco-fix 同一套做法）：
 #   push main / 打 v* tag / 手动 → 构建并推 ghcr.io/knownothing20/agent2api-fix
 #
