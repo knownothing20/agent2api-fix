@@ -172,6 +172,12 @@ When adding an account you pick the provider first, then sign in however that ve
 
 ![Add account: choose provider and edition, then sign in on the web](./assets/screenshots/add-account.png)
 
+### Models
+
+The left rail navigates by provider; the right side lists that provider's models — toggle each one, filter by capability, and attach alias mappings. The **rate cell is editable**: for providers that do not report a rate (all of Trae, for instance), whatever you type is stored and shown alongside upstream values:
+
+![Models page: model list, editable rate, model mappings](./assets/screenshots/models-rate.png)
+
 ### Report
 
 The overview gives total requests, success rate, total tokens and the top model, with rankings by account and by provider beside it; below that come two usage donuts (by model and by provider), then a fixed 365-day activity heatmap:
@@ -187,6 +193,12 @@ Further down are the trends: the last 24 hours of **cache hit rate** (left axis,
 Background tasks are managed on one page: toggle, interval, last result and next fire time all live here, and you can also run one immediately without waiting out the interval. The task list itself is stored in the `scheduledTasks` field of `~/.agent2api/config.json`, and edits take effect immediately — no restart needed.
 
 ![Scheduled tasks page: toggles and intervals for daily check-in (incl. Trae), credential maintenance, model catalog refresh and more](./assets/screenshots/scheduled-tasks.png)
+
+### Welfare
+
+A per-channel summary of what each account can claim right now: one row per account, listing the activities upstream currently offers and their claim status (probing is read-only, claiming is a write — the two are kept apart). The card on top only shows a read-only summary; **switches and intervals live on the Scheduled tasks page** so the same setting is not editable in two places:
+
+![Welfare page: claimable activities, claim status and throttling per account](./assets/screenshots/welfare.png)
 
 ---
 
