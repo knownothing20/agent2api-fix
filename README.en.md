@@ -44,7 +44,15 @@ OpenAI client / any SDK
 
 ## Quick Start
 
-Download the installer from Releases (NSIS, Simplified Chinese, installs to `C:\Program Files\Agent2API` by default, and needs administrator approval during setup), then launch it — **no Node or any other runtime required**.
+> **This repository does not publish desktop installers** (there is no downloadable installer
+> in GitHub Releases) — for a self-hosted deployment go straight to
+> [Docker Deployment](#docker-deployment): one `docker compose up -d` and the panel is ready in
+> your browser. If you do want the desktop app, build it from source as described in
+> [Development & Build](#development--build).
+
+The rest of this section describes the **desktop app** (after building it yourself), for reference:
+
+After building the installer yourself (NSIS, Simplified Chinese, installs to `C:\Program Files\Agent2API` by default, and needs administrator approval during setup), launch it — **no Node or any other runtime required**.
 
 1. First launch starts the local gateway (port 3065) inside the app process and opens the main window. If an older version's data directory or data files are found, a dialog walks you through the migration.
 2. Click "Add account" on the Accounts page, pick a provider (WorkBuddy / Raccoon / CatPaw / AutoClaw domestic / AutoClaw international / Qoder / Cline / Accio international / Accio domestic / CodeArts / Trae), then sign in or fill in credentials using whatever that vendor supports: web login, SMS code, pasting credentials, or importing this machine's desktop login state (importing stores no token — the gateway follows once the desktop client signs in again; CodeArts and Trae only offer web login and pasted credentials).
