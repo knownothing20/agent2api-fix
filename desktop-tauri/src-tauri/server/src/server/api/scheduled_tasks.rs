@@ -47,11 +47,13 @@ use crate::server::ServerState;
 pub async fn entry(State(state): State<ServerState>, request: axum::extract::Request) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    // ⚠️ query 必须在 `into_body()` **之前**取：那一步会把 `request` move 掉，
+    // 之后再 `request.uri()` 就是 E0382（use of moved value）。CI 上正是这么挂的。
+    let query = request.uri().query().unwrap_or("").to_string();
     let body = match axum::body::to_bytes(request.into_body(), MAX_BODY_SIZE).await {
         Ok(bytes) => bytes,
         Err(error) => return bad_request(format!("请求体读取失败或过大: {error}")),
     };
-    let query = request.uri().query().unwrap_or("").to_string();
     dispatch(&state, method, &path, &body, &query).await
 }
 
