@@ -12,15 +12,15 @@
 
   /* 导航、工作区、内容表面分别配色；表格不再单独压暗。 */
   /* --bg 是工作区画布（body）：比内容卡片浅一档，卡片靠描边与投影浮在上面 */
-  --bg: oklch(0.978 0.00265 286.35);
+  --bg: oklch(0.982 0 0);
   --surface: oklch(1 0 0);
-  --surface-2: oklch(0.97670 0.00265 286.35);
+  --surface-2: oklch(0.977 0 0);
   --surface-3: oklch(0.95 0 0);
   /* 浮层（下拉、菜单、提示气泡）：坐在控件之上，取承载面同色 + 大投影 */
   --surface-raised: oklch(1 0 0);
   /* 内嵌凹槽：卡片里那些「凹下去」的小块（表单块、切换卡、代码块、明细面板）。
      它是卡内的一小块，不是整块内容表面，所以仍比卡片深一档。 */
-  --surface-inset: oklch(0.93517 0.00535 286.30);
+  --surface-inset: oklch(0.955 0 0);
   /* 列表区底：与所在卡片同色（表格不再自成一层暗底）。
      行与行靠 1px 分隔线区分，不再靠明度反差。 */
   --table-bg: var(--surface);
@@ -35,24 +35,24 @@
 
   /* 控件填充与描边：与承载面分开，于是表面提亮后按钮、输入框依然立得住，
      不必再靠压暗整块内容来衬托它们。 */
-  --control-bg: oklch(0.95815 0 0);
-  --control-hover: oklch(0.93214 0.00536 286.30);
+  --control-bg: oklch(0.975 0 0);
+  --control-hover: oklch(0.955 0 0);
   --control-border: oklch(0.145 0 0 / 14%);
   --control-border-hover: oklch(0.145 0 0 / 24%);
 
   /* 侧栏：全站唯一「退后一层」的大面积底色，深浅两套都取中性灰。 */
-  --sidebar-bg: oklch(0.92123 0.00460 258.33);
+  --sidebar-bg: oklch(0.968 0 0);
   /* 「模型管理」页左栏（.prov-rail）：比侧栏浅一档 —— 它是面板内的一段
      内嵌导航，不是侧栏的延伸（与侧栏同色会被读成同一块区域）。 */
-  --rail-bg: oklch(0.955 0.004 286);
-  --sidebar-border: oklch(0.145 0 0 / 16%);
+  --rail-bg: oklch(0.975 0 0);
+  --sidebar-border: oklch(0.145 0 0 / 9%);
   --sidebar-fg: oklch(0.43287 0.01676 258.37);
   --sidebar-muted: oklch(0.51200 0.02088 261.29);
   --nav-hover: oklch(0.145 0 0 / 5%);
-  --nav-selected-bg: oklch(0.89318 0.04237 253.82);
-  --nav-selected-border: oklch(0.83311 0.05788 254.15);
-  --nav-selected-fg: oklch(0.42649 0.12275 255.60);
-  --nav-count-bg: oklch(0.84405 0.05294 251.09);
+  --nav-selected-bg: oklch(0.275 0 0);
+  --nav-selected-border: oklch(0.195 0 0);
+  --nav-selected-fg: oklch(0.99 0 0);
+  --nav-count-bg: oklch(0.42 0 0);
 
   /* 文本三档 */
   --text: oklch(0.145 0 0);
@@ -60,23 +60,25 @@
   --text-3: oklch(0.49 0 0);
 
   /* 品牌 */
-  --primary: oklch(0.603 0.218 257.3);
-  --primary-hover: oklch(0.543 0.218 257.3);
-  --primary-soft: color-mix(in srgb, var(--primary) 10%, white);
-  --primary-bd: color-mix(in srgb, var(--primary) 28%, white);
-  --primary-fg: oklch(0.48 0.2 257.3);
+  /* v3（2026-10-10）：主色改「近黑」—— 主按钮 / 选中态走中性深色，彩色只留给语义。
+     彩色渐变既不沉稳也显廉价；近黑主按钮是 Linear / Vercel 那类产品的通行做法。 */
+  --primary: oklch(0.275 0 0);
+  --primary-hover: oklch(0.195 0 0);
+  --primary-soft: color-mix(in srgb, var(--primary) 7%, white);
+  --primary-bd: color-mix(in srgb, var(--primary) 18%, white);
+  --primary-fg: oklch(0.275 0 0);
 
   /* 语义色 */
-  --ok: oklch(0.596 0.145 163.225);
+  --ok: oklch(0.52 0.12 155);
   --ok-soft: color-mix(in srgb, var(--ok) 10%, white);
   --ok-bd: color-mix(in srgb, var(--ok) 28%, white);
-  --warn: oklch(0.681 0.162 75.834);
+  --warn: oklch(0.55 0.13 65);
   --warn-soft: color-mix(in srgb, var(--warn) 10%, white);
   --warn-bd: color-mix(in srgb, var(--warn) 28%, white);
-  --danger: oklch(0.577 0.245 27.325);
+  --danger: oklch(0.51 0.19 27);
   --danger-soft: color-mix(in srgb, var(--danger) 10%, white);
   --danger-bd: color-mix(in srgb, var(--danger) 28%, white);
-  --info: oklch(0.588 0.158 241.966);
+  --info: oklch(0.45 0.15 265);
   --info-soft: color-mix(in srgb, var(--info) 10%, white);
   --info-bd: color-mix(in srgb, var(--info) 28%, white);
 
@@ -89,7 +91,7 @@
   --intl-bd: color-mix(in srgb, var(--intl) 28%, white);
 
   /* 形状：所有圆角都由 --radius 派生，改一个值即可整体缩放 */
-  --radius: 1rem;
+  --radius: 0.72rem;
   --r-xs: calc(var(--radius) * 0.5);
   --r-sm: calc(var(--radius) * 0.6);
   --r-md: calc(var(--radius) * 0.8);
@@ -98,10 +100,11 @@
   --r-pill: 999px;
 
   /* 阴影 */
-  --shadow-1: 0 1px 2px oklch(0.145 0 0 / 5%);
-  --shadow-2: 0 1px 3px oklch(0.145 0 0 / 6%), 0 10px 26px -16px oklch(0.145 0 0 / 20%);
-  --shadow-3: 0 2px 8px oklch(0.145 0 0 / 7%), 0 22px 54px -22px oklch(0.145 0 0 / 26%);
-  --glow: 0 1px 2px oklch(0.145 0 0 / 6%), 0 10px 22px -12px color-mix(in srgb, var(--primary) 45%, transparent);
+  /* 多层柔阴影（近距离紧实 + 远距离扩散）比单层自然；--glow 不再用主色光 */
+  --shadow-1: 0 1px 2px oklch(0.145 0 0 / 4%), 0 1px 3px -1px oklch(0.145 0 0 / 5%);
+  --shadow-2: 0 1px 2px oklch(0.145 0 0 / 3%), 0 4px 12px -3px oklch(0.145 0 0 / 7%), 0 12px 28px -8px oklch(0.145 0 0 / 5%);
+  --shadow-3: 0 2px 4px oklch(0.145 0 0 / 4%), 0 10px 24px -6px oklch(0.145 0 0 / 9%), 0 24px 48px -12px oklch(0.145 0 0 / 9%);
+  --glow: var(--shadow-1);
   --ring: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
 
   /* 尺寸 */
@@ -155,20 +158,20 @@
   --sidebar-fg: oklch(0.79794 0.01342 266.68);
   --sidebar-muted: oklch(0.67832 0.01760 262.73);
   --nav-hover: oklch(1 0 0 / 6%);
-  --nav-selected-bg: oklch(0.34658 0.05986 253.12);
-  --nav-selected-border: oklch(0.46337 0.07464 249.11);
-  --nav-selected-fg: oklch(0.93281 0.03331 250.99);
-  --nav-count-bg: oklch(0.43273 0.06483 250.27);
+  --nav-selected-bg: oklch(0.955 0 0);
+  --nav-selected-border: oklch(0.99 0 0);
+  --nav-selected-fg: oklch(0.22 0 0);
+  --nav-count-bg: oklch(0.62 0 0);
 
   --text: oklch(0.965 0 0);
   --text-2: oklch(0.85 0 0);
   --text-3: oklch(0.78 0 0);
 
-  --primary: oklch(0.623 0.206 255.3);
-  --primary-hover: oklch(0.68 0.206 255.3);
-  --primary-soft: oklch(0.623 0.206 255.3 / 15%);
-  --primary-bd: oklch(0.623 0.206 255.3 / 38%);
-  --primary-fg: oklch(0.75 0.12 255.3);
+  --primary: oklch(0.955 0 0);
+  --primary-hover: oklch(0.90 0 0);
+  --primary-soft: oklch(0.955 0 0 / 12%);
+  --primary-bd: oklch(0.955 0 0 / 30%);
+  --primary-fg: oklch(0.955 0 0);
 
   --ok: oklch(0.696 0.17 162.48);
   --ok-soft: oklch(0.696 0.17 162.48 / 14%);
@@ -190,11 +193,11 @@
   --intl-soft: oklch(0.68 0.14 268 / 14%);
   --intl-bd: oklch(0.68 0.14 268 / 32%);
 
-  --shadow-1: 0 1px 2px oklch(0 0 0 / 40%);
-  --shadow-2: 0 1px 2px oklch(0 0 0 / 40%), 0 12px 28px -18px oklch(0 0 0 / 80%);
-  --shadow-3: 0 2px 10px oklch(0 0 0 / 45%), 0 26px 60px -24px oklch(0 0 0 / 85%);
-  --glow: 0 1px 2px oklch(0 0 0 / 40%), 0 10px 22px -14px oklch(0.623 0.206 255.3 / 50%);
-  --ring: 0 0 0 3px oklch(0.623 0.206 255.3 / 30%);
+  --shadow-1: 0 1px 2px oklch(0 0 0 / 38%), 0 1px 3px -1px oklch(0 0 0 / 30%);
+  --shadow-2: 0 1px 2px oklch(0 0 0 / 34%), 0 6px 16px -6px oklch(0 0 0 / 55%), 0 16px 36px -16px oklch(0 0 0 / 55%);
+  --shadow-3: 0 2px 6px oklch(0 0 0 / 38%), 0 14px 32px -10px oklch(0 0 0 / 62%), 0 32px 64px -20px oklch(0 0 0 / 60%);
+  --glow: var(--shadow-1);
+  --ring: 0 0 0 3px oklch(1 0 0 / 22%)
 }
 
 /* system 模式跟随系统深浅 */
@@ -227,20 +230,20 @@
     --sidebar-fg: oklch(0.79794 0.01342 266.68);
     --sidebar-muted: oklch(0.67832 0.01760 262.73);
     --nav-hover: oklch(1 0 0 / 6%);
-    --nav-selected-bg: oklch(0.34658 0.05986 253.12);
-    --nav-selected-border: oklch(0.46337 0.07464 249.11);
-    --nav-selected-fg: oklch(0.93281 0.03331 250.99);
-    --nav-count-bg: oklch(0.43273 0.06483 250.27);
+    --nav-selected-bg: oklch(0.955 0 0);
+    --nav-selected-border: oklch(0.99 0 0);
+    --nav-selected-fg: oklch(0.22 0 0);
+    --nav-count-bg: oklch(0.62 0 0);
 
     --text: oklch(0.965 0 0);
     --text-2: oklch(0.85 0 0);
     --text-3: oklch(0.78 0 0);
 
-    --primary: oklch(0.623 0.206 255.3);
-    --primary-hover: oklch(0.68 0.206 255.3);
-    --primary-soft: oklch(0.623 0.206 255.3 / 15%);
-    --primary-bd: oklch(0.623 0.206 255.3 / 38%);
-    --primary-fg: oklch(0.75 0.12 255.3);
+    --primary: oklch(0.955 0 0);
+    --primary-hover: oklch(0.90 0 0);
+    --primary-soft: oklch(0.955 0 0 / 12%);
+    --primary-bd: oklch(0.955 0 0 / 30%);
+    --primary-fg: oklch(0.955 0 0);
 
     --ok: oklch(0.696 0.17 162.48);
     --ok-soft: oklch(0.696 0.17 162.48 / 14%);
@@ -262,11 +265,11 @@
     --intl-soft: oklch(0.68 0.14 268 / 14%);
     --intl-bd: oklch(0.68 0.14 268 / 32%);
 
-    --shadow-1: 0 1px 2px oklch(0 0 0 / 40%);
-    --shadow-2: 0 1px 2px oklch(0 0 0 / 40%), 0 12px 28px -18px oklch(0 0 0 / 80%);
-    --shadow-3: 0 2px 10px oklch(0 0 0 / 45%), 0 26px 60px -24px oklch(0 0 0 / 85%);
-    --glow: 0 1px 2px oklch(0 0 0 / 40%), 0 10px 22px -14px oklch(0.623 0.206 255.3 / 50%);
-    --ring: 0 0 0 3px oklch(0.623 0.206 255.3 / 30%);
+    --shadow-1: 0 1px 2px oklch(0 0 0 / 38%), 0 1px 3px -1px oklch(0 0 0 / 30%);
+    --shadow-2: 0 1px 2px oklch(0 0 0 / 34%), 0 6px 16px -6px oklch(0 0 0 / 55%), 0 16px 36px -16px oklch(0 0 0 / 55%);
+    --shadow-3: 0 2px 6px oklch(0 0 0 / 38%), 0 14px 32px -10px oklch(0 0 0 / 62%), 0 32px 64px -20px oklch(0 0 0 / 60%);
+    --glow: var(--shadow-1);
+    --ring: 0 0 0 3px oklch(1 0 0 / 22%)
   }
 }
 

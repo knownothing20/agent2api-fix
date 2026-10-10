@@ -159,7 +159,7 @@
 }
 
 :root {
-  --ui-radius: 1rem;
+  --ui-radius: 0.72rem;
   /* 字体栈首位的 Public Sans 与设计稿一致，但项目尚未引入字体文件
      （@fontsource-variable/public-sans），当前实际落在系统字体上 —— 与
      既有界面同款。装上字体包即自动切换，无需改这里。 */
@@ -173,7 +173,7 @@
   --ui-card-foreground: oklch(0.145 0 0);
   --ui-popover: oklch(1 0 0);
   --ui-popover-foreground: oklch(0.145 0 0);
-  --ui-primary: oklch(0.603 0.218 257.3);
+  --ui-primary: oklch(0.275 0 0);
   --ui-primary-foreground: oklch(1 0 0);
   --ui-secondary: oklch(0.95 0 0);
   --ui-secondary-foreground: oklch(0.42 0.16 250);
@@ -198,10 +198,10 @@
   --ui-ring: oklch(0.708 0.16 249.003);
 
   --ui-primary-soft: color-mix(in srgb, var(--ui-primary) 10%, white);
-  --ui-primary-fg: oklch(0.48 0.2 257.3);
+  --ui-primary-fg: oklch(0.275 0 0);
   --ui-primary-bd: color-mix(in srgb, var(--ui-primary) 28%, white);
   --ui-primary-tint: color-mix(in srgb, var(--ui-primary) 16%, transparent);
-  --ui-primary-hover: oklch(0.543 0.218 257.3);
+  --ui-primary-hover: oklch(0.195 0 0);
   --ui-primary-on: color-mix(in srgb, var(--ui-surface) 8%, white);
   --ui-surface: oklch(1 0 0);
   --ui-surface-2: oklch(0.9767 0.00265 286.35);
@@ -271,7 +271,7 @@
   --ui-card-foreground: oklch(0.965 0 0);
   --ui-popover: oklch(0.305 0 0);
   --ui-popover-foreground: oklch(0.965 0 0);
-  --ui-primary: oklch(0.623 0.206 255.3);
+  --ui-primary: oklch(0.955 0 0);
   --ui-primary-foreground: oklch(1 0 0);
   --ui-secondary: oklch(0.335 0 0);
   --ui-secondary-foreground: oklch(0.9 0.05 250);
@@ -295,10 +295,10 @@
   --ui-ring: oklch(0.554 0.148 250.726);
 
   --ui-primary-soft: oklch(0.623 0.206 255.3 / 15%);
-  --ui-primary-fg: oklch(0.75 0.12 255.3);
+  --ui-primary-fg: oklch(0.955 0 0);
   --ui-primary-bd: oklch(0.623 0.206 255.3 / 38%);
   --ui-primary-tint: color-mix(in srgb, var(--ui-primary) 16%, transparent);
-  --ui-primary-hover: oklch(0.68 0.206 255.3);
+  --ui-primary-hover: oklch(0.90 0 0);
   --ui-primary-on: color-mix(in srgb, var(--ui-surface) 8%, white);
   --ui-surface: oklch(0.19212 0.00399 286.02);
   --ui-surface-2: oklch(0.28254 0.00726 285.93);
@@ -372,7 +372,7 @@
     --ui-card-foreground: oklch(0.965 0 0);
     --ui-popover: oklch(0.305 0 0);
     --ui-popover-foreground: oklch(0.965 0 0);
-    --ui-primary: oklch(0.623 0.206 255.3);
+    --ui-primary: oklch(0.955 0 0);
     --ui-primary-foreground: oklch(1 0 0);
     --ui-secondary: oklch(0.335 0 0);
     --ui-secondary-foreground: oklch(0.9 0.05 250);
@@ -395,10 +395,10 @@
     --ui-ring: oklch(0.554 0.148 250.726);
 
     --ui-primary-soft: oklch(0.623 0.206 255.3 / 15%);
-    --ui-primary-fg: oklch(0.75 0.12 255.3);
+    --ui-primary-fg: oklch(0.955 0 0);
     --ui-primary-bd: oklch(0.623 0.206 255.3 / 38%);
     --ui-primary-tint: color-mix(in srgb, var(--ui-primary) 16%, transparent);
-    --ui-primary-hover: oklch(0.68 0.206 255.3);
+    --ui-primary-hover: oklch(0.90 0 0);
     --ui-primary-on: color-mix(in srgb, var(--ui-surface) 8%, white);
     --ui-surface: oklch(0.19212 0.00399 286.02);
     --ui-surface-2: oklch(0.28254 0.00726 285.93);
