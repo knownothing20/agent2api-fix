@@ -2,9 +2,6 @@
 
 [简体中文](./README.md) | **English**
 
-<!-- Remove this block after the National Day holiday. -->
-> 📢 **National Day holiday notice**: the project runs in slow mode during the holiday. Issues are still accepted, but replies, triage and releases will be noticeably slower and are mostly batched after the holiday. For blocking problems, prefix the issue title with `[阻断]` and it will be looked at first; existing issues stay in the queue and won't be dropped. Discussion: [#66](https://github.com/aimod-cc/agent2api/issues/66).
-
 Wraps the login state of several AI desktop clients into a local **OpenAI-compatible API gateway**, exposing a single `base_url` and bundling multi-provider account management, model management (enable / disable / delete / alias), content redaction, egress proxying and request reporting — plus a ready-to-run Tauri desktop app. Any OpenAI client that accepts a custom `base_url` can call these providers' model quota through `http://127.0.0.1:3065/v1` — no API key, no client source changes needed.
 
 ```
@@ -36,6 +33,7 @@ OpenAI client / any SDK
 
 - [Quick Start](#quick-start)
 - [Docker Deployment](#docker-deployment)
+- [Changes in this repository](#changes-in-this-repository)
 - [Screenshots](#screenshots)
 - [Project Layout](#project-layout)
 - [Development & Build](#development--build)
@@ -89,7 +87,7 @@ print(resp.choices[0].message.content)
 ```bash
 docker run -d --name agent2api --restart unless-stopped \
   -p 3065:3065 -v ./data:/data \
-  aimodcc/agent2api:latest
+  ghcr.io/knownothing20/agent2api-fix:latest
 ```
 
 Open `http://<host>:3065` in a browser — the first visit walks you through **registering the admin account**; log in and create an API key in the "Gateway Keys" page for your clients — `http://<host>:3065/v1` is the OpenAI-compatible endpoint (it refuses to forward until the first key exists, then recovers automatically). All state (SQLite database / config / logs) lives in the `./data` volume.
@@ -99,7 +97,7 @@ Compose users (this is the whole `docker-compose.yml`; images are published for 
 ```yaml
 services:
   agent2api:
-    image: aimodcc/agent2api:latest
+    image: ghcr.io/knownothing20/agent2api-fix:latest
     container_name: agent2api
     restart: unless-stopped
     ports:
@@ -121,6 +119,36 @@ Environment variables (all optional — nothing needs to be preset):
 Build from source: clone the repo and run `docker compose up -d --build` (the image contains only the gateway and the panel, no Rust toolchain).
 
 **Web panel capability notes** (all differences stem from having no local desktop client): web login (WorkBuddy / Qoder / Cline), SMS codes and pasted credentials work fully; AutoClaw / CatPaw / Accio / CodeArts / Trae web-login callbacks hit the machine's own port, so from a remote panel use pasted credentials instead; Raccoon web login and "import desktop login state" are unavailable (use pasted credentials; CodeArts and Trae have no desktop login state to import either).
+
+---
+
+## Changes in this repository
+
+This fork focuses on **long-running server / container deployments**. Highlights:
+
+- **Daily check-in for Trae**: a scheduled task plus a dedicated tab — a fixed daily time
+  (default 09:00) with an interval fallback, and a configurable gap between accounts.
+  Idempotency comes from the server-side `checked_in`, so accounts that already checked in
+  only cost one read-only probe.
+- **Configurable welfare throttling**: the CodeArts welfare knobs (gap between accounts,
+  per-account write gap, per-account daily write cap) are editable from the panel.
+- **Wider thinking reserve**: when the client's `max_tokens` cannot fit an
+  "always-thinking" model's reasoning, it is raised by **+32768** (upstream uses 1024),
+  covering common settings such as `max_tokens=10000`.
+- **Configurable Trae callback port / bind address**, so the Trae web login also works for
+  container / remote deployments.
+- **Retry on connection-layer failures** (DNS / TCP), so host network hiccups no longer
+  fail a whole scheduled round.
+
+UI: the daily-usage chart now has four mutually exclusive views; segmented controls no
+longer paint a hover background (which looked like a second selection); the welfare page
+gained proper `.panel-body` padding.
+
+Fixes: several `&str` byte-slicing panics (release uses `panic = "abort"`, so one bad slice
+takes the whole gateway down) and the timezone handling of the check-in schedule (a UTC
+container shifted the trigger by 8 hours).
+
+> See the commit history for the full list.
 
 ---
 
@@ -314,13 +342,14 @@ One caveat: the LICENSE file carries a **Usage Notice** after the MIT text, whos
 
 ---
 
-## Star History
+## About this repository
 
-<a href="https://star-history.com/#aimod-cc/agent2api&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date" />
-  </picture>
-</a>
+This repository is a **modified version** of **Agent2API**, forked from and built upon the
+upstream open-source project (upstream: [aimod-cc/agent2api](https://github.com/aimod-cc/agent2api)).
 
+For the differences from upstream and the localized deployment (self-built Docker image and
+registry, update-check target, etc.), see the commit history and
+[`DEPLOY-STATUS.md`](./DEPLOY-STATUS.md).
+
+The original copyright and MIT license are in [`LICENSE`](./LICENSE); the original copyright
+notice is retained here, and the local modifications are likewise provided under MIT.

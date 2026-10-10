@@ -15,7 +15,7 @@ name: docker
 #   push main / 打 v* tag / 手动 → 构建并推 ghcr.io/knownothing20/agent2api-fix
 #
 # ── 与上游本文件的差异（有意为之）────────────────────────────
-#   · 目标仓库：上游推 Docker Hub 的 aimodcc/agent2api（用作者的 secrets）；
+#   · 目标仓库：上游推 Docker Hub（用上游作者的 secrets）；
 #     我们推自己的 GHCR，凭据用内置 GITHUB_TOKEN，不需要任何 secret。
 #   · 触发：上游只在打 tag 时构建；我们额外在 push main 时也构建 ——
 #     「改完就有一条可部署的镜像」，与 deveco-fix 的手感一致。
@@ -39,6 +39,21 @@ on:
       - main
     tags:
       - 'v*'
+    # 只在「会影响镜像内容」的改动上触发（2026-10-10 用户要求「不要太频繁」）：
+    # 文档 / 说明类改动（README、DEPLOY-STATUS、docs 等）不再触发构建。
+    # 注意 `paths` 只约束分支 push，tag push 不受影响（打 v* tag 仍会构建）。
+    paths:
+      - 'desktop-tauri/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docker.yml'
+
+# 连续 push 时取消尚未跑完的旧构建，避免排队浪费（2026-10-10）
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

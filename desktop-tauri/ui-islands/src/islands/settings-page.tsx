@@ -1491,19 +1491,19 @@ const FEEDBACK_LINKS = [
     title: '问题反馈',
     desc: '遇到 Bug、报错或异常行为',
     cta: '去反馈',
-    url: 'https://github.com/aimod-cc/agent2api/issues/new?template=bug_report.yml',
+    url: 'https://github.com/knownothing20/agent2api-fix/issues/new?template=bug_report.yml',
   },
   {
     title: '功能建议',
     desc: '想要的新功能或改进想法',
     cta: '提建议',
-    url: 'https://github.com/aimod-cc/agent2api/issues/new?template=feature_request.yml',
+    url: 'https://github.com/knownothing20/agent2api-fix/issues/new?template=feature_request.yml',
   },
   {
     title: '请求提供商 / 模型支持',
     desc: '希望接入新的提供商或模型',
     cta: '去申请',
-    url: 'https://github.com/aimod-cc/agent2api/issues/new?template=provider_request.yml',
+    url: 'https://github.com/knownothing20/agent2api-fix/issues/new?template=provider_request.yml',
   },
 ] as const
 

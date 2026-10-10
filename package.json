@@ -24,10 +24,10 @@
     "sse",
     "llm"
   ],
-  "author": "aimod-cc",
+  "author": "knownothing20 (based on aimod-cc upstream)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aimod-cc/agent2api.git"
+    "url": "https://github.com/knownothing20/agent2api-fix.git"
   },
   "license": "SEE LICENSE IN LICENSE",
   "engines": {

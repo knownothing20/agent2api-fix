@@ -15,8 +15,8 @@
   },
   "bundle": {
     "active": true,
-    "publisher": "aimod-cc",
-    "copyright": "Copyright (c) 2026 aimod-cc",
+    "publisher": "knownothing20",
+    "copyright": "Copyright (c) 2026 aimod-cc (upstream); modifications (c) 2026 knownothing20",
     "targets": [
       "nsis"
     ],

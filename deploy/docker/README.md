@@ -42,12 +42,12 @@ gh api repos/knownothing20/agent2api-fix/commits/main --jq .sha
 - 面板：`http://<bind>:3065/`
 - 客户端：`base_url = http://<bind>:3065/v1`，`api_key` 用面板「网关 Key」页建的那把
 
-## 5. 与上游的关系
+## 5. 同步上游更新
 
-`upstream` remote 指向 `aimod-cc/agent2api`：
+本仓库配置了 `upstream` remote 指向上游开源项目（见 [README](../../README.md) 文末「关于本仓库」）：
 
 ```bash
 git fetch upstream && git merge upstream/main
 ```
 
-合并上游后重新 push `main` 即可出新镜像。
+合并后重新 push `main` 即可出新镜像。

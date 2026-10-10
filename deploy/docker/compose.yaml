@@ -5,7 +5,7 @@
 #   cp deploy 里的 .env.example 为 .env 并填好 → docker compose pull && docker compose up -d
 #
 # 与上游根目录 docker-compose.yml 的差异：
-#   · 镜像指向我们自己的 GHCR 产物，而不是 Docker Hub 的 aimodcc/agent2api
+#   · 镜像指向我们自己的 GHCR 产物，而不是上游发布的 Docker Hub 镜像
 #   · 数据用**命名卷**（上游示例用 ./data 绑定挂载）
 #   · 加了容器加固（只读根文件系统、丢弃全部 capability、内存与进程数上限）
 #   · 监听地址、管理员凭据、人机验证开关全部走 .env

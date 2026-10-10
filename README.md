@@ -2,9 +2,6 @@
 
 **简体中文** | [English](./README.en.md)
 
-<!-- 国庆假期结束后删除本段 -->
-> 📢 **国庆假期公告**：假期期间项目进入慢速维护期，Issue 照常接收，但回复、排查与发版会明显变慢，多半集中在节后统一处理。遇到「完全无法使用」这类阻断性问题，请在标题前加 `[阻断]` 前缀，我会优先看；已有的 issue 都在队列里，不会被忽略。讨论见 [#66](https://github.com/aimod-cc/agent2api/issues/66)。
-
 把多家 AI 桌面客户端的登录态包装成本地 **OpenAI 兼容 API 网关**，统一暴露一个 `base_url`，附带多提供商账号管理、模型管理（启停 / 删除 / 映射）、出站指纹脱敏、出网代理与请求报表，并提供一个开箱即用的 Tauri 桌面端。任何支持自定义 `base_url` 的 OpenAI 客户端都能以 `http://127.0.0.1:3065/v1` 为端点调用这几家的模型额度——不需要 API Key，不需要改客户端源码。
 
 ```
@@ -41,6 +38,7 @@ OpenAI 客户端 / 任意 SDK
 
 - [快速开始](#快速开始)
 - [Docker 部署](#docker-部署)
+- [本仓库的改动](#本仓库的改动)
 - [界面预览](#界面预览)
 - [项目结构](#项目结构)
 - [开发与构建](#开发与构建)
@@ -94,7 +92,7 @@ print(resp.choices[0].message.content)
 ```bash
 docker run -d --name agent2api --restart unless-stopped \
   -p 3065:3065 -v ./data:/data \
-  aimodcc/agent2api:latest
+  ghcr.io/knownothing20/agent2api-fix:latest
 ```
 
 浏览器打开 `http://<主机>:3065`，首次进入会引导**注册管理员账号**（后续登录用它）；登录后在「网关 Key」页创建一把 API Key 给客户端用 —— `http://<主机>:3065/v1` 即 OpenAI 兼容端点，未建 Key 前拒绝转发，建第一把后自动恢复。所有状态（SQLite 库 / 配置 / 日志）都落在 `./data` 一个卷里。
@@ -104,7 +102,7 @@ compose 用户（`docker-compose.yml` 全文就这么多；amd64 / arm64 都有�
 ```yaml
 services:
   agent2api:
-    image: aimodcc/agent2api:latest
+    image: ghcr.io/knownothing20/agent2api-fix:latest
     container_name: agent2api
     restart: unless-stopped
     ports:
@@ -128,6 +126,40 @@ services:
 **网页端功能差异**（都源于「没有本机桌面客户端」）：网页登录（WorkBuddy / Qoder / Cline）、手机验证码、粘贴凭证完全可用；AutoClaw / CatPaw / Accio / CodeArts / Trae 网页登录的回调打本机端口，远程面板请改用粘贴凭证；小浣熊网页登录与「导入本机桌面端登录态」不可用（用填写凭证；CodeArts 与 Trae 本来也没有桌面端登录态可导入）。
 
 ---
+
+---
+
+## 本仓库的改动
+
+本仓库在上游基础上做了一批本地化改动，主要面向「**服务器 / 容器常驻部署**」这一形态。
+
+### 新增功能
+
+- **Trae 每日签到**：定时任务页新增「自动签到（Trae）」，福利页新增 Trae 标签。支持
+  **定点时刻**（默认 09:00，可改，到点即签）+ 间隔轮兜底；账号之间可设间隔（默认 10 分钟）。
+  幂等由服务端 `checked_in` 保证 —— 已签的账号只花一次只读预检，不会重复写上游。
+- **福利节流可配**：自动领福利（CodeArts）的三个旋钮由写死的常量改为后台可配、面板可改 ——
+  **账号之间的间隔**、**单账号写闸间隔**、**单账号每日写上限**。
+- **思考预留放宽**：客户端 `max_tokens` 撑不下「始终思考」模型的推理时，自动抬到
+  **+32768**（上游阈值为 1024），覆盖 `max_tokens=10000` 这类常见客户端设置 ——
+  实测可让原本「正文 0 字」的回复正常产出。
+- **Trae 回调端口 / 绑定可配**：`AGENT2API_TRAE_CALLBACK_PORT` 与
+  `AGENT2API_TRAE_CALLBACK_BIND`，让容器 / 远程部署下也能完成 Trae 网页登录。
+- **上游连接层失败退避重试**：DNS 解析或 TCP 建连失败时退避 800ms 重试一次，
+  避免宿主机网络抖动直接让整轮定时任务失败。
+
+### 界面调整
+
+- 报表「每日用量」由两组控件改为**四档互斥**（按 Token / 按请求数 / 按模型 / 按账号）；
+- 分段控件的 hover 不再上底色（此前与选中态撞车，看起来像「同时选了两个」）；
+- 福利页补齐 `.panel-body` 内边距（内容不再顶边）。
+
+### 修复
+
+- 若干 `&str` 按**字节**切片的崩溃点（release 是 `panic = "abort"`，一处越界即整个网关退出）；
+- 定时签到的时区处理（容器默认 UTC 会让触发时刻漂 8 小时）。
+
+> 完整改动见提交历史。
 
 ---
 
@@ -321,13 +353,10 @@ npm run build:icon         # 生成图标源图（改图标设计后执行，再
 
 ---
 
-## Star History
+## 关于本仓库
 
-<a href="https://star-history.com/#aimod-cc/agent2api&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aimod-cc/agent2api&type=Date" />
-  </picture>
-</a>
+本仓库是 **Agent2API** 的**修改版本**，基于上游开源项目二次开发（上游仓库：[aimod-cc/agent2api](https://github.com/aimod-cc/agent2api)）。
 
+与原版的差异、以及本地化的部署方式（自建 Docker 镜像与地址、更新检查指向等），见仓库提交历史与 [`DEPLOY-STATUS.md`](./DEPLOY-STATUS.md)。
+
+原项目的著作权与 MIT 许可见 [`LICENSE`](./LICENSE)；本仓库保留原版权声明，本地修改部分同样按 MIT 提供。

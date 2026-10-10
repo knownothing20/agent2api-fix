@@ -8,7 +8,7 @@
 ## 1. 这是什么
 
 **agent2api** = 多提供商本地网关：把各家 AI 桌面客户端的**登录态**包装成本地 OpenAI 兼容 API。
-上游项目 `aimod-cc/agent2api`（MIT）。本项目是它的**私有副本**，用于自建部署与本地修改。
+本项目基于**上游开源项目**二次开发（MIT，上游仓库见 [README](./README.md) 文末「关于本仓库」），用于自建部署与本地修改。
 
 - 语言：Rust（网关本体）+ React/Vite（面板前端）+ Tauri（桌面壳，我们不用）
 - 我们只跑它的 **headless 服务端二进制**（`/usr/local/bin/agent2api-server`），不做桌面端
@@ -43,9 +43,9 @@
 | 项 | 值 |
 | --- | --- |
 | 本地路径 | `D:\GitHub\agent2api-fix` |
-| `origin` | `knownothing20/agent2api-fix`（**PRIVATE**） |
-| `upstream` | `aimod-cc/agent2api` |
-| 基线 | 上游 `4a0d741`（v2.8.0，接入 CodeArts/Trae 那版），28 个标签已带上 |
+| `origin` | `knownothing20/agent2api-fix`（**PUBLIC**，2026-10-10 由 private 改公开）|
+| `upstream` | 上游仓库（见 [README](./README.md) 文末）|
+| 基线 | 上游 `v2.8.0`（接入 CodeArts / Trae 那版）；当时把上游的版本标签一并带上了 |
 | 跟上游 | `git fetch upstream && git merge upstream/main` |
 | 许可证 | MIT（可改可分，保留 LICENSE 与版权声明） |
 
@@ -99,10 +99,10 @@ AGENT2API_BIND_ADDRESS=192.168.31.124
 AGENT2API_ADMIN_USER=admin
 AGENT2API_ADMIN_PASSWORD=***          # 与 .admin_password 同值
 AGENT2API_CAPTCHA_ENABLED=0           # 面板人机验证已关（登录页曾卡在验证）
-WORKBUDDY_UPDATE_REPO=aimod-cc/agent2api   # 「检查更新」读公开上游（见 §6）
+WORKBUDDY_UPDATE_REPO=<上游仓库>   # 「检查更新」读上游（见 [README](./README.md) 文末；§6）
 ```
 
-**回滚**：把 `image:` 换回 `aimodcc/agent2api:latest`（或用备份的 `docker-compose.yml.pre-ghcr-*`）再 `up -d`；数据卷不动，账号不丢。
+**回滚**：用备份的 `docker-compose.yml.pre-ghcr-*` 再 `up -d`；数据卷不动，账号不丢。
 
 ---
 
@@ -169,8 +169,8 @@ WORKBUDDY_UPDATE_REPO=aimod-cc/agent2api   # 「检查更新」读公开上游�
 | | 取值 | 说明 |
 | --- | --- | --- |
 | 本项目仓库 | 常量 `knownothing20/agent2api-fix` | 私有；匿名读不到它的 Release，**不拿它做检查** |
-| 参考仓库 | 常量 `aimod-cc/agent2api` | 公开 ⇒ 匿名可读，**版本信息与更新日志都来自它** |
-| 后端 `WORKBUDDY_UPDATE_REPO` | `aimod-cc/agent2api` | 决定「检查更新」去读谁 |
+| 参考仓库 | 上游仓库（见 [README](./README.md) 文末）| 公开 ⇒ 匿名可读，**版本信息与更新日志都来自它** |
+| 后端 `WORKBUDDY_UPDATE_REPO` | 同上（上游仓库）| 决定「检查更新」去读谁 |
 
 ⚠️ **私有仓库的坑**：GitHub 对私有仓库的匿名 API 请求一律 **404**。若哪天要改回读本项目仓库，必须给凭据：
 ① 面板「更新设置」贴**细粒度只读 PAT**（该仓库 `Contents: Read-only`）——注意**本页已按需求删掉了「更新设置」按钮**，届时需从 env 给 `GITHUB_TOKEN` / `WORKBUDDY_GITHUB_TOKEN`；
