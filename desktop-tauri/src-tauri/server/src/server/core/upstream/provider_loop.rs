@@ -174,6 +174,17 @@ const TRANSIENT_RETRY_STATUSES: &[u16] = &[408, 500, 502, 503, 504];
 /// 传输层失败（DNS / 代理 / 连接）没有上游状态码，不受名单管。
 /// `status_code` 是 `i64` 形态（GatewayError 存的是 `i32`，这里统一收宽），
 /// 负值 / 越界不可能是 HTTP 状态码，按「不在名单」处理。
+/// A media-conversion failure cannot be repaired by resending the same bytes or changing accounts.
+/// The provider POST has already happened; token zero is not proof of safe replay/free billing.
+/// Match only the known CodeArts/InferHub envelope, not arbitrary client text or a generic 5xx.
+fn media_conversion_no_replay(message: &str) -> bool {
+    message.len() <= 4096
+        && message.contains("InferHub.ModelArts.")
+        && message
+            .to_ascii_lowercase()
+            .contains("media conversion failed")
+}
+
 fn direct_switch_status(status: i64) -> bool {
     u16::try_from(status)
         .map(|code| config::retry_settings().no_retry(code))
@@ -612,6 +623,18 @@ async fn attempt_queue(
                         );
                         return Err(cancellation::cancelled_error());
                     }
+                    if media_conversion_no_replay(&error.message) {
+                        // CodeArts is stateful: attempt_stateful has already finalized this attempt.
+                        // Stop before picking another account; a 200/SSE media fault is not a retry permit.
+                        ctx.telemetry.note_attempt_stop_reason(
+                            "媒体转换失败：原请求禁止重发或换账号；费用状态未知",
+                        );
+                        logging::console_line(
+                            "[Upstream]",
+                            "媒体转换失败：停止会话式账号顺延；费用状态未知",
+                        );
+                        return Err(error);
+                    }
                     if let Some(account_id) = stateful_account_id {
                         if !tried_ids.contains(&account_id) {
                             tried_ids.push(account_id);
@@ -909,6 +932,20 @@ async fn attempt_queue(
                     // 「这一轮的结局已定」那条公共定稿出口，之后与其它错误
                     // 一样按动作 1 / 动作 3 换号顺延：直接换下一个账号继续试，
                     // 换满或没有更多账号时错误才原样返回客户端。
+                    if media_conversion_no_replay(&failure.error.message) {
+                        ctx.telemetry.note_attempt_stop_reason(
+                            "媒体转换失败：原请求禁止重发或换账号；费用状态未知",
+                        );
+                        ctx.telemetry.finish_last_attempt(
+                            Some(i64::from(failure.error.status_code)),
+                            Some(&failure.error.message),
+                        );
+                        logging::console_line(
+                            "[Upstream]",
+                            "媒体转换失败：保留本次错误，禁止同请求重发或换账号；费用状态未知",
+                        );
+                        return Err(failure.error);
+                    }
                     let named_switch = direct_switch_status(i64::from(failure.error.status_code));
                     // ── 动作 0：内容策略拦截 → 换中性提示词，同账号立即重试一次 ──
                     // 上游按逐字精确匹配审核，命中即整单拦截；这是**误报**而不是
@@ -1908,7 +1945,9 @@ async fn send_with_retry(
         // 上，直接换下一个账号继续试（见 `direct_switch_status` 与动作 3），
         // 换满仍失败才把错误给客户端。两处合起来才是「这个码直接换号」的
         // 完整语义。
-        let advice = if !degraded && matches!(class, UpstreamErrorClass::ContentBlocked { .. }) {
+        let advice = if media_conversion_no_replay(&detail.message) {
+            None
+        } else if !degraded && matches!(class, UpstreamErrorClass::ContentBlocked { .. }) {
             None
         } else if direct_switch_status(i64::from(status)) {
             None
@@ -1957,5 +1996,114 @@ async fn send_with_retry(
             }
         };
         return Err(OutboundFailure { class, error });
+    }
+}
+
+#[cfg(test)]
+mod media_conversion_replay_tests {
+    use super::media_conversion_no_replay;
+
+    #[test]
+    fn known_inferhub_media_failure_blocks_both_retry_gates() {
+        assert!(media_conversion_no_replay(
+            "上游报告 InferHub.ModelArts.81104.503：Media conversion failed: Unknown error"
+        ));
+        assert!(media_conversion_no_replay(
+            "InferHub.ModelArts.81104.503: MEDIA CONVERSION FAILED"
+        ));
+    }
+
+    #[tokio::test]
+    async fn media_conversion_http_error_sends_once_even_with_resend_budget() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                observed.fetch_add(1, Ordering::SeqCst);
+                let mut input = [0u8; 4096];
+                let _ = stream.read(&mut input).await.unwrap();
+                let body = r#"{"message":"InferHub.ModelArts.81104.503: Media conversion failed: Unknown error"}"#;
+                let response = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let transport = super::TransportRequest {
+            url: format!("http://{addr}/chat"),
+            headers: vec![],
+            payload: "{}".to_string(),
+            proxy: None,
+        };
+        let telemetry = crate::server::core::upstream::usage::RequestTelemetry::new();
+        let mut budget = super::RetryBudget::new(3);
+        let outcome = super::send_with_retry(
+            super::adapter_for(super::ProviderKind::CodeArts),
+            &transport,
+            &mut budget,
+            None,
+            &telemetry,
+            false,
+        )
+        .await;
+        server.abort();
+        assert!(outcome.is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.remaining, 3);
+        assert!(media_conversion_no_replay(
+            &outcome.err().unwrap().error.message
+        ));
+    }
+
+    #[test]
+    fn sse_media_fault_preserves_the_no_replay_marker() {
+        use crate::server::core::providers::codearts::stream_fault;
+        let fault = stream_fault::stream_frame_fault(
+            r#"{"error_code":"InferHub.ModelArts.81104.503","error_msg":"Media conversion failed: Unknown error"}"#
+        ).unwrap();
+        let error = stream_fault::fault_to_error(&fault);
+        assert!(super::adapter_for(super::ProviderKind::CodeArts).is_stateful());
+        assert!(media_conversion_no_replay(&error.message));
+    }
+
+    #[test]
+    fn media_conversion_stop_reason_survives_an_existing_notice_without_fake_retry() {
+        let telemetry = crate::server::core::upstream::usage::RequestTelemetry::new();
+        telemetry.note_attempt(None, "fixture", "codearts");
+        telemetry.note_attempt_started("codearts", "fixture");
+        telemetry.note_attempt_notice("fixture preflight notice");
+        telemetry.note_attempt_stop_reason("media conversion failed; no replay");
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.attempts, 1);
+        let notice = snapshot.attempts_detail[0].notice.as_deref().unwrap();
+        assert!(notice.starts_with("media conversion failed; no replay"));
+        assert!(notice.contains("fixture preflight notice"));
+        assert!(snapshot.attempts_detail[0].retries.is_empty());
+    }
+
+    #[test]
+    fn quota_network_generic_status_and_unrelated_text_keep_existing_policy() {
+        for text in [
+            "HTTP 503 Service Unavailable",
+            "InferHub.4291.200 insufficient quota",
+            "socket closed",
+            "Media conversion failed",
+            "InferHub.ModelArts.81104.503 unrelated failure",
+        ] {
+            assert!(!media_conversion_no_replay(text));
+        }
+        assert!(!media_conversion_no_replay(&format!(
+            "InferHub.ModelArts.81104.503 Media conversion failed{}",
+            "x".repeat(4096)
+        )));
     }
 }

@@ -835,6 +835,25 @@ impl RequestTelemetry {
         self.flush_live(&guard);
     }
 
+    /// A terminal stop reason must remain visible even if a preflight/proxy notice already exists.
+    /// Reuses the bounded notice field, preserves the prior hint, and never records a fictitious retry.
+    pub fn note_attempt_stop_reason(&self, reason: &str) {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return;
+        }
+        let mut guard = self.lock();
+        let Some(last) = guard.attempts_detail.last_mut() else {
+            return;
+        };
+        let combined = match last.notice.as_deref() {
+            Some(existing) if existing != reason => format!("{reason}；{existing}"),
+            _ => reason.to_string(),
+        };
+        last.notice = Some(truncate_chars(&combined, MAX_ATTEMPT_NOTICE_CHARS));
+        self.flush_live(&guard);
+    }
+
     /// 给**最后一条**尝试明细记一条提示（目前只有代理回退直连）。
     ///
     /// **首次为准**（与 `note_error` 同一取向）：同一轮里代理提示只会有一条，
