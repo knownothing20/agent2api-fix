@@ -320,6 +320,8 @@ fn record_history(account: &Value, row: &Value, source: &str) {
         message,
         error_type: None,
         source,
+        // 通用签到链没有「拥堵码」这一概念（那是 Trae 特有的 9074）——恒 false
+        crowded: false,
     });
     if !saved {
         logging::verbose("[Accounts]", "签到历史落盘失败（签到结果不受影响）");

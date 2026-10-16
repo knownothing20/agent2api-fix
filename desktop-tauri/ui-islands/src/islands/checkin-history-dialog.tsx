@@ -83,6 +83,9 @@ const STATUS_TEXT: Record<string, string> = {
   success: '成功',
   already: '今日已签',
   fail: '失败',
+  // 「当天已拥堵（9074）→ 本轮没去试」—— 上游挤不算失败，但用户要知道
+  // 这个号今天还没签上、以及为什么后面几轮不再自动试（见后端 crowded_today）
+  skipped: '拥堵·跳过',
 }
 
 const SOURCE_TEXT: Record<string, string> = {

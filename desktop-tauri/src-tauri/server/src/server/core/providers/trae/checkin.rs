@@ -75,9 +75,29 @@ fn as_int(value: &Value) -> Option<i64> {
 /// 冷却值沿用参考实现（`-1` = 永久，`0` = 仅记录）；本版不落盘，只在日志里
 /// 说明「这类错误值不值得马上重试」。表本身是上游语义的转述，不是实测结论 ——
 /// 所以措辞上只当作提示。
+/// `9074` = **签到拥堵**（`SoftCrowded`）。
+///
+/// ── 怎么知道是这个意思（两处独立证据，2026-10-16 实测）───────────
+///   · `providers/trae/errors.rs` 的注释：**「429 / 9074：软限流（60 秒）」**；
+///   · `providers/trae/vectors/trae-vectors.json`（从参考实现生成的向量）里那条
+///     用例把它标成 `"checkin crowded"` —— 与上游文案「当前参与用户太多，请稍后再试」
+///     逐字对上。
+///
+/// 单列一档而不是并进 `BusinessError` 的原因：`run_round` 要按它决定
+/// **当天不再自动重试**（见 `checkin_history::crowded_today`），而
+/// `BusinessError` 是个杂类，拿它当判据会把别的业务错误一起静音。
+pub const CROWDED_CODE: i64 = 9074;
+
+/// 拥挤时的分类与建议冷却。**不冷却账号**（60 秒只是「措辞用」的建议值）——
+/// 重试与否由「当天已拥堵」那个判据管，不走「指数退避」那条路。
+const CROWDED: &str = "SoftCrowded";
+
 pub fn classify_error(http_status: u16, code: Option<i64>) -> (&'static str, i64) {
     if http_status == 200 && code == Some(1005) {
         return ("PlanLimit", 43_200);
+    }
+    if http_status == 200 && code == Some(CROWDED_CODE) {
+        return (CROWDED, 60);
     }
     if http_status == 429 {
         return ("SoftRate", 60);
@@ -135,15 +155,23 @@ pub struct RoundSummary {
     pub ok: usize,
     pub already: usize,
     pub failed: usize,
+    /// **当天已拥堵、本轮没去试**的账号数（见 `checkin_history::crowded_today`）。
+    /// 不计入 `failed`：上游挤不是我们的失败，也不该把它推成任务级冷退避。
+    pub crowded: usize,
 }
 
 impl RoundSummary {
     /// 任务摘要（调度器日志与面板共用同一句话）。
     pub fn summary_text(&self) -> String {
-        format!(
+        let mut text = format!(
             "签到成功 {} 个，今日已签 {} 个，失败 {} 个",
             self.ok, self.already, self.failed
-        )
+        );
+        // 只有真发生时才有这一段 —— 常态下摘要不该多出一个恒为 0 的计数
+        if self.crowded > 0 {
+            text.push_str(&format!("，拥堵跳过 {} 个", self.crowded));
+        }
+        text
     }
 
     pub fn to_json(&self) -> Value {
@@ -413,6 +441,9 @@ fn push_outcome(
         message: &outcome.message,
         error_type: outcome.error_type,
         source,
+        // 拥堵标记（决定「当天是否还要再试」）—— 见 `checkin_history::crowded_today`。
+        // 「跳过」那条也标 true：它本身就是「今天已拥堵」的延续，标着不会让标记提前失效。
+        crowded: outcome.error_type == Some(CROWDED),
     });
     if !saved {
         logging::log("[Trae]", "签到历史落盘失败（本轮结果不受影响）");
@@ -444,6 +475,9 @@ pub async fn run_round(
 
     let mut summary = RoundSummary::default();
     let mut claimed_so_far = 0usize;
+    // 手动触发（面板上那颗按钮）**不受「当天已拥堵」限制** —— 按按钮就是明确的
+    // 「现在再试一次」。受限的只有自动轮次（定点 / 间隔）。
+    let manual = source == "manual";
 
     for account in targets.iter() {
         let Some(account_id) = account.get("id").and_then(Value::as_str) else {
@@ -473,6 +507,30 @@ pub async fn run_round(
             .unwrap_or(account_id)
             .to_string();
         let uid = record.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
+
+        // ── 当天已拥堵？直接跳过，一个上游请求都不发 ───────────────
+        // 9074 是**签到拥堵**：多试几次不会让它不挤，而反复撞它有过
+        // 「把出口 IP 打进封禁」的前科（`providers/trae/usage.rs` 模块头）——
+        // IP 一废，同一个 IP 下所有账号的签到一起完。
+        // 所以这里连只读预检都不做：既省上游请求，也彻底不再制造 9074。
+        if !manual && checkin_history::crowded_today("trae", account_id) {
+            logging::verbose(
+                "[Trae]",
+                &format!("签到跳过：{name}（今天已撞过拥堵 9074，明天再试）"),
+            );
+            summary.crowded += 1;
+            push_outcome(&mut summary, account_id, source, AccountOutcome {
+                name,
+                uid,
+                status: "skipped",
+                credits: None,
+                delta: 0,
+                message: "今日上游拥堵（9074），已跳过自动重试；手动仍可试".to_string(),
+                error_type: Some(CROWDED),
+            });
+            continue;
+        }
+
         let credential = match Credential::from_payload(&record) {
             Ok(value) => value,
             Err(message) => {

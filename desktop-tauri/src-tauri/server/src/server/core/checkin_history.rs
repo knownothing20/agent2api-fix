@@ -81,6 +81,9 @@ pub struct Entry<'a> {
     pub error_type: Option<&'a str>,
     /// `manual` / `daily` / `interval`
     pub source: &'a str,
+    /// 这次失败是不是「签到拥堵」（上游 code=9074）—— 见 `crowded_today`。
+    /// 非失败（成功 / 已签 / 跳过）恒为 false。
+    pub crowded: bool,
 }
 
 /// 追加一条记录。返回是否落盘成功。
@@ -104,6 +107,7 @@ pub fn record(entry: Entry<'_>) -> bool {
             "message": entry.message,
             "errorType": entry.error_type,
             "source": entry.source,
+            "crowded": entry.crowded,
         }),
     );
     items.truncate(MAX_RECORDS);
@@ -124,6 +128,51 @@ pub fn list(provider: Option<&str>, limit: usize) -> Vec<Value> {
         })
         .take(limit)
         .collect()
+}
+
+/// 「今天这个账号已经撞过签到拥堵（9074）」吗？
+///
+/// ── 为什么要这个判据（2026-10-16 用户拍板）──────────────────────
+/// Trae 对签到 claim 回的 `9074` 是**签到拥堵**（参考实现的向量里给它标的字面就是
+/// `checkin crowded`，与上游文案「当前参与用户太多，请稍后再试」完全对上）。
+/// 关键点：**多试几次不会让它不挤** —— 实测那个账号 09:00 与 21:07 都撞，
+/// 而另一个号任何时候都能签上（同 IP、同套餐、同活动开关），说明这是上游侧的
+/// 拥堵/限流，不是我们能靠「更勤快」解决的。
+///
+/// 而 `providers/trae/usage.rs` 的模块头记着一条前科：
+/// **`checkin_credits/status` 这条链曾因「9074 重试链 + 面板连点」把出口 IP 打进封禁**。
+/// 一旦 IP 被封，同一个 IP 下**所有**账号的签到一起废 —— 拿两个号的每日签到
+/// 去换一件大概率没收益的事，不值。
+///
+/// ⇒ 所以：**当天撞过一次 9074 就不再自动重试**（后续轮次连只读预检都不做），
+/// 但**手动触发不受此限** —— 用户按按钮就是明确的「现在再试一次」。
+/// 判据取自历史里今天的记录（`at` 的**本地日期**），所以跨零点自然失效。
+pub fn crowded_today(provider: &str, account_id: &str) -> bool {
+    let today = day_text(logging::now_ms());
+    stored_items().iter().any(|item| {
+        item.get("provider").and_then(Value::as_str) == Some(provider)
+            && item.get("accountId").and_then(Value::as_str) == Some(account_id)
+            && item.get("crowded").and_then(Value::as_bool) == Some(true)
+            && item
+                .get("at")
+                .and_then(Value::as_i64)
+                .map(|at| day_text(at) == today)
+                .unwrap_or(false)
+    })
+}
+
+/// 毫秒时间戳 → **本地**日期串（`YYYY-MM-DD`）。
+///
+/// 用本地日期而不是 UTC：用户看到的「今天」是他自己时区的今天（与 Trae 侧
+/// 「每天一次」的自然日口径一致）。
+fn day_text(at_ms: i64) -> String {
+    use chrono::TimeZone;
+    let millis = at_ms.max(0);
+    chrono::Local
+        .timestamp_millis_opt(millis)
+        .single()
+        .map(|value| value.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
 }
 
 /// 清空历史（`provider` 给定时只清那一家的）。返回删掉的条数。
