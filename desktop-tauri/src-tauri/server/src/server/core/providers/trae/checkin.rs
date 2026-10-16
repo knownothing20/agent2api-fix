@@ -449,16 +449,12 @@ fn push_outcome(
         logging::log("[Trae]", "签到历史落盘失败（本轮结果不受影响）");
     }
     if outcome.status == "fail" {
-        // 汇总行只有「失败 N 个」；单账号原因必须单独一行，否则永远查不出来
-        logging::log(
-            "[Trae]",
-            &format!(
-                "签到失败：{} · {}（{}）",
-                outcome.name,
-                outcome.message,
-                outcome.error_type.unwrap_or("Unknown")
-            ),
-        );
+        // 汇总行只有「失败 N 个」；单账号原因必须单独一行，否则永远查不出来。
+        //
+        // ⚠️ **不要在这里再拼一次错误分类**：`message` 里已经有了（失败分支把
+        // `（{error_type}）` 作为 hint 接在文案后面），先前多拼一次的结果是
+        // 日志尾巴出现 `（SoftCrowded）（SoftCrowded）`（2026-10-16 实测看到）。
+        logging::log("[Trae]", &format!("签到失败：{} · {}", outcome.name, outcome.message));
     }
     summary.outcomes.push(outcome);
 }
