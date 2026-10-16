@@ -128,7 +128,8 @@ pub fn build(store: &AccountStore) -> Value {
 
         match usage {
             None => {
-                // 未查询 / 查询失败：如实说，不给 0（0 会被读成「额度用完了」）
+                // 未查询 / 查询失败：如实说，不给 0（0 会被读成「额度用完了」）。
+                // 这类 note 是**真异常**，前端会为它保留「说明」列。
                 let error = row.get("error").and_then(Value::as_str).unwrap_or("");
                 entry["note"] = Value::String(if error.is_empty() {
                     "还没查过余额".to_string()
@@ -140,19 +141,13 @@ pub fn build(store: &AccountStore) -> Value {
             Some(usage) => {
                 let packages = packages_of(usage);
                 if packages.is_empty() {
-                    // 两件事在这里合并成一句「上游不提供逐包到期」是不对的，
-                    // 所以分开写：有 `wallets` 说明这家的余额是分账本的、只是没给到期；
-                    // 连 wallets 都没有才是「只有一个总数」。
-                    let has_wallets = usage
-                        .get("wallets")
-                        .and_then(Value::as_array)
-                        .map(|list| !list.is_empty())
-                        .unwrap_or(false);
-                    entry["note"] = Value::String(if has_wallets {
-                        "上游不提供逐包到期时间（该家余额按账本分开，但账本没有到期字段）".to_string()
-                    } else {
-                        "上游不提供逐包到期时间（该家余额只有一个总数）".to_string()
-                    });
+                    // ★ 用**机器可读的标记**而不是一句文案（2026-10-16 用户要求
+                    // 「有就加，没有就不加」）：这一行没有逐包数据 ⇒ `unsupported: true`。
+                    // 界面上「为什么没有」由**页脚一句话**统一说明，不再逐行重复 ——
+                    // 逐行塞同一句话，界面上就是一列重复的长文案（实测被用户点出来）。
+                    // `note` 因此**只留给真正的异常**（查询失败 / 还没查过），
+                    // 前端据此决定「说明」这一列要不要画。
+                    entry["unsupported"] = Value::Bool(true);
                     // 总数仍然给 —— 「这一家没有到期概念」不等于「这一家没有额度」
                     if let Some(available) = usage.get("available").and_then(Value::as_f64) {
                         entry["left"] = json_number(available);

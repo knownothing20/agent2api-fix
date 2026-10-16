@@ -48,6 +48,9 @@ type ExpiryRow = {
   packageCount?: number
   nearestAt?: number | null
   packages?: PackageRow[]
+  /** 上游不给逐包到期（后端给的机器可读标记，不是文案） */
+  unsupported?: boolean
+  /** **真正的异常**才用它（余额查询失败 / 还没查过）；「上游不提供」不进这里 */
   note?: string
 }
 
@@ -261,7 +264,7 @@ export function CreditsExpiryDialog({
                           {anySupported ? <td className='py-1.5 pr-3 text-subtle'>{shortTime(row.nearestAt)}</td> : null}
                           {anySupported ? <td className='py-1.5 pr-3 text-right font-mono'>{row.packageCount ?? '—'}</td> : null}
                           {anySupported || rows.some(item => item.note) ? (
-                            <td className='py-1.5 text-subtle'>{anySupported ? (row.note || '') : ''}</td>
+                            <td className='py-1.5 text-subtle'>{row.note || (row.unsupported ? '' : '')}</td>
                           ) : null}
                         </tr>
                         {canExpand && isOpen ? (
