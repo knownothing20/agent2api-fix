@@ -392,6 +392,20 @@ impl BillingService {
         let mut total_left: i64 = 0;
         let mut plan_left: i64 = 0;
         let mut bonus_left: i64 = 0;
+        // 逐包明细（2026-10-16 新增）—— 上面三个数是**汇总**，而积分过期即作废：
+        // 「一个月度大包 + 若干个每天发的小包」只看总数会把「今天有 100 分要没了」
+        // 完全藏起来（用户 2026-10-16 拿参考面板的「积分到期」页来问，就是这一条）。
+        //
+        // ★ 数据本来就有：本函数上一行的 `query_usage` 已经把每个包的
+        // `expireAt` / `left` / `total` 都解析好了（见它的 `resources`），
+        // 这里原先只是**没有透出去** —— 于是账号页那格只有「可用 N」，
+        // 明细弹窗也读不到任何逐包信息（`wallets` 为空）。
+        //
+        // ★ 只**追加**一个键，不动既有三个键：`{kind, unlimited, totalLeft,
+        // planLeft, bonusLeft}` 是改造前就有的契约，前端按 `totalLeft` 这个键
+        // 识别本家形状（`usageSummary`）—— 归一化它会连带改掉那个面板的显示，
+        // 那是明令禁止的（见 `providers::workbuddy::query_usage` 的说明）。
+        let mut packages: Vec<Value> = Vec::new();
         if let Some(resources) = usage.get("resources").and_then(Value::as_array) {
             for item in resources {
                 let left = item.get("left").and_then(to_int).unwrap_or(0);
@@ -402,6 +416,24 @@ impl BillingService {
                 } else if is_bonus(code) {
                     bonus_left += left;
                 }
+                // 剩余为 0 的包不进明细：它已经用完了，「什么时候到期」不再有意义，
+                // 却会在界面上把真正快作废的那几包挤下去（参考面板也是这么筛的）。
+                if left <= 0 {
+                    continue;
+                }
+                packages.push(json!({
+                    "name": item.get("name"),
+                    "packageCode": item.get("packageCode"),
+                    "left": item.get("left"),
+                    "total": item.get("total"),
+                    "used": item.get("used"),
+                    "startAt": item.get("startAt"),
+                    // ⚠️ **毫秒**（`time_or_null` → `timestamp_millis`；前端按 ms 解读，
+                    // 与 `subscription.expireAt` 同一口径）。0 / 缺失 → null。
+                    "expireAt": item.get("expireAt"),
+                    // 日额度包（每天续发的那种）—— 界面据此把「本周期」列读成「今日」
+                    "isDaily": item.get("isDaily"),
+                }));
             }
         }
         Ok(json!({
@@ -410,6 +442,7 @@ impl BillingService {
             "totalLeft": total_left,
             "planLeft": plan_left,
             "bonusLeft": bonus_left,
+            "packages": packages,
         }))
     }
 

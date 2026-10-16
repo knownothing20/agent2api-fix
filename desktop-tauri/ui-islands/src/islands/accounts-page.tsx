@@ -74,6 +74,7 @@ import {
   ProviderCell, ProxyCell, StatusCell, TableHead, UsageCell,
 } from './accounts-panels'
 import { AccountsDialogs } from './accounts-dialogs'
+import { CreditsExpiryDialog } from './credits-expiry-dialog'
 
 /** 列设置的句柄（注册在挂载后的布局 effect 里，见下方说明） */
 let colHandle: ColSettingsHandle | null = null
@@ -199,6 +200,9 @@ function AccountsPage() {
   })
   // 登记重试的驱动：定时器到点改一次这个计数，让上面的布局 effect 再跑一遍
   const [, setRetryTick] = React.useState(0)
+  // 「积分到期」总览（2026-10-16）：入口放在账号页 —— 它回答的是「这些账号里
+  // 谁有多少分快作废」，属于这一页的问题（明细弹窗只回答单个账号）
+  const [expiryOpen, setExpiryOpen] = React.useState(false)
   React.useEffect(() => () => window.clearTimeout(colSettingsRetry), [])
 
   // 列宽拖拽（pointerdown 开拖 / dblclick 还原）委托在滚动容器上一次即可：
@@ -314,6 +318,9 @@ function AccountsPage() {
               disabled={store.checkinBusy || !checkinableAccounts(all).length}
               title='为全部可签到的账号串行签到'
               onClick={() => void checkinAll()}>{store.checkinBusy ? '签到中…' : '全部签到'}</Button>
+            <Button id='btn-credits-expiry' variant='outline'
+              title='一屏看全部账号的余额与临期（哪些分快作废）'
+              onClick={() => setExpiryOpen(true)}>积分到期</Button>
           </div>
         </div>
 
@@ -402,6 +409,7 @@ function AccountsPage() {
         />
       </section>
       <AccountsDialogs />
+      <CreditsExpiryDialog open={expiryOpen} onOpenChange={setExpiryOpen} />
     </>
   )
 }

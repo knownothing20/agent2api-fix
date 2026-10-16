@@ -410,6 +410,36 @@ function numberOrNull(value: unknown): number | null {
  * 完整明细（每个桶、到期、可用合计）仍在悬停提示里，这里只抢最基本的两个问题：
  * 哪个套餐、还剩多少。
  */
+/** 到期时刻（毫秒）→ `YYYY-MM-DD HH:mm`；取不到给「—」，不编时间。 */
+function packageEndText(at: number): string {
+  if (!Number.isFinite(at) || at <= 0) return '—'
+  const date = new Date(at)
+  if (Number.isNaN(date.getTime())) return '—'
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/**
+ * 到期倒计时（以**本机时钟**为准）。
+ *
+ * 与参考面板同一口径：`< 24h` 标急、`< 7 天` 标近、其余不染色。
+ * 阈值写成「小时」而不是「天」是为了让 23.9 小时不被读成「1 天」。
+ */
+function packageCountdown(at: number): { text: string; kind: '' | 'warn' | 'bad' } {
+  if (!Number.isFinite(at) || at <= 0) return { text: '无期限', kind: '' }
+  const ms = at - Date.now()
+  if (ms <= 0) return { text: '已过期', kind: 'bad' }
+  const hours = ms / 3_600_000
+  const days = Math.floor(hours / 24)
+  const text = days >= 1
+    ? `${days} 天 ${Math.floor(hours % 24)} 小时后过期`
+    : hours >= 1
+      ? `${Math.floor(hours)} 小时后过期`
+      : `${Math.max(1, Math.floor(ms / 60_000))} 分钟后过期`
+  return { text, kind: hours < 24 ? 'warn' : '' }
+}
+
 /* ─── 积分明细弹窗 ─────────────────────────────────────────── */
 
 /**
@@ -439,6 +469,12 @@ function BalanceDetailDialog({
     ? entry
     : {}) as Record<string, unknown>
   const wallets = (Array.isArray(data.wallets) ? data.wallets : []) as Array<Record<string, unknown>>
+  // 逐包明细（2026-10-16）：**目前只有 workbuddy 一家给** —— 上游
+  // `get-user-resource` 的每个包带 `DeductionEndTime` / `CycleEndTime`，
+  // 后端 `query_credits_summary` 现在把它透成 `packages`（此前被压成 3 个数丢掉了）。
+  // 有它就画「到期 + 倒计时」那张表；没有（CodeArts / Trae 等）退回「账本 / 读数」
+  // 两列 —— 那两家的上游确实不给逐包到期，如实说明比编一列假倒计时诚实。
+  const packages = (Array.isArray(data.packages) ? data.packages : []) as Array<Record<string, unknown>>
   const subscription = (data.subscription && typeof data.subscription === 'object'
     ? data.subscription
     : {}) as Record<string, unknown>
@@ -479,10 +515,57 @@ function BalanceDetailDialog({
               </span>
             ) : null}
           </p>
-          <p className='detail mt-2'>
-            码道的积分按包分开记账，各自独立；领到的福利进「赠送包」。
-            只看总数会把「哪本快用完了」藏起来，所以这里按账本拆开列。
-          </p>
+          {packages.length > 0 ? (
+            <>
+              <p className='detail mt-2'>
+                这个账号的积分是<strong>按包分开记账</strong>的（一个月度大包 + 若干个每天发的小包），
+                每包<strong>各到期各作废</strong> —— 只看总数会把「今天有 100 分要没了」完全藏起来。
+                下面按<strong>到期时间从近到远</strong>排列，倒计时以你本机时钟为准。
+              </p>
+              <table className='mt-3 w-full text-[13px]'>
+                <thead>
+                  <tr className='text-subtle'>
+                    <th className='text-left font-normal'>套餐</th>
+                    <th className='text-right font-normal'>剩余</th>
+                    <th className='text-right font-normal'>本周期</th>
+                    <th className='text-left font-normal'>到期</th>
+                    <th className='text-left font-normal'>倒计时</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {packages.map((item, index) => {
+                    const at = Number(item.expireAt) || 0
+                    const left = Number(item.left)
+                    const total = Number(item.total)
+                    const countdown = packageCountdown(at)
+                    return (
+                      <tr key={`${account.id}-pkg-${index}`} className='border-t border-border'>
+                        <td className='py-1.5'>
+                          {String(item.name || item.packageCode || '包')}
+                          {item.isDaily ? <span className='detail'> 每日</span> : null}
+                        </td>
+                        <td className='py-1.5 text-right font-mono'>{numberOrDash(left)}</td>
+                        <td className='py-1.5 text-right font-mono'>
+                          {Number.isFinite(total) && total > 0 ? `${numberOrDash(left)} / ${numberOrDash(total)}` : '—'}
+                        </td>
+                        <td className='py-1.5 text-subtle'>{packageEndText(at)}</td>
+                        <td className='py-1.5'>
+                          <span className={countdown.kind === 'bad' ? 'badge bad' : countdown.kind === 'warn' ? 'badge warn' : 'detail'}>
+                            {countdown.text}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </>
+          ) : (
+            <>
+              <p className='detail mt-2'>
+                码道的积分按包分开记账，各自独立；领到的福利进「赠送包」。
+                只看总数会把「哪本快用完了」藏起来，所以这里按账本拆开列。
+              </p>
           <table className='mt-3 w-full text-[13px]'>
             <thead>
               <tr className='text-subtle'>
@@ -511,6 +594,8 @@ function BalanceDetailDialog({
               })}
             </tbody>
           </table>
+            </>
+          )}
           {benefit ? (
             <>
               <p className='detail mt-3'>福利模型额度（另一本账，单位 token）</p>
@@ -520,10 +605,12 @@ function BalanceDetailDialog({
               </p>
             </>
           ) : null}
-          <p className='detail mt-3'>
-            上游不提供逐包的到期时间（订阅统计只给整期结束日），所以这里没有
-            「到期 / 倒计时」两列 —— 只有上面那个本周期结束时间。
-          </p>
+          {packages.length === 0 ? (
+            <p className='detail mt-3'>
+              上游不提供逐包的到期时间（订阅统计只给整期结束日），所以这里没有
+              「到期 / 倒计时」两列 —— 只有上面那个本周期结束时间。
+            </p>
+          ) : null}
         </DialogBody>
       </DialogContent>
     </Dialog>
