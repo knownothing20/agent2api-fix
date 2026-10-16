@@ -628,6 +628,7 @@ function BalanceDetailDialog({
       open={grantsOpen}
       onOpenChange={setGrantsOpen}
       accountId={account.id}
+      provider={account.provider}
       title='积分明细'
     />
     </>

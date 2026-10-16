@@ -188,8 +188,13 @@ export function CreditsExpiryDialog({
             </span>
           </div>
 
+          {/* 没有一家提供逐包到期时，「临期窗口」这句话就是空谈 ⇒ 不出现 */}
           <p className='detail mt-2'>
-            临期窗口按<strong>自然日</strong>算：截止到 {view?.deadlineText || '—'} 之前到期的部分。
+            {anySupported ? (
+              <>
+                临期窗口按<strong>自然日</strong>算：截止到 {view?.deadlineText || '—'} 之前到期的部分。
+              </>
+            ) : null}
             「刷新余额」会真的去打一次上游（等价于点账号页的「查询余额」），平时打开这一页只读本地快照。
           </p>
 
@@ -220,7 +225,11 @@ export function CreditsExpiryDialog({
                     {anySupported ? <th className='py-1.5 pr-3 text-right font-medium'>临期</th> : null}
                     {anySupported ? <th className='py-1.5 pr-3 font-medium'>最近到期</th> : null}
                     {anySupported ? <th className='py-1.5 pr-3 text-right font-medium'>包数</th> : null}
-                    <th className='py-1.5 font-medium'>说明</th>
+                    {/* 「说明」列只在有内容时画：没有逐包数据、又没有失败行时，
+                        它是一列全空 —— 那就不该占一列 */}
+                    {anySupported || rows.some(row => row.note) ? (
+                      <th className='py-1.5 font-medium'>说明</th>
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -251,11 +260,13 @@ export function CreditsExpiryDialog({
                           ) : null}
                           {anySupported ? <td className='py-1.5 pr-3 text-subtle'>{shortTime(row.nearestAt)}</td> : null}
                           {anySupported ? <td className='py-1.5 pr-3 text-right font-mono'>{row.packageCount ?? '—'}</td> : null}
-                          <td className='py-1.5 text-subtle'>{anySupported ? (row.note || '') : ''}</td>
+                          {anySupported || rows.some(item => item.note) ? (
+                            <td className='py-1.5 text-subtle'>{anySupported ? (row.note || '') : ''}</td>
+                          ) : null}
                         </tr>
                         {canExpand && isOpen ? (
                           <tr className='border-t border-border'>
-                            <td colSpan={anySupported ? 7 : 3} className='py-2'>
+                            <td colSpan={anySupported ? 7 : (rows.some(row => row.note) ? 3 : 2)} className='py-2'>
                               <div className='flex flex-wrap gap-2'>
                                 {(row.packages ?? []).map((item, index) => {
                                   const cd = countdown(item.expireAt)
