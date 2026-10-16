@@ -443,7 +443,7 @@ function packageCountdown(at: number): { text: string; kind: '' | 'warn' | 'bad'
 /* ─── 积分明细弹窗 ─────────────────────────────────────────── */
 
 /**
- * 一个账号的余额按**账本**拆开看。
+ * 一个账号的余额按**账本**拆开看（**预览**）。
  *
  * ── 为什么值得单独一个弹窗 ──────────────────────────────────
  * 账号行上那一格只放得下一个数（「可用 13000 积分」），而码道的积分是**按包分开
@@ -500,7 +500,7 @@ function BalanceDetailDialog({
     <Dialog open onOpenChange={next => { if (!next) onClose() }}>
       <DialogContent className='max-w-[720px]'>
         <DialogHeader>
-          <DialogTitle>积分明细</DialogTitle>
+          <DialogTitle>积分预览</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <p className='detail'>{account.name || account.id}</p>
