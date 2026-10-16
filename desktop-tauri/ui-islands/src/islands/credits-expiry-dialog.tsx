@@ -137,6 +137,11 @@ export function CreditsExpiryDialog({
 
   const totals = view?.totals
   const rows = view?.rows ?? []
+  // 有没有**任何一家**提供逐包到期（用户要求：有就加，没有就不加）。
+  // 全都没有时（本面板就是：4 个码道 + 2 个 Trae，上游都不给），
+  // 画「临期 / 最近到期 / 包数」三列 = 三列全是「—」+ 每行一句长说明，
+  // 占掉半屏却没有任何信息 ⇒ 那三列不画，说明收到页脚一句。
+  const anySupported = rows.some(row => (row.packageCount ?? 0) > 0)
 
   function toggle(id: string): void {
     setExpanded(previous => {
@@ -160,9 +165,11 @@ export function CreditsExpiryDialog({
                 {totals.accounts} 个账号
                 {totals.disabled > 0 ? `（含 ${totals.disabled} 个已禁用）` : ''}
                 {' · '}可用余额 <b>{numberText(totals.totalLeft)}</b> 分
-                {totals.expiring > 0 ? <> · 临期 <b style={{ color: 'var(--warn)' }}>{numberText(totals.expiring)}</b> 分</> : null}
+                {anySupported && totals.expiring > 0 ? (
+                  <> · 临期 <b style={{ color: 'var(--warn)' }}>{numberText(totals.expiring)}</b> 分</>
+                ) : null}
                 {totals.disabledLeft > 0 ? ` · 禁用号另有 ${numberText(totals.disabledLeft)} 分（未计入）` : ''}
-                {` · 窗口 ${view?.horizonDays} 天`}
+                {anySupported ? ` · 窗口 ${view?.horizonDays} 天` : ''}
               </span>
             ) : null}
             <span className='ml-auto flex items-center gap-2'>
@@ -186,6 +193,14 @@ export function CreditsExpiryDialog({
             「刷新余额」会真的去打一次上游（等价于点账号页的「查询余额」），平时打开这一页只读本地快照。
           </p>
 
+          {/* 一行都没有逐包数据时（本面板就是），说明只出现这一句 —— 不再逐行重复 */}
+          {!anySupported && rows.length > 0 ? (
+            <p className='detail mt-3'>
+              当前这些账号的<strong>上游都不提供逐包到期时间</strong>（码道与 Trae 只给整期重置日），
+              所以这里只列余额，不显示「临期 / 最近到期 / 包数」。
+            </p>
+          ) : null}
+
           {error ? (
             <p className='mt-3 text-[12px]' style={{ color: 'var(--danger)' }}>读取失败：{error}</p>
           ) : null}
@@ -202,9 +217,9 @@ export function CreditsExpiryDialog({
                     <th className='py-1.5 pr-3 font-medium'>账号</th>
                     <th className='py-1.5 pr-3 font-medium'>渠道</th>
                     <th className='py-1.5 pr-3 text-right font-medium'>总余额</th>
-                    <th className='py-1.5 pr-3 text-right font-medium'>临期</th>
-                    <th className='py-1.5 pr-3 font-medium'>最近到期</th>
-                    <th className='py-1.5 pr-3 text-right font-medium'>包数</th>
+                    {anySupported ? <th className='py-1.5 pr-3 text-right font-medium'>临期</th> : null}
+                    {anySupported ? <th className='py-1.5 pr-3 font-medium'>最近到期</th> : null}
+                    {anySupported ? <th className='py-1.5 pr-3 text-right font-medium'>包数</th> : null}
                     <th className='py-1.5 font-medium'>说明</th>
                   </tr>
                 </thead>
@@ -227,18 +242,20 @@ export function CreditsExpiryDialog({
                           <td className='py-1.5 pr-3 text-right font-mono'>
                             {row.left === undefined || row.left === null ? '—' : numberText(row.left)}
                           </td>
-                          <td className='py-1.5 pr-3 text-right font-mono'>
-                            {row.expiring ? (
-                              <span style={{ color: 'var(--warn)' }}>{numberText(row.expiring)}</span>
-                            ) : '0'}
-                          </td>
-                          <td className='py-1.5 pr-3 text-subtle'>{shortTime(row.nearestAt)}</td>
-                          <td className='py-1.5 pr-3 text-right font-mono'>{row.packageCount ?? '—'}</td>
-                          <td className='py-1.5 text-subtle'>{row.note || ''}</td>
+                          {anySupported ? (
+                            <td className='py-1.5 pr-3 text-right font-mono'>
+                              {row.expiring ? (
+                                <span style={{ color: 'var(--warn)' }}>{numberText(row.expiring)}</span>
+                              ) : '0'}
+                            </td>
+                          ) : null}
+                          {anySupported ? <td className='py-1.5 pr-3 text-subtle'>{shortTime(row.nearestAt)}</td> : null}
+                          {anySupported ? <td className='py-1.5 pr-3 text-right font-mono'>{row.packageCount ?? '—'}</td> : null}
+                          <td className='py-1.5 text-subtle'>{anySupported ? (row.note || '') : ''}</td>
                         </tr>
                         {canExpand && isOpen ? (
                           <tr className='border-t border-border'>
-                            <td colSpan={7} className='py-2'>
+                            <td colSpan={anySupported ? 7 : 3} className='py-2'>
                               <div className='flex flex-wrap gap-2'>
                                 {(row.packages ?? []).map((item, index) => {
                                   const cd = countdown(item.expireAt)

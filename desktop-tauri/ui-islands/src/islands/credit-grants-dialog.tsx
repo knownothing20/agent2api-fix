@@ -89,6 +89,22 @@ const SOURCE_TEXT: Record<string, string> = {
   checkin: '签到',
 }
 
+/**
+ * 空态那句「等下一次……就会出现」要按**这家实际有的东西**说。
+ *
+ * 2026-10-16 用户要求「有就加，没有就不加」——原来的文案把「签到」和「福利领取」
+ * 一起念了，而**码道根本没有签到**（它的玩法是福利领取，签到是 Trae 那类）⇒
+ * 对一个码道账号说「等签到时候」等于凭空塞一个它没有的概念。
+ */
+function emptyHint(sources: string[]): string {
+  const parts: string[] = []
+  if (sources.includes('welfare')) parts.push('码道福利领取到账')
+  if (sources.includes('checkin')) parts.push('签到成功')
+  if (!parts.length) return '还没有发放记录。'
+  return `还没有发放记录。等下一次${parts.join('、')}之后就会出现。`
+}
+
+
 const numberText = (value: unknown): string => {
   const num = Number(value)
   return Number.isFinite(num) ? num.toLocaleString('zh-CN') : '—'
@@ -116,6 +132,10 @@ export function CreditGrantsDialog({
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
   const [loaded, setLoaded] = React.useState(false)
+  // 「到期」这一列**只有真有整期数据时才画**（用户要求：没有就不加）。
+  // 一行都没有整期数据时，画一列「上游未提供」= 用一个不存在的概念占地方。
+  const [recordSources, setRecordSources] = React.useState<string[]>([])
+  const showExpiry = records.some(item => Boolean(periods[item.accountId]))
 
   const load = React.useCallback(async () => {
     setBusy(true)
@@ -125,6 +145,11 @@ export function CreditGrantsDialog({
       setRecords(data.records)
       setPeriods(data.periods)
       setTotal(data.total)
+      // 空态文案要按这家「有的来源」说：没有记录时按 provider 推（`codearts` 只有福利）
+      const seen = Array.from(new Set(data.records.map(item => item.source).filter(Boolean)))
+      setRecordSources(seen.length
+        ? seen
+        : (provider === 'codearts' ? ['welfare'] : (provider ? ['checkin'] : [])))
       setLoaded(true)
     } catch (issue) {
       setError(describeError(issue))
@@ -185,8 +210,12 @@ export function CreditGrantsDialog({
           <p className='detail mt-2'>
             这份台账<strong>由本地面板记录</strong> —— 上游不提供「领取流水」接口，
             所以只能从<strong>本功能上线那天</strong>起累积，更早的历史补不回来。
-            「到期」那一列给的是<strong>整期到期日</strong>（该账号当前周期的结束日）；
-            上游不提供「逐笔积分什么时候作废」，有逐包到期的家请看「积分到期」页。
+            {showExpiry ? (
+              <>
+                「到期」那一列给的是<strong>整期到期日</strong>（该账号当前周期的结束日）；
+                上游不提供「逐笔积分什么时候作废」，有逐包到期的家请看「积分到期」页。
+              </>
+            ) : null}
           </p>
 
           {error ? (
@@ -195,7 +224,7 @@ export function CreditGrantsDialog({
 
           {!error && loaded && records.length === 0 ? (
             <p className='detail mt-3'>
-              还没有发放记录。等下一次签到成功、或码道福利领取到账之后就会出现。
+              {emptyHint(recordSources)}
             </p>
           ) : null}
 
@@ -209,7 +238,7 @@ export function CreditGrantsDialog({
                     <th className='py-1.5 pr-3 font-medium'>来源</th>
                     <th className='py-1.5 pr-3 font-medium'>名称</th>
                     <th className='py-1.5 pr-3 text-right font-medium'>数量</th>
-                    <th className='py-1.5 font-medium'>到期</th>
+                    {showExpiry ? <th className='py-1.5 font-medium'>到期</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -227,7 +256,11 @@ export function CreditGrantsDialog({
                           ? '—'
                           : `${numberText(item.amount)} ${item.unit || ''}`.trim()}
                       </td>
-                      <td className='whitespace-nowrap py-1.5 text-subtle'>{periodText(item.accountId)}</td>
+                      {showExpiry ? (
+                        <td className='whitespace-nowrap py-1.5 text-subtle'>
+                          {periods[item.accountId] ? periodText(item.accountId) : ''}
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>
