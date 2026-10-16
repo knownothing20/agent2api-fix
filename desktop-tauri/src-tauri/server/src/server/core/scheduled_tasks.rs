@@ -337,15 +337,32 @@ async fn run_backend(
             summary
         } else { "已完成版本检查".to_string() });
     }
-    // 「模型目录刷新」的手动执行与界面上的「获取模型」是同一件事（都走
-    // `refresh_implemented_forced`），因此同样越过失败冷却；其余任务的手动执行
-    // 保持「只提前排期」—— 那些冷却记的是上游配额桶的恢复时刻（见 ManualBackoff）。
-    let backoff = if task.id == TASK_MODEL_REFRESH {
+    // 手动执行**越不越过失败冷却**，逐任务定：
+    //   · 「模型目录刷新」的手动执行与界面上的「获取模型」是同一件事（都走
+    //     `refresh_implemented_forced`），用户按它正是因为刚把原因修好 ⇒ 越过；
+    //   · 「自动签到（Trae）」也越过（2026-10-16 用户实测）：它的冷却记的**不是**
+    //     配额恢复时刻，而是「上一轮为什么没成功」，而签到失败多为上游软错误
+    //     （「当前参与用户太多，请稍后再试」）。不越过的后果是**手动按钮被 400 挡回**
+    //     （「请求处于冷却期，请在 39454 秒后重试」）—— 按钮等于废的，用户以为功能坏了。
+    //     按按钮就是明确的「现在再试一次」，该让它试；
+    //   · 其余保持 `Respect` —— 那些冷却记的是上游配额桶的恢复时刻（见 ManualBackoff），
+    //     提前打只会再吃一次限流，还把恢复时刻重新顶到未来。
+    let backoff = if task.id == TASK_MODEL_REFRESH || task.id == TASK_TRAE_CHECKIN {
         task_state::ManualBackoff::Bypass
     } else {
         task_state::ManualBackoff::Respect
     };
-    let guard = match task_state::claim(task.id, interval_ms(task), manual, backoff, 1_000)? {
+    // 失败退避上限逐任务定：**签到类**用「不越过一个间隔」。
+    // 默认的「指数退避封顶一天」会把下一轮正常排期整段顶掉，而 24h 冷却是从失败
+    // 时刻起算的 —— 它的到期时刻正好压在第二天的定点签到时刻上，于是每天只在同一个
+    // 时间点撞一次同样的坑（实测某 Trae 账号自 2026-10-10 起连续 6 天如此）。
+    // 见 `task_state::BackoffCap` 的完整说明。
+    let cap = if task.id == TASK_TRAE_CHECKIN {
+        task_state::BackoffCap::Interval
+    } else {
+        task_state::BackoffCap::Day
+    };
+    let guard = match task_state::claim(task.id, interval_ms(task), manual, backoff, 1_000, cap)? {
         Claim::Acquired(guard) => guard,
         Claim::Deferred(state) => return Err(state.waiting_message()),
     };

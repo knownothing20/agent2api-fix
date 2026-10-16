@@ -275,6 +275,31 @@ pub enum ManualBackoff {
     Bypass,
 }
 
+/// 失败之后退避**最多等多久**（[`claim`] 的显式入参，随 guard 带到 [`RunGuard::finish`]）。
+///
+/// ── 为什么需要分两档（2026-10-16 用户实测报的）─────────────────
+/// 默认是「指数退避封顶一天」：连续失败 ⇒ `间隔 × 2^(失败次数-1)`，最多 24 小时。
+/// 这对**配额桶类**的任务是对的（模型目录刷新、版本检查、余额查询）—— 上游的额度
+/// 没恢复，重试再勤也只会再吃一次限流，还把恢复时刻重新顶到未来。
+///
+/// 但**签到**不一样：它是「每天只有一次有效」的动作，而失败往往是**软错误**
+/// （Trae 实测：「当前参与用户太多，请稍后再试」）。默认策略下 6 小时一轮的任务
+/// 第一次失败等 6h、第二次 12h、第三次就顶到 **24h**，而 24h 是**从失败时刻**起算的
+/// —— 它的到期时刻正好压在第二天的定点签到时刻上，于是每天只在同一个时间点撞一次
+/// 同样的坑，**永远失败**（实测某账号自 2026-10-10 起连续 6 天如此，`lastSuccessAt`
+/// 一直停在 10-10）。
+///
+/// 这类任务用 [`BackoffCap::Interval`]：退避**不越过一个正常间隔**（6 小时一轮就最多
+/// 等 6 小时），当天后面几轮照样跑 —— 每轮对已签的账号只花一次**只读预检**，
+/// 代价可以忽略，换来的是「上游只是临时抽风」时当天还有机会签上。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackoffCap {
+    /// 指数退避、封顶一天（默认）。
+    Day,
+    /// 退避不越过一个正常间隔 —— 给「每天只有一次机会」的任务用（见上）。
+    Interval,
+}
+
 /// 判定到期并占位（两种结果都是 `Ok`：Deferred 不是错误，只是这轮不该跑）。
 ///
 /// `manual`（用户主动触发）跳过普通排期；**是否连失败冷却一起跳过**由 `backoff`
@@ -283,12 +308,16 @@ pub enum ManualBackoff {
 /// 在途占位与最短请求间隔**手动也不越过**：前者防同一时刻两个入口（或两个进程）
 /// 并排打上游，后者是「同一家一秒内不重复打」的底线 —— 冷却可以商量，并发与连点
 /// 不行：用户连点按钮时，真正保护上游的是这两条，而不是那个动辄几小时的冷却。
+///
+/// `cap` 决定**失败退避的上限**（见 [`BackoffCap`]）。它在这里入参而不是由
+/// `finish` 再传一次：策略该在「决定要跑这一轮」的时候就定下来，随 guard 走到收尾。
 pub fn claim(
     key: &str,
     interval_ms: i64,
     manual: bool,
     backoff: ManualBackoff,
     min_gap_ms: i64,
+    cap: BackoffCap,
 ) -> Result<Claim, String> {
     let now = logging::now_ms();
     let owner = format!(
@@ -334,6 +363,7 @@ pub fn claim(
         owner,
         heartbeat,
         finished: false,
+        cap,
     }))
 }
 
@@ -342,6 +372,8 @@ pub struct RunGuard {
     owner: String,
     heartbeat: tokio::task::JoinHandle<()>,
     finished: bool,
+    /// 失败退避上限（`claim` 时定下，收尾时用来算 `retry_at`）。
+    cap: BackoffCap,
 }
 
 impl RunGuard {
@@ -371,7 +403,13 @@ impl RunGuard {
                 state.last_error = Some(summary);
                 state.failures = state.failures.saturating_add(1);
                 let multiplier = 1_i64 << state.failures.saturating_sub(1).min(10);
-                let delay = interval_ms.max(60_000).saturating_mul(multiplier).min(MAX_BACKOFF_MS);
+                // 上限两档：默认封顶一天；「每天只有一次机会」的任务不越过一个间隔
+                // （见 `BackoffCap` 的说明 —— 24h 冷却会把下一轮正常排期顶掉）
+                let ceiling = match self.cap {
+                    BackoffCap::Day => MAX_BACKOFF_MS,
+                    BackoffCap::Interval => interval_ms.max(60_000),
+                };
+                let delay = interval_ms.max(60_000).saturating_mul(multiplier).min(ceiling);
                 state.retry_at = retry_at.max(now.saturating_add(delay));
             }
             if let Some(value) = value {

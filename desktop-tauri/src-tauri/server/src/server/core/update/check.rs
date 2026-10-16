@@ -138,7 +138,15 @@ impl UpdateManager {
         // 手动检查仍受失败冷却约束（ManualBackoff::Respect）：这里的冷却记的是
         // GitHub 配额桶的恢复时刻，提前打只会再吃一次 403。换令牌 / 换线路那条
         // 口子走 clear_check_cooldown（见上）。
-        let guard = match task_state::claim(&key, interval, manual, task_state::ManualBackoff::Respect, MIN_CHECK_GAP_MS)
+        // 版本检查同理走默认上限：GitHub 的限额没恢复，重试再勤也只是再吃一次 403
+        let guard = match task_state::claim(
+            &key,
+            interval,
+            manual,
+            task_state::ManualBackoff::Respect,
+            MIN_CHECK_GAP_MS,
+            task_state::BackoffCap::Day,
+        )
             .map_err(|error| UpdateError::new(error))?
         {
             Claim::Acquired(guard) => guard,

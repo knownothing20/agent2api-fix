@@ -105,7 +105,15 @@ pub async fn refresh(
         } else {
             task_state::ManualBackoff::Respect
         };
-        let guard = match task_state::claim(&key, interval, manual, backoff, 1_000) {
+        let guard = match task_state::claim(
+            &key,
+            interval,
+            manual,
+            backoff,
+            1_000,
+            // 目录刷新是配额桶类任务：沿用「指数退避封顶一天」（见 BackoffCap）
+            task_state::BackoffCap::Day,
+        ) {
             Ok(Claim::Acquired(guard)) => guard,
             Ok(Claim::Deferred(state)) => {
                 item["status"] = json!("skipped");
