@@ -247,7 +247,24 @@ async fn claim_of(
             let success = status == 200 && code == Some(0);
             if !success {
                 let (error_type, _) = classify_error(status, code);
-                return (false, 0, message, Some(error_type));
+                // ★ 把上游**业务码**并进文案（2026-10-16 用户要求）——
+                //
+                // ── 为什么必须带上它 ────────────────────────────────
+                // `message` 是上游的**自由文案**（实测「当前参与用户太多，请稍后再试」），
+                // 光看这句话查不出原因：它既可能是活动份额发完，也可能是风控、资格边界。
+                // 而 `code` 是可以对上的 —— `classify_error` 那张表就是按码分类的
+                // （1005 = PlanLimit、401 = SessionDead、429 = SoftRate…），
+                // Trae 侧还有若干已知码（如 102 = new_user_credits）。
+                // 此前我们**拿到了 code 却只用它选分类、没留下来**，于是排查时等于没有线索。
+                //
+                // 并进 message 而不是新加字段：这条文案会同时出现在**签到历史**的
+                // 「说明」列、容器日志的失败行、以及 `GET /api/traeCheckin` 的账号消息里 ——
+                // 三个出口一处改动全都有了，不必为此加一列到处透传。
+                let labelled = match code {
+                    Some(code) => format!("{message}（上游 code={code}）"),
+                    None => message,
+                };
+                return (false, 0, labelled, Some(error_type));
             }
             // 奖励字段候选（与参考实现同一优先级），命中正整数才采信。
             const REWARD_KEYS: [&str; 8] = [
