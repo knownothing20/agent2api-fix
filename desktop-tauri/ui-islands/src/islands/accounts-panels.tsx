@@ -49,6 +49,7 @@ import {
   supportsWelfare, welfareDoneTitle, welfareStateOf, welfareTodoTitle,
 } from './accounts-domain'
 import { PRIORITY_MAX, PRIORITY_MIN, priorityOf } from './accounts-columns'
+import { CreditGrantsDialog } from './credit-grants-dialog'
 import {
   PROXY_CUSTOM_CURRENT, PROXY_CUSTOM_EDIT, applyProxyPick, checkinErrorOf,
   commitPriority, connectionsOf, maskName, moveAccount, openSettingsDialog, poolError,
@@ -465,6 +466,9 @@ function BalanceDetailDialog({
   entry: UsageEntry
   onClose: () => void
 }): React.ReactElement {
+  // 「积分明细」入口的开关（2026-10-16）：标题右边那颗按钮打开逐次发放流水。
+  // 预览回答「现在各账本各剩多少」，明细回答「每一次是什么时候到账的」—— 两个问题。
+  const [grantsOpen, setGrantsOpen] = React.useState(false)
   const data = (entry && typeof entry === 'object' && !Array.isArray(entry)
     ? entry
     : {}) as Record<string, unknown>
@@ -497,10 +501,16 @@ function BalanceDetailDialog({
     Number.isFinite(Number(value)) ? numberText(Number(value)) : '—'
 
   return (
+    <>
     <Dialog open onOpenChange={next => { if (!next) onClose() }}>
       <DialogContent className='max-w-[720px]'>
         <DialogHeader>
           <DialogTitle>积分预览</DialogTitle>
+          {/* 「积分明细」放在标题右边（2026-10-16 用户指定）—— 预览看账本，
+              明细看逐次领取/到期，两者是同一份数据的两个视角 */}
+          <Button variant='outline' size='sm' onClick={() => setGrantsOpen(true)}>
+            积分明细
+          </Button>
         </DialogHeader>
         <DialogBody>
           <p className='detail'>{account.name || account.id}</p>
@@ -614,6 +624,13 @@ function BalanceDetailDialog({
         </DialogBody>
       </DialogContent>
     </Dialog>
+    <CreditGrantsDialog
+      open={grantsOpen}
+      onOpenChange={setGrantsOpen}
+      accountId={account.id}
+      title='积分明细'
+    />
+    </>
   )
 }
 

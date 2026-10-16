@@ -452,6 +452,12 @@ pub fn panel_router(state: ServerState) -> Router {
         // 积分到期总览（2026-10-16）：一屏看「哪些号有多少分快作废」。
         // 与 /api/accounts 同级敏感（含账号名与余额）
         .route("/api/credits/expiry", get(api::credits_expiry::get_credits_expiry))
+        // 积分发放台账（2026-10-16）：逐次的「领取时间 / 数量」——
+        // 上游不提供流水，这份是**我们自己记的**（见 core::credit_grants 的模块头）
+        .route(
+            "/api/credit-grants",
+            get(api::credit_grants::list).delete(api::credit_grants::clear),
+        )
         // ── 转发模式开关 ──
         // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。

@@ -39,6 +39,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::server::core::checkin_history::{self, Entry};
+use crate::server::core::credit_grants;
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::proxies::ResolvedProxy;
@@ -447,6 +448,19 @@ fn push_outcome(
     });
     if !saved {
         logging::log("[Trae]", "签到历史落盘失败（本轮结果不受影响）");
+    }
+    // 签到成功 = 一笔到账，记进发放台账（2026-10-16「领取历史」）。
+    // `delta` 拿不到时记 null 而不是 0 —— 0 会被读成「这次没给分」，而事实是「没读到」。
+    if outcome.status == "success" {
+        credit_grants::record(credit_grants::Entry {
+            provider: "trae",
+            account_id,
+            source: "checkin",
+            name: "每日签到",
+            amount: if outcome.delta > 0 { Some(outcome.delta as f64) } else { None },
+            unit: "积分",
+            note: "",
+        });
     }
     if outcome.status == "fail" {
         // 汇总行只有「失败 N 个」；单账号原因必须单独一行，否则永远查不出来。

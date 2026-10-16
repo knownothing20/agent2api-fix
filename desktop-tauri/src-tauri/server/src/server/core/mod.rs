@@ -57,6 +57,7 @@ pub mod capability;
 pub mod checkin_history;
 pub mod clash;
 pub mod credential_maintenance;
+pub mod credit_grants;
 pub mod credits_expiry;
 pub mod custom_providers;
 pub mod debug_traffic;

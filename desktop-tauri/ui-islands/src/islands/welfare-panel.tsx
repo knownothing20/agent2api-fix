@@ -29,6 +29,7 @@ import { Button, Input, Switch } from '@ui'
 
 import { describeError, shared, toast } from './add-account-bridge'
 import { CheckinHistoryDialog } from './checkin-history-dialog'
+import { CreditGrantsDialog } from './credit-grants-dialog'
 
 declare global {
   interface Window {
@@ -255,6 +256,9 @@ function WelfarePage(): React.ReactElement {
   const [task, setTask] = React.useState<IntervalTask | null>(null)
   const [intervalDraft, setIntervalDraft] = React.useState('')
   const [probing, setProbing] = React.useState(false)
+  // 「领取历史」（2026-10-16 用户要求）—— 与 Trae 那个「签到历史」对称：
+  // 那边看签到，这边看福利领取到账；数据都来自我们自己记的台账
+  const [grantsOpen, setGrantsOpen] = React.useState(false)
   const [claiming, setClaiming] = React.useState('')
   const [taskBusy, setTaskBusy] = React.useState(false)
   const [tab, setTab] = React.useState<WelfareTabId>('codearts')
@@ -433,6 +437,9 @@ function WelfarePage(): React.ReactElement {
         <div className='panel-head'>
           <h2>自动领福利（码道）</h2>
           <div className='head-actions'>
+            <Button variant='outline' onClick={() => setGrantsOpen(true)}>
+              领取历史
+            </Button>
             <Button variant='outline' disabled={probing} onClick={() => void probeAll(accounts)}>
               {probing ? '探测中…' : '探测全部'}
             </Button>
@@ -625,6 +632,13 @@ function WelfarePage(): React.ReactElement {
           </p>
         </div>
       </section>
+        {/* 只列码道这一家的领取流水（账号页那边还有个按账号看的同一个弹窗） */}
+        <CreditGrantsDialog
+          open={grantsOpen}
+          onOpenChange={setGrantsOpen}
+          provider='codearts'
+          title='领取历史'
+        />
         </>
       ) : (
         <TraeCheckinPanel />

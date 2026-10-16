@@ -39,6 +39,7 @@ pub mod accounts;
 // 「只服务 workbuddy」扩到四家混查时新增，见该文件模块头）
 pub mod accounts_usage;
 pub mod checkin_history;
+pub mod credit_grants;
 pub mod credits_expiry;
 pub mod auto_checkin;
 pub mod billing;

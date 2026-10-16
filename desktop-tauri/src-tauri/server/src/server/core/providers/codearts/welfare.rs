@@ -590,6 +590,27 @@ pub async fn claim_account(
     ledger.accepted = true;
     save(&ledger)?;
     logging::log("[CodeArts]", "每日福利：官方活动列表已回读确认到账（计入套餐赠送积分，不增加福利模型 token 池）");
+    // ★ 记进「积分发放台账」（2026-10-16 用户要「领取历史」）——
+    // 这里是**唯一**能确定「刚刚真到账了一笔 + 金额/活动名是多少」的时刻：
+    // 上游不提供任何流水接口，而福利台账是按天的、没有历史（见 credit_grants 的模块头）。
+    // 只记 `Confirmed`（走过 claim → confirm → 回读确认 的那一笔）；
+    // `Already`（今天早就在别处领过）**不记** —— 我们不知道它是什么时候到账的，
+    // 拿「现在」当领取时间就是编数据。
+    for item in &daily {
+        let label = if item.name.is_empty() { item.kind.as_str() } else { item.name.as_str() };
+        let unit = if item.benefit_unit.is_empty() { "积分" } else { item.benefit_unit.as_str() };
+        if !crate::server::core::credit_grants::record(crate::server::core::credit_grants::Entry {
+            provider: "codearts",
+            account_id,
+            source: "welfare",
+            name: label,
+            amount: Some(item.benefit_amount),
+            unit,
+            note: "",
+        }) {
+            logging::verbose("[CodeArts]", "发放台账落盘失败（领取结果不受影响）");
+        }
+    }
     Ok(Outcome::Confirmed)
 }
 

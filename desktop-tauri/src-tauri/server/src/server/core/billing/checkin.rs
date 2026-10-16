@@ -326,6 +326,20 @@ fn record_history(account: &Value, row: &Value, source: &str) {
     if !saved {
         logging::verbose("[Accounts]", "签到历史落盘失败（签到结果不受影响）");
     }
+    // 成功即一笔到账 —— 也记进发放台账（与 Trae 那条链写同一份，见 credit_grants）。
+    // ⚠️ 这一家的 claim **不给「本次增量」**（只给余额或一句 msg），所以 amount 记 null、
+    // 把上游原文放进 note —— 宁可让界面显示「—」，也不拿余额冒充增量。
+    if status == "success" {
+        credit_grants::record(crate::server::core::credit_grants::Entry {
+            provider: account.get("provider").and_then(Value::as_str).unwrap_or(""),
+            account_id: row.get("id").and_then(Value::as_str).unwrap_or(""),
+            source: "checkin",
+            name: "每日签到",
+            amount: None,
+            unit: "积分",
+            note: message,
+        });
+    }
 }
 
 /// 把一次签到调用翻成统一的结果行（`{id, name, claim, error}`）。
