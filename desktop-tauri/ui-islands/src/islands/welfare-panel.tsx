@@ -28,6 +28,7 @@ import { createRoot } from 'react-dom/client'
 import { Button, Input, Switch } from '@ui'
 
 import { describeError, shared, toast } from './add-account-bridge'
+import { CheckinHistoryDialog } from './checkin-history-dialog'
 
 declare global {
   interface Window {
@@ -668,6 +669,9 @@ function TraeCheckinPanel(): React.ReactElement {
   const [timeDraft, setTimeDraft] = React.useState('09:00')
   const [busy, setBusy] = React.useState(false)
   const [running, setRunning] = React.useState(false)
+  // 签到历史弹窗（2026-10-16）：入口放在这一页 —— 用户问「签到不了」时就是
+  // 在这一屏上看到「未签到」的，历史放在同一个地方最省事
+  const [historyOpen, setHistoryOpen] = React.useState(false)
   const [note, setNote] = React.useState('')
 
   const load = React.useCallback(async () => {
@@ -747,6 +751,9 @@ function TraeCheckinPanel(): React.ReactElement {
       <div className='panel-head'>
         <h2>自动签到（Trae）</h2>
         <div className='head-actions'>
+          <Button variant='outline' onClick={() => setHistoryOpen(true)}>
+            签到历史
+          </Button>
           <Button variant='outline' disabled={busy || running} onClick={() => void load()}>
             刷新状态
           </Button>
@@ -819,6 +826,12 @@ function TraeCheckinPanel(): React.ReactElement {
         </div>
         {note ? <p className='detail mt-1'>{note}</p> : null}
       </div>
+      <CheckinHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        provider='trae'
+        providerLabel='Trae'
+      />
     </section>
   )
 }

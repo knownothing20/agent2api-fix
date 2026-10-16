@@ -38,6 +38,7 @@ pub mod accounts;
 // `/api/accounts/usage` 的查询与结果组装（从 accounts.rs 拆出：余额能力从
 // 「只服务 workbuddy」扩到四家混查时新增，见该文件模块头）
 pub mod accounts_usage;
+pub mod checkin_history;
 pub mod auto_checkin;
 pub mod billing;
 pub mod captcha;

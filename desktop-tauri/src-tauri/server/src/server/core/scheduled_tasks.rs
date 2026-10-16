@@ -415,7 +415,16 @@ async fn run_backend(
             // 账号之间的间隔读配置（福利页「Trae」标签可改），防同 IP 批量特征。
             let gap = config::current().trae_checkin_gap_minutes();
             // 手动单账号时 `account_id` 有值 ⇒ 只签那一个（见 `run_now` 的说明）
-            match crate::server::core::providers::trae::checkin::run_round(store, gap, account_id).await {
+            // source 决定签到历史里那条记录的来源：面板手点（manual）还是
+            // 间隔型任务自己跑（interval）—— 排查时先要分清这两者。
+            match crate::server::core::providers::trae::checkin::run_round(
+                store,
+                gap,
+                account_id,
+                if manual { "manual" } else { "interval" },
+            )
+            .await
+            {
                 Ok(summary) => {
                     let text = summary.summary_text();
                     // 「全部已签」是每天的常态，不该刷日志；只有真签了或有失败才记。

@@ -39,6 +39,7 @@ use serde_json::{json, Value};
 
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::billing::BillingService;
+use crate::server::core::checkin_history::{self, Entry};
 use crate::server::logging;
 
 /// 签到路径上的错误。对应 Node 版抛出的 AccountStoreError：
@@ -270,6 +271,61 @@ pub async fn checkin_for(
     }
 }
 
+/// 把一次通用签到的结果落进**签到历史**（2026-10-16 新增）。
+///
+/// ── 与 Trae 那条链的关系 ────────────────────────────────────
+/// Trae 有自己的 `push_outcome`（它得自己算 status/credits），但写的是
+/// **同一份台账**（`core::checkin_history`）。面板的「签到历史」按 provider
+/// 过滤，所以 WorkBuddy 系、小浣熊、AutoClaw 与 Trae 的记录会出现在同一张表里 ——
+/// 用户要的是「一个地方看到签到的历史」，不是每家一个入口。
+///
+/// ── 三个字段的取值口径 ──────────────────────────────────────
+///   · `status`：复用 `checkin_completed_today` 的判据（上游说签过了才算），
+///     再区分「本次签成」与「今天早就签过」；
+///   · `credits`：claim 里**有**数值字段才采信，没有就是 `null` ——
+///     不编数（与 Trae 那边「拿不到就不显示」同一取向）；
+///   · `errorType`：通用链没有错误分类表，恒为 `None`（Trae 那边才有）。
+fn record_history(account: &Value, row: &Value, source: &str) {
+    let claim = row.get("claim").filter(|value| !value.is_null());
+    let error = row.get("error").and_then(Value::as_str).filter(|text| !text.is_empty());
+    let signed_now = claim
+        .map(|item| item.get("success").and_then(Value::as_bool) == Some(true))
+        .unwrap_or(false);
+    let status = if signed_now {
+        "success"
+    } else if claim.map(checkin_completed_today).unwrap_or(false) {
+        "already"
+    } else {
+        "fail"
+    };
+    let message = claim
+        .and_then(|item| item.get("msg").and_then(Value::as_str))
+        .or(error)
+        .unwrap_or(if status == "success" { "签到成功" } else { "" });
+    // 余额/奖励：不同家的 claim 字段名不一（credits / balance），有哪个用哪个；
+    // 都没有就是 null —— 面板显示「—」，不拿 0 冒充。
+    let credits = claim.and_then(|item| {
+        ["credits", "balance", "totalCredits"]
+            .iter()
+            .find_map(|key| item.get(*key).and_then(Value::as_i64))
+    });
+    let saved = checkin_history::record(Entry {
+        provider: account.get("provider").and_then(Value::as_str).unwrap_or(""),
+        account_id: row.get("id").and_then(Value::as_str).unwrap_or(""),
+        name: row.get("name").and_then(Value::as_str).unwrap_or(""),
+        uid: "",
+        status,
+        credits,
+        delta: 0,
+        message,
+        error_type: None,
+        source,
+    });
+    if !saved {
+        logging::verbose("[Accounts]", "签到历史落盘失败（签到结果不受影响）");
+    }
+}
+
 /// 把一次签到调用翻成统一的结果行（`{id, name, claim, error}`）。
 ///
 /// ── `log_success_msg` 为什么是一个参数而不是统一口径 ─────────
@@ -344,11 +400,14 @@ fn checkin_completed_today(claim: &Value) -> bool {
 /// `id` 为 None 时签全部符合条件的账号（定时签到走这条），范围由 `providers`
 /// 决定（配置里勾选的提供商，缺省全选；**指定 id 单签时不受范围限制**）。
 /// **串行**：避免多账号同时打上游触发 11128 风控。
+/// `source` 只影响**签到历史**里的那条记录（`manual` = 面板按钮，
+/// `daily` = 定时签到到点触发）。与 Trae 那条链共用一份台账（见 `record_history`）。
 pub async fn run_checkin(
     store: &AccountStore,
     billing: &BillingService,
     providers: &[String],
     id: Option<&str>,
+    source: &str,
 ) -> Result<Value, CheckinError> {
     let (targets, skipped) = resolve_checkin_targets(store, providers, id)?;
     let mut results = Vec::with_capacity(targets.len());
@@ -370,6 +429,7 @@ pub async fn run_checkin(
                 );
             }
         }
+        record_history(account, &row, source);
         results.push(row);
     }
     let succeeded = results

@@ -438,11 +438,13 @@ impl AutoCheckin {
         write_state(json!({ "lastFiredDate": today }));
         logging::log("[Checkin]", &format!("⏰ 定时签到开始（{reason}）"));
 
+        // 定时签到是「到点触发」⇒ source = daily（与 Trae 定点轮同一档）
         let outcome = match checkin::run_checkin(
             &self.store,
             &self.billing,
             read_state().providers.as_slice(),
             None,
+            "daily",
         )
         .await
         {

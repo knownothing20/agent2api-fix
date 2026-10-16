@@ -38,6 +38,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::server::core::checkin_history::{self, Entry};
+
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::errors::GatewayError;
@@ -362,10 +364,62 @@ pub async fn status_all(store: &AccountStore) -> Result<Vec<AccountOutcome>, Str
 /// 两条路共用同一个函数体（含预检 → 需要才签的两段式、账号之间的间隔），
 /// 区别只在 `resolve_batch_targets` 的目标集合 —— 这样不会出现
 /// 「手动能签、自动不能」或反过来这类分叉（模块头强调过）。
+///
+/// `source` 只影响**签到历史**里的那条记录（`manual` / `daily` / `interval`）：
+/// 面板上要能回答「这条是我手点的，还是它自己跑的」—— 排查时第一个要问的问题。
+/// 把一条结果同时**记进本轮汇总**与**落进签到历史**，并在失败时补一行带原因的日志。
+///
+/// ── 为什么必须有这个助手（2026-10-16 用户报「签到不了」）─────────
+/// 改造前每个分支只做 `summary.outcomes.push(...)`：结果留在内存里，
+/// 函数返回就没了。于是「失败 1 个」这句话在面板、任务卡、日志里都能看到，
+/// **唯独看不到是谁、为什么** —— 用户问「最近几天是不是都签到不了了」时，
+/// 翻遍日志也拿不到原因（日志里只有汇总行）。本助手把同一份结果同时落到
+/// 三个地方：汇总（本轮计数）、签到历史（可回看）、日志（失败时一行带原因）。
+///
+/// 落历史失败**只记一行日志、不改本轮结果**：上游积分已经领到了，
+/// 因为一次落盘失败就把成功的签到报成失败是本末倒置（与 `mark_checkin`
+/// 那句同一取向）。
+fn push_outcome(
+    summary: &mut RoundSummary,
+    account_id: &str,
+    source: &str,
+    outcome: AccountOutcome,
+) {
+    let saved = checkin_history::record(Entry {
+        provider: "trae",
+        account_id,
+        name: &outcome.name,
+        uid: &outcome.uid,
+        status: outcome.status,
+        credits: outcome.credits,
+        delta: outcome.delta,
+        message: &outcome.message,
+        error_type: outcome.error_type,
+        source,
+    });
+    if !saved {
+        logging::log("[Trae]", "签到历史落盘失败（本轮结果不受影响）");
+    }
+    if outcome.status == "fail" {
+        // 汇总行只有「失败 N 个」；单账号原因必须单独一行，否则永远查不出来
+        logging::log(
+            "[Trae]",
+            &format!(
+                "签到失败：{} · {}（{}）",
+                outcome.name,
+                outcome.message,
+                outcome.error_type.unwrap_or("Unknown")
+            ),
+        );
+    }
+    summary.outcomes.push(outcome);
+}
+
 pub async fn run_round(
     store: &AccountStore,
     gap_minutes: i64,
     only_id: Option<&str>,
+    source: &str,
 ) -> Result<RoundSummary, String> {
     let (targets, _skipped) =
         crate::server::core::usage_query::resolve_batch_targets(store, Some("trae"), only_id)
@@ -383,7 +437,7 @@ pub async fn run_round(
             Ok(value) => value,
             Err(error) => {
                 summary.failed += 1;
-                summary.outcomes.push(AccountOutcome {
+                push_outcome(&mut summary, account_id, source, AccountOutcome {
                     name: account_id.to_string(),
                     uid: String::new(),
                     status: "fail",
@@ -406,7 +460,7 @@ pub async fn run_round(
             Ok(value) => value,
             Err(message) => {
                 summary.failed += 1;
-                summary.outcomes.push(AccountOutcome {
+                push_outcome(&mut summary, account_id, source, AccountOutcome {
                     name,
                     uid,
                     status: "fail",
@@ -424,7 +478,7 @@ pub async fn run_round(
             Ok(value) => value,
             Err(error) => {
                 summary.failed += 1;
-                summary.outcomes.push(AccountOutcome {
+                push_outcome(&mut summary, account_id, source, AccountOutcome {
                     name,
                     uid,
                     status: "fail",
@@ -450,7 +504,7 @@ pub async fn run_round(
             if !store.mark_checkin(account_id, logging::now_ms()) {
                 logging::log("[Trae]", &format!("签到台账落盘失败：{name}（状态仍如实显示）"));
             }
-            summary.outcomes.push(AccountOutcome {
+            push_outcome(&mut summary, account_id, source, AccountOutcome {
                 name,
                 uid,
                 status: "already",
@@ -464,7 +518,7 @@ pub async fn run_round(
         // 预检失败 ≠ 未签 —— 不签，如实报错（避免在凭证/网络异常时误发写请求）
         if !pre.ok {
             summary.failed += 1;
-            summary.outcomes.push(AccountOutcome {
+            push_outcome(&mut summary, account_id, source, AccountOutcome {
                 name,
                 uid,
                 status: "fail",
@@ -496,7 +550,7 @@ pub async fn run_round(
                 logging::log("[Trae]", &format!("签到台账落盘失败：{name}（状态仍如实显示）"));
             }
             let credits = pre.credits.map(|before| before + delta).or(pre.credits);
-            summary.outcomes.push(AccountOutcome {
+            push_outcome(&mut summary, account_id, source, AccountOutcome {
                 name,
                 uid,
                 status: "success",
@@ -510,7 +564,7 @@ pub async fn run_round(
             let hint = error_type
                 .map(|kind| format!("（{kind}）"))
                 .unwrap_or_default();
-            summary.outcomes.push(AccountOutcome {
+            push_outcome(&mut summary, account_id, source, AccountOutcome {
                 name,
                 uid,
                 status: "fail",
@@ -572,7 +626,7 @@ pub fn spawn_daily(store: AccountStore) {
                 }
                 let gap = crate::server::config::current().trae_checkin_gap_minutes();
                 logging::log("[Trae]", &format!("定点签到触发（{configured}）：开始一轮"));
-                match run_round(&store, gap, None).await {
+                match run_round(&store, gap, None, "daily").await {
                     Ok(summary) => logging::log(
                         "[Trae]",
                         &format!("定点签到完成：{}", summary.summary_text()),

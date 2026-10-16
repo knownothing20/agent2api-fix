@@ -442,6 +442,13 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::trae_checkin::get_trae_checkin)
                 .put(api::trae_checkin::put_trae_checkin),
         )
+        // 签到历史（2026-10-16）：Trae 的 push_outcome 与通用签到的 record_history
+        // 写同一份台账，这里把它读出来 / 清掉。与 /api/accounts 同级敏感
+        // （含账号名与上游报错原文）
+        .route(
+            "/api/checkin-history",
+            get(api::checkin_history::list).delete(api::checkin_history::clear),
+        )
         // ── 转发模式开关 ──
         // 与 /api/hideReasoning 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定「这条请求走流式还是非流式」怎么定（覆盖客户端 / 按客户端要求）。
