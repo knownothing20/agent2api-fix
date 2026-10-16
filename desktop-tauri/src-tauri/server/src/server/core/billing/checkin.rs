@@ -40,6 +40,7 @@ use serde_json::{json, Value};
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::billing::BillingService;
 use crate::server::core::checkin_history::{self, Entry};
+use crate::server::core::credit_grants;
 use crate::server::logging;
 
 /// 签到路径上的错误。对应 Node 版抛出的 AccountStoreError：
