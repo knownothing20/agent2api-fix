@@ -1691,7 +1691,8 @@ function SanitizePreviewDialog({
                     <tr className='text-subtle'>
                       <th className='text-left font-normal'>命中的规则</th>
                       <th className='text-left font-normal'>改成了</th>
-                      <th className='text-right font-normal'>次数</th>
+                      {/* 定宽 + 不换行：否则「次数」两个字会被挤成竖排（实测截图） */}
+                      <th className='w-[52px] whitespace-nowrap text-right font-normal'>次数</th>
                     </tr>
                   </thead>
                   <tbody>
