@@ -147,24 +147,49 @@ pub fn has_fingerprint(text: &str) -> bool {
 /// 改造前这一列装的是「命中了哪个敏感词」；规则集换成硬编码之后，装的是
 /// **命中了哪条规则**（`11128` / `cc_*=` / 模板句原文）。请求日志的「敏」标签
 /// 与悬停面板因此照常工作，不必动库表结构与前端。
+/// 一条命中：规则标签 + **它被改写成了什么** + 次数。
+///
+/// 2026-10-22 新增 `to`：此前只记「命中了哪句原文」，用户看到
+/// `You are a coding agent running in the Codex CLI…` 却不知道网关把它改成了
+/// 什么，只能猜「是不是被删了 / 被拦了」。记下替换串，悬停面板直接显示
+/// `原文 → 改写后`，一眼看出「语义没变、只换了一个词」。
+#[derive(Clone, Debug, PartialEq)]
+pub struct HitEntry {
+    /// 命中的规则标签（改写规则取原文串；剥离类取短名，见 `LABEL_*`）
+    pub label: String,
+    /// 改写后的替换串；`None` = 整段剥离，没有"改成什么"可言
+    pub to: Option<String>,
+    /// 本次请求里这条规则的命中次数
+    pub count: usize,
+}
+
 #[derive(Default)]
 pub struct Hits {
-    entries: Vec<(String, usize)>,
+    entries: Vec<HitEntry>,
 }
 
 impl Hits {
-    fn bump(&mut self, label: &str) {
-        if let Some(entry) = self.entries.iter_mut().find(|(item, _)| item == label) {
-            entry.1 += 1;
+    /// `to` 参与合并键：同一条规则在不同位置可能改成不同串，分开记比合并更如实。
+    fn bump(&mut self, label: &str, to: Option<&str>) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.label == label && entry.to.as_deref() == to)
+        {
+            entry.count += 1;
             return;
         }
-        self.entries.push((label.to_string(), 1));
+        self.entries.push(HitEntry {
+            label: label.to_string(),
+            to: to.map(str::to_string),
+            count: 1,
+        });
     }
 
     /// 按命中次数降序（稳定排序：同次数保持首次命中顺序，与旧实现同口径）
-    pub fn into_sorted(self) -> Vec<(String, usize)> {
+    pub fn into_sorted(self) -> Vec<HitEntry> {
         let mut list = self.entries;
-        list.sort_by(|left, right| right.1.cmp(&left.1));
+        list.sort_by(|left, right| right.count.cmp(&left.count));
         list
     }
 }
@@ -182,13 +207,13 @@ pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
     let mut out = text.to_string();
     for (from, to) in SANITIZE_REWRITES {
         if out.contains(from) {
-            hits.bump(from);
+            hits.bump(from, Some(to));
             out = out.replace(from, to);
         }
     }
     let hdr = hdr_re();
     if hdr.is_match(&out) {
-        hits.bump(LABEL_BARE_HDR);
+        hits.bump(LABEL_BARE_HDR, None);
         out = hdr.replace_all(&out, "").into_owned();
     }
     if out.contains("cc_") {
@@ -200,14 +225,14 @@ pub fn sanitize_text(text: &str, hits: &mut Hits) -> String {
             prev = out.clone();
             let next = kv.replace_all(&out, "").into_owned();
             if next != out {
-                hits.bump(LABEL_KV);
+                hits.bump(LABEL_KV, None);
             }
             out = next;
         }
     }
     // 兜底：键值形态已在上面整段删除，这里只剩裸键名（引用/示例文本形态）。
     if bare_hdr_re().is_match(&out) {
-        hits.bump(LABEL_BARE_HDR);
+        hits.bump(LABEL_BARE_HDR, Some("x-anthropic-billing-hdr"));
         out = bare_hdr_re().replace_all(&out, "x-anthropic-billing-hdr").into_owned();
     }
     out.trim().to_string()
@@ -320,7 +345,7 @@ fn sanitize_messages(messages: &mut Value, hits: &mut Hits) -> bool {
 ///
 /// 无 `messages` 数组时原样返回 `None`：上游只认 messages 形态，别处（顶层
 /// `system`、`input` 等）不是本规则集的作用面，与 Go 的调用点一致。
-pub fn sanitize_body(body: &Value) -> Option<(Value, Vec<(String, usize)>)> {
+pub fn sanitize_body(body: &Value) -> Option<(Value, Vec<HitEntry>)> {
     let mut next = body.clone();
     let mut hits = Hits::default();
     let changed = match next

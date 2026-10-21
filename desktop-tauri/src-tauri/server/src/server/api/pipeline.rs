@@ -497,6 +497,7 @@ fn stored_sensitive_hits(list: &[usage::SensitiveHit]) -> Vec<SensitiveHit> {
     list.iter()
         .map(|hit| SensitiveHit {
             word: hit.word.clone(),
+            to: hit.to.clone(),
             count: hit.count,
         })
         .collect()

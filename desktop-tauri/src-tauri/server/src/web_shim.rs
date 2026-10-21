@@ -793,6 +793,10 @@ pub fn shim_js() -> &'static str {
     },
 
     // ── 机器人校验开关（登录 / 注册的 ALTCHA proof-of-work）──
+    // 脱敏规则试算（2026-10-22）：只读 dry-run，不落库不计统计
+    sanitizePreview: function (text) {
+      return call('POST', '/api/sanitize/preview', { text: String(text || '') });
+    },
     getCaptchaSetting: function () { return call('GET', '/api/captcha'); },
     saveCaptchaSetting: function (on) {
       return call('PUT', '/api/captcha', { captchaEnabled: on === true });

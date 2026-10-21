@@ -283,6 +283,13 @@ pub struct SensitiveHit {
     /// 命中的词
     #[serde(default)]
     pub word: String,
+    /// 改写后的替换串；`None` = 整段剥离。
+    ///
+    /// 2026-10-22 新增（与 `core::upstream::usage::SensitiveHit` 同步）：
+    /// 只记原文的话，用户看不出网关到底把它改成了什么。旧行没有这个键
+    /// （`serde(default)` → None），前端按「未记录」处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     /// 本次请求里命中的次数
     #[serde(default)]
     pub count: i64,
@@ -556,6 +563,8 @@ impl NewRequestEntry {
                 .into_iter()
                 .map(|hit| SensitiveHit {
                     word: hit.word.trim().to_string(),
+                    // 替换串可能是空串（剥离类不填），统一收敛成 None
+                    to: hit.to.filter(|text| !text.is_empty()),
                     count: hit.count.max(0),
                 })
                 .filter(|hit| !hit.word.is_empty())

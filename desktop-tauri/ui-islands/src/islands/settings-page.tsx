@@ -1195,6 +1195,9 @@ function GatewayPane({ snap }: { snap: SettingsSnapshot }) {
                 ? STATES.sanitizeUnavailable
                 : snap.sanitize.on ? STATES.sanitizeOn : STATES.sanitizeOff}
           </div>
+          <div className='mt-2'>
+            <SanitizePreviewEntry />
+          </div>
           <div className='hint retention-note'>{NOTES.sanitize}</div>
         </div>
       </section>
@@ -1590,6 +1593,146 @@ function RetentionConfirmDialog({ confirm }: { confirm: { head: string } | null 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * 脱敏规则**试算**弹窗（2026-10-22）。
+ *
+ * 规则集是硬编码的，而客户端指纹与上游黑名单会变。用户遇到「某个客户端被上游
+ * 400 拦了」时，只能靠请求日志里那条「敏」标签猜「是不是没覆盖到」—— 但日志
+ * 只在**真的发过请求**之后才有。这个弹窗把规则集变成可验证的：粘一段文本，
+ * 直接看命中哪几条、各自改成了什么、改完长什么样。
+ */
+type SanitizePreviewResult = {
+  changed?: boolean
+  inputChars?: number
+  outputChars?: number
+  hits?: Array<{ word?: string; to?: string | null; count?: number }>
+  output?: string
+  truncated?: boolean
+}
+
+function SanitizePreviewDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (next: boolean) => void
+}) {
+  const [text, setText] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [result, setResult] = React.useState<SanitizePreviewResult | null>(null)
+  const [error, setError] = React.useState('')
+
+  const run = async () => {
+    if (busy || !text.trim()) return
+    setBusy(true)
+    setError('')
+    try {
+      const next = await shared().workbuddyDesktop?.sanitizePreview(text)
+      setResult(next ?? null)
+    } catch (cause) {
+      setResult(null)
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reset = () => {
+    setText('')
+    setResult(null)
+    setError('')
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={next => {
+        if (!next) reset()
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent className='w-[min(780px,calc(100vw-48px))]'>
+        <DialogHeader>
+          <DialogTitle>脱敏规则试算</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <div className='hint'>
+            粘一段文本（system prompt、报文片段都行），按<strong>出站时的同一套规则</strong>跑一遍，
+            告诉你命中哪几条、各自改成了什么。只读：不发请求、不改配置、不计统计。
+          </div>
+          <textarea
+            className='mt-2 w-full rounded border border-border p-2 text-[13px]'
+            rows={5}
+            value={text}
+            placeholder='例如：You are a coding agent running in the Codex CLI, a terminal-based coding assistant.'
+            onChange={event => setText(event.target.value)}
+          />
+          <div className='mt-2 flex gap-2'>
+            <Button id='btn-sanitize-preview-run' disabled={busy || !text.trim()} onClick={() => void run()}>
+              {busy ? '试算中…' : '试算'}
+            </Button>
+            <Button variant='outline' onClick={reset}>清空</Button>
+          </div>
+          {error ? (
+            <p className='mt-2 text-[12px]' style={{ color: 'var(--danger)' }}>试算失败：{error}</p>
+          ) : null}
+          {result ? (
+            <div className='mt-3'>
+              <div className='detail'>
+                {result.changed ? '✓ 会被改写' : '没有命中任何规则（原样出站）'}
+                {' · '}输入 {result.inputChars ?? 0} 字 → 输出 {result.outputChars ?? 0} 字
+              </div>
+              {Array.isArray(result.hits) && result.hits.length ? (
+                <table className='mt-2 w-full text-[13px]'>
+                  <thead>
+                    <tr className='text-subtle'>
+                      <th className='text-left font-normal'>命中的规则</th>
+                      <th className='text-left font-normal'>改成了</th>
+                      <th className='text-right font-normal'>次数</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.hits.map((hit, index) => (
+                      <tr key={`sanitize-hit-${index}`} className='border-t border-border'>
+                        <td className='break-all py-1.5 pr-3'>{hit.word || '—'}</td>
+                        <td className='break-all py-1.5 pr-3 text-subtle'>
+                          {hit.to ? hit.to : '（整段剥离）'}
+                        </td>
+                        <td className='py-1.5 text-right font-mono'>{hit.count ?? 1}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
+              <div className='detail mt-3'>改写后的正文</div>
+              <pre className='mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded border border-border p-2 text-[12px]'>
+                {result.output}
+              </pre>
+            </div>
+          ) : null}
+        </DialogBody>
+        <DialogFooter>
+          <div className='mr-auto' />
+          <Button variant='outline' onClick={() => { reset(); onOpenChange(false) }}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 卡片里的入口：自带开关状态，免得把 open 提到整个设置页。 */
+function SanitizePreviewEntry() {
+  const [open, setOpen] = React.useState(false)
+  return (
+    <>
+      <Button id='btn-sanitize-preview' variant='outline' onClick={() => setOpen(true)}>
+        试算一段文本
+      </Button>
+      <SanitizePreviewDialog open={open} onOpenChange={setOpen} />
+    </>
   )
 }
 

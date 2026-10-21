@@ -143,7 +143,7 @@ type AttemptDetail = {
 type AttemptRetry = { reason?: unknown; status?: unknown; delayMs?: unknown }
 
 /** 敏感词命中明细（后端 SensitiveHit） */
-type SensitiveHit = { word?: unknown; count?: unknown }
+type SensitiveHit = { word?: unknown; to?: unknown; count?: unknown }
 
 /**
  * 面板类型：取自标签的 `data-req-hover` —— 只有 'sensitive' 是特例，其余（含空值）
@@ -411,11 +411,18 @@ function SensitivePanel({ entry }: { entry: RequestEntry }) {
   return (
     <>
       <div className='rh-title mb-1 text-[11.5px] font-semibold tracking-[.02em] text-muted-foreground'>
-        命中的敏感词
+        命中的脱敏规则
       </div>
       {hits.slice(0, MAX_TERM_ROWS).map((hit, index) => (
         <div key={index} className='rh-row rh-hit flex items-baseline justify-between gap-2.5'>
-          <span className='rh-hit-w break-words text-foreground'>{String(hit?.word ?? '')}</span>
+          <span className='rh-hit-w break-words text-foreground'>
+            {String(hit?.word ?? '')}
+            {/* 改写后的替换串（2026-10-22）：只显示原文时用户不知道网关做了什么，
+                容易误以为「被删了 / 被拦了」。`to` 缺失 = 旧记录或整段剥离。 */}
+            {hit?.to ? (
+              <span className='text-muted-foreground'>{` → ${String(hit.to)}`}</span>
+            ) : null}
+          </span>
           <span className='rh-hit-c text-muted-foreground tabular-nums whitespace-nowrap'>
             {`× ${String(Number(hit?.count) || 0)}`}
           </span>

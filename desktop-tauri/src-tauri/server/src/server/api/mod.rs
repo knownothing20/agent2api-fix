@@ -79,6 +79,7 @@ pub mod welfare_settings;
 pub mod trae_checkin;
 pub mod codearts_thinking;
 pub mod sanitize;
+pub mod sanitize_preview;
 pub mod scheduled_tasks;
 pub mod session;
 pub mod stats_api;

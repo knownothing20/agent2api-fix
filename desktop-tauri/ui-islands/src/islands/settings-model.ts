@@ -119,6 +119,14 @@ export type SettingsBridge = {
   getStorage(): Promise<unknown>
   getCaptchaSetting(): Promise<{ captchaEnabled?: boolean } | null | undefined>
   saveCaptchaSetting(on: boolean): Promise<{ captchaEnabled?: boolean } | null | undefined>
+  sanitizePreview(text: string): Promise<{
+    changed?: boolean
+    inputChars?: number
+    outputChars?: number
+    hits?: Array<{ word?: string; to?: string | null; count?: number }>
+    output?: string
+    truncated?: boolean
+  } | null | undefined>
   getPanelLoginRequired(): Promise<{
     required?: boolean
     adminRegistered?: boolean

@@ -269,6 +269,13 @@ pub struct TelemetrySnapshot {
 pub struct SensitiveHit {
     /// 命中的词（词表里的原样字符串，未做大小写归一 —— 用户填的是什么就显示什么）
     pub word: String,
+    /// 改写后的替换串；`None` = 整段剥离（没有"改成什么"可言）。
+    ///
+    /// 2026-10-22 新增：此前只记「命中了哪句原文」，用户看不到网关把它改成了
+    /// 什么，容易误以为「被删了 / 被拦了」。`skip_serializing_if` 让旧行
+    /// （没有这个键）与剥离类命中的 JSON 都不多一个 `null`，前端按缺键处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     /// 本次请求里命中的次数
     pub count: i64,
 }
@@ -1021,21 +1028,23 @@ impl RequestTelemetry {
     /// `core::sanitize`），远小于改造前那份可维护词表，因此命中标签的条数
     /// 天然有界。这里不设额外的截断闸 —— 命中表落库是 JSON 文本，
     /// 前端展示时还会按次数降序截断（见 requests-panel 的弹层）。
-    pub fn note_sensitive_hits(&self, term_counts: &[(String, usize)]) {
-        if term_counts.is_empty() {
+    pub fn note_sensitive_hits(&self, entries: &[crate::server::core::sanitize::HitEntry]) {
+        if entries.is_empty() {
             return;
         }
         let mut guard = self.lock();
-        for (term, count) in term_counts {
-            let count = *count as i64;
+        for entry in entries {
+            let count = entry.count as i64;
+            // 合并键 = 原文 + 改写后：同一条规则在不同位置可能改成不同串
             match guard
                 .sensitive_hits
                 .iter_mut()
-                .find(|hit| hit.word == *term)
+                .find(|hit| hit.word == entry.label && hit.to == entry.to)
             {
                 Some(hit) => hit.count += count,
                 None => guard.sensitive_hits.push(SensitiveHit {
-                    word: term.clone(),
+                    word: entry.label.clone(),
+                    to: entry.to.clone(),
                     count,
                 }),
             }

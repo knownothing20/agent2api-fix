@@ -77,7 +77,7 @@ type AttemptDetail = {
 }
 
 /** 敏感词命中：词 + 次数 */
-type SensitiveHit = { word?: unknown; count?: unknown }
+type SensitiveHit = { word?: unknown; to?: unknown; count?: unknown }
 
 /** 详情里凡是「提供商」都要认这两个字段（行对象与尝试明细各一份） */
 type ProviderFields = { provider?: string; providerLabel?: string }
@@ -480,7 +480,9 @@ function DetailPane({ row }: { row: RequestRow | null }) {
             <span className='inline-flex flex-wrap gap-1.5'>
               {row.sensitiveHits.map((hit, index) => (
                 <Badge key={index} variant='sensitive' shape='tag'>
-                  {String(hit?.word ?? '')} × {String(Number(hit?.count) || 0)}
+                  {/* 有改写串就带上（旧记录没有这个键，只显示原文） */}
+                  {String(hit?.word ?? '')}
+                  {hit?.to ? ` → ${String(hit.to)}` : ''} × {String(Number(hit?.count) || 0)}
                 </Badge>
               ))}
             </span>

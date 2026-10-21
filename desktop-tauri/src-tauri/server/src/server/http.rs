@@ -415,6 +415,10 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/sanitize",
             get(api::sanitize::get_sanitize).put(api::sanitize::put_sanitize),
         )
+        // 脱敏规则**试算**（2026-10-22）：粘一段文本，回「命中哪几条、各自改成
+        // 什么、改完长什么样」。只读、不落库、不计统计 —— 用来判断
+        // 「某个客户端被上游拦，是不是脱敏没覆盖到」，不必真的发请求去撞。
+        .route("/api/sanitize/preview", post(api::sanitize_preview::preview))
         // ── 码道 max_tokens 硬顶 ──
         // 码道特有（键名带 codearts 前缀）：钳制值只对码道账号生效，别家不读它。
         // GET 读 / PUT 写，与 /api/hideReasoning、/api/forwardMode 同形。
