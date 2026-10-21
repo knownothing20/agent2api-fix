@@ -389,10 +389,44 @@ pub async fn fetch_both(
 ///
 /// `available` 只在**有积分数值**时给数：福利池是 token 不是积分，把两家的数
 /// 加在一起是一个谁也对不上的值 —— 宁可 null，让界面按 wallets 逐项显示。
+///
+/// ── 「套餐积分」是汇总口径，不能与分项一起相加（2026-10-21 用户报）──────
+/// `usageTotalPackageCredit` 的剩余**等于各分项行之和**，它本身不是一笔独立的钱。
+/// 线上实测（`hid_frnrqnrxi8j-_ty`）：
+/// ```text
+///   usageTotalPackageCredit    remain = 24500   ← 汇总（= 基础包 + 赠送）
+///   usageBasicPackageCredit    remain =   500
+///   usageBonusPackageCredit    remain = 24000
+///   usageOnDemandPackageCredit remain =     0
+///                              500 + 0 + 24000 = 24500  ← 与汇总行相同
+/// ```
+/// 先前这里是**逐行全加**，于是面板显示 49000、上游客户端显示 24500 —— 正好 2 倍，
+/// 与上游 issue #225（14956 = 7478×2）/ #261（11000 = 5500×2）同一形状。
+///
+/// 判据照上游 #261 的推广：分项**不点名**，取「除汇总行外所有带剩余积分的行」。
+/// 点名会漏 —— 按需付费行非零的账号，「基础包 + 赠送」之和 ≠ 汇总行，认不出
+/// 包含关系就会翻倍。命中包含关系（容差比较，上游数值走浮点）时只取分项；
+/// **认不出时照旧全加**：宁可多算，也不凭猜丢掉一笔真实的钱。
 pub fn usage_document(statistics: Option<&Statistics>, benefit: Option<&BenefitBalance>) -> Value {
     let mut wallets = Vec::new();
     let mut credit_left: Option<f64> = None;
     if let Some(statistics) = statistics {
+        // 分项之和：除汇总行外所有带 `credit_remaining` 的行（有没有分项、
+        // 有哪几族由上游的 metrics 决定，这里不点名 —— 见函数头 #261 那条）。
+        let parts_sum = || -> Option<f64> {
+            let mut sum = 0.0;
+            let mut any = false;
+            for meter in &statistics.meters {
+                if meter.name == "usageTotalPackageCredit" {
+                    continue;
+                }
+                if let Some(left) = meter.credit_remaining {
+                    sum += left;
+                    any = true;
+                }
+            }
+            any.then_some(sum)
+        }();
         for meter in &statistics.meters {
             wallets.push(json!({
                 "type": format!("meter:{}", meter.name),
@@ -405,7 +439,13 @@ pub fn usage_document(statistics: Option<&Statistics>, benefit: Option<&BenefitB
                 "creditUsed": meter.credit_used,
                 "creditRemaining": meter.credit_remaining,
             }));
-            if let Some(left) = meter.credit_remaining {
+            let Some(left) = meter.credit_remaining else { continue };
+            // 汇总行 ≈ 分项之和 ⇒ 它只是把分项再报一遍，跳过（否则正好翻倍）。
+            // 认不出包含关系（数值对不上 / 分项缺席）时照旧全加。
+            let duplicated = meter.name == "usageTotalPackageCredit"
+                && parts_sum
+                    .is_some_and(|sum| (sum - left).abs() <= f64::EPSILON.max(left.abs() * 1e-6));
+            if !duplicated {
                 credit_left = Some(credit_left.unwrap_or(0.0) + left);
             }
         }
@@ -557,9 +597,43 @@ mod tests {
         assert_eq!("套餐积分", total.label);
         assert_eq!(Some(5172.57), total.credit_remaining);
         assert_eq!(Some(5.0), total.used_percent);
-        // available = 各行剩余积分之和（按需那行是 0，不是「没读到」）
+        // available = **分项**剩余之和，不含汇总行（2026-10-21 修）：
+        // 基础包 172.57 + 按需 0 + 赠送 5000 = 5172.57，而 `usageTotalPackageCredit`
+        // 的剩余也正是 5172.57 —— 它只是把分项再报一遍。此前逐行全加得 10345.14
+        // （= 真值的 2 倍），面板因此把余额显示成两倍（上游 issue #225 / #261）。
         let document = usage_document(Some(&parsed), None);
-        assert_eq!(Some(10_345.14), document["available"].as_f64().map(|v| (v * 100.0).round() / 100.0));
+        assert_eq!(
+            Some(5_172.57),
+            document["available"].as_f64().map(|v| (v * 100.0).round() / 100.0)
+        );
+    }
+
+    /// 按需付费行**非零**的账号：若判据点名「基础包 + 赠送」，两行之和 ≠ 汇总行，
+    /// 包含关系认不出来、翻倍照旧（上游 issue #261 的形状：11000 = 5500×2）。
+    /// 分项不点名后，按需行也进分项之和，包含关系照常命中。
+    #[test]
+    fn the_summary_is_deduped_even_when_the_on_demand_row_is_nonzero() {
+        let body = r#"{"metrics":[
+            {"name":"usageTotalPackageCredit","value":0,"package_credit_amount":12000,"package_credit_remain":8800,"show":true},
+            {"name":"usageBasicPackageCredit","value":0,"package_credit_amount":500,"package_credit_remain":500,"show":true},
+            {"name":"usageOnDemandPackageCredit","value":0,"package_credit_amount":3500,"package_credit_remain":300,"show":true},
+            {"name":"usageBonusPackageCredit","value":0,"package_credit_amount":8000,"package_credit_remain":8000,"show":true}
+        ]}"#;
+        let parsed = parse_statistics(body).unwrap();
+        // 分项之和 500 + 300 + 8000 = 8800 = 汇总行 ⇒ 只取分项，不翻倍
+        assert_eq!(Some(8800.0), usage_document(Some(&parsed), None)["available"].as_f64());
+
+        // 反对照：若汇总行**不含**按需（8500 = 500 + 8000）而按需另有一笔，
+        // 包含关系认不出来 ⇒ 照旧全加（17300）。这条钉住「宁可多算也不少算」
+        // 的取舍没被顺手改掉 —— 两种语义哪种为真要靠上游实测。
+        let excluding = r#"{"metrics":[
+            {"name":"usageTotalPackageCredit","value":0,"package_credit_amount":8500,"package_credit_remain":8500,"show":true},
+            {"name":"usageBasicPackageCredit","value":0,"package_credit_amount":500,"package_credit_remain":500,"show":true},
+            {"name":"usageOnDemandPackageCredit","value":0,"package_credit_amount":300,"package_credit_remain":300,"show":true},
+            {"name":"usageBonusPackageCredit","value":0,"package_credit_amount":8000,"package_credit_remain":8000,"show":true}
+        ]}"#;
+        let parsed = parse_statistics(excluding).unwrap();
+        assert_eq!(Some(17_300.0), usage_document(Some(&parsed), None)["available"].as_f64());
     }
 
     #[test]
