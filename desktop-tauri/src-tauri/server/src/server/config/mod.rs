@@ -290,6 +290,18 @@ impl RuntimeConfig {
         self.captcha_enabled
     }
 
+    /// 面板是否要求账号密码登录（**默认 `true`**）。
+    ///
+    /// 直接读 `raw` 而不是加一个结构化字段：这个开关只在鉴权热路径上判一次，
+    /// 没有解析期校验的需求；缺键 / 值坏掉一律回落到 `true` —— 安全开关的
+    /// 兜底方向必须是「要登录」，不能因为配置写坏就把面板敞开。
+    pub fn panel_login_required(&self) -> bool {
+        self.raw
+            .get(KEY_PANEL_LOGIN_REQUIRED)
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
+
     /// 系统提示词设置（界面 / 日志用；转发层要的是下面的借用视图）
     pub fn prompt_settings(&self) -> &PromptSettings {
         &self.prompt
@@ -1474,6 +1486,14 @@ pub fn set_captcha_enabled(enabled: bool) -> bool {
             .insert(KEY_CAPTCHA_ENABLED.to_string(), Value::Bool(enabled));
         config.captcha_enabled = enabled;
     })
+}
+
+/// 写「面板是否需要账号密码登录」（设置页开关；改完下一个请求立即生效）。
+///
+/// 走 `update_raw_field`：写 `raw` + 落盘 + 换内存快照，与其它配置项同一条路。
+/// 不需要额外的结构化字段 —— 读侧直接看 `raw`（见 `panel_login_required`）。
+pub fn set_panel_login_required(required: bool) -> bool {
+    update_raw_field(KEY_PANEL_LOGIN_REQUIRED, Value::Bool(required))
 }
 
 // ─── 更新出网线路（updateProxy）─────────────────────────────

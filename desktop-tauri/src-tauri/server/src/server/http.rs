@@ -91,6 +91,14 @@ pub fn panel_router(state: ServerState) -> Router {
         // ALTCHA 领题：与 status / setup 同为「认证边界」端点 —— 领题时
         // 用户还没有任何凭证（开关关闭时回 400，前端跳过校验）
         .route("/api/panel/captcha", get(api::panel::captcha_challenge))
+        // 「面板密码登录」开关（2026-10-21）：GET 读 / PUT 写。
+        // 挂在 /api/panel/ 前缀下是**必须的** —— 闸门对这个前缀始终放行，
+        // 否则关掉密码登录之后就再也调不回来（自锁）。
+        .route(
+            "/api/panel/login-required",
+            get(api::panel_login::get_login_required)
+                .put(api::panel_login::put_login_required),
+        )
         // CatPaw 网页登录的 loopback 回调：**上游浏览器直接 POST 到这里**
         // （redirect 指向本网关自己的 loopback 端口，见 core::login::catpaw），
         // 所以它必须免鉴权 —— 调用方是美团 passport 页面，它没有我们的 API Key。
@@ -700,6 +708,15 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
     // 桌面壳/脚本自动带）」。两者都没有 → 401 并注明是面板登录 ——
     // web_shim 据此弹账号密码框而不是 Key 框。桌面形态不开这个开关
     // （未配置管理员环境变量），下面的原有语义原样生效。
+    // ── 免密模式（管理员在设置页关掉了「密码登录」）──────────────
+    // 管理面直接放行：打开面板就能进，不再弹账号密码。
+    // 只放行 `/api/*` —— `/v1/*`（转发面）仍走下面的 API Key 校验：
+    // 关掉的是「人看面板要不要密码」，不是「程序调模型要不要鉴权」。
+    // 默认值见 `config::panel_login_required()`（缺键 = true，安全兜底）。
+    if !snapshot.panel_login_required() && path.starts_with("/api/") {
+        return next.run(request).await;
+    }
+
     let panel_auth = crate::server::access::panel_auth_enabled();
     if panel_auth && path.starts_with("/api/") {
         if crate::server::access::session_valid(request.headers()) {

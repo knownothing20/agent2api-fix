@@ -64,6 +64,7 @@ pub mod logs_api;
 pub mod model_manage;
 pub mod models;
 pub mod panel;
+pub mod panel_login;
 pub mod pipeline;
 pub mod prompt;
 pub mod protocol;

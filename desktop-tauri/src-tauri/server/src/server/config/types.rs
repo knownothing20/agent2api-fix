@@ -183,6 +183,22 @@ pub const WELFARE_MAX_ATTEMPTS_PER_DAY_MAX: u64 = 100;
 /// （优先级「配置里的值 > 环境变量」）。
 pub const KEY_CAPTCHA_ENABLED: &str = "captchaEnabled";
 
+/// 「面板需要账号密码登录」的开关（config.json 键，**默认 `true`**）。
+///
+/// ── 为什么要这个开关（2026-10-21 用户要求）──────────────────────
+/// headless / Docker 形态下，只要 `.env` 里配了 `AGENT2API_ADMIN_USER` /
+/// `AGENT2API_ADMIN_PASSWORD`，`access::panel_auth_enabled()` 就恒为真 ⇒
+/// 面板**每次换设备、清 cookie 都要重新输密码**。用户在内网自用（面板只监听
+/// 局域网），希望「打开就能进」。
+///
+/// 关掉之后：`/api/*`（管理面）不再要求登录；**`/v1/*` 仍然要求 API Key**
+/// （两件事分开 —— 关的是「人看面板」，不是「程序调模型」）。
+///
+/// ⚠️ 关掉等于「任何能访问这个端口的人都能进面板」：能改账号、看网关 Key、
+/// 花积分。所以**默认是 `true`**，必须由管理员在设置页显式关闭；界面上那条
+/// 说明也照实写了代价。
+pub const KEY_PANEL_LOGIN_REQUIRED: &str = "panelLoginRequired";
+
 /// 系统提示词模式的键（config.json 键，对应 workbuddy2api 的 `prompt.mode`）。
 ///
 /// 取值 `passthrough` / `custom` / `append`（见 `core::prompt::PromptMode`）；

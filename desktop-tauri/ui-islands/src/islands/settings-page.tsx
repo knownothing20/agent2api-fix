@@ -80,6 +80,7 @@ import {
   resolveRetentionConfirm,
   restoreCategory,
   saveCaptcha,
+  savePanelLoginRequired,
   saveCodeartsCap,
   saveCodeartsThinking,
   saveDebug,
@@ -1320,17 +1321,32 @@ function SecurityPane({ snap }: { snap: SettingsSnapshot }) {
         <section className='panel' id='panel-login-section'>
           <PanelHead title='面板登录' />
           <div className='panel-body'>
-            <div className='hint'>{NOTES.panelLogin}</div>
-            <div className='mt-2.5'>
-              <Button
-                id='btn-panel-logout'
-                variant='outline'
-                disabled={loggingOut}
-                onClick={() => void onLogout()}
-              >
-                退出登录
-              </Button>
-            </div>
+            {/* 密码登录开关（2026-10-21 用户要求）：关掉 = 打开面板直接进。
+                默认开启 —— 安全开关的默认方向必须保守，关掉要管理员显式操作。 */}
+            <SwitchRow
+              id='settings-panel-login-required'
+              label='打开面板需要账号密码登录'
+              checked={snap.panelLoginRequired.required}
+              disabled={!snap.panelLoginRequired.available || snap.busy === 'panelLoginRequired'}
+              onCheckedChange={next => void savePanelLoginRequired(next)}
+            />
+            <div className='hint'>{NOTES.panelLoginRequired}</div>
+            {/* 「退出登录」只在需要密码登录时有意义：免密状态下没有会话可撤 */}
+            {snap.panelLoginRequired.required ? (
+              <div className='mt-2.5'>
+                <div className='hint'>{NOTES.panelLogin}</div>
+                <div className='mt-2.5'>
+                  <Button
+                    id='btn-panel-logout'
+                    variant='outline'
+                    disabled={loggingOut}
+                    onClick={() => void onLogout()}
+                  >
+                    退出登录
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}

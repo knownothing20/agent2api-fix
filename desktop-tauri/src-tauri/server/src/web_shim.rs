@@ -785,6 +785,13 @@ pub fn shim_js() -> &'static str {
     // ── 面板登录（headless 托管面板才有「登录面板」的概念）──
     panelLogout: function () { return call('POST', '/api/panel/logout', {}); },
 
+    // ── 面板密码登录开关（关掉 = 打开面板就能进）──
+    // 挂在 /api/panel/ 前缀下：闸门对该前缀始终放行，免密后仍能调回来
+    getPanelLoginRequired: function () { return call('GET', '/api/panel/login-required'); },
+    savePanelLoginRequired: function (on) {
+      return call('PUT', '/api/panel/login-required', { required: on === true });
+    },
+
     // ── 机器人校验开关（登录 / 注册的 ALTCHA proof-of-work）──
     getCaptchaSetting: function () { return call('GET', '/api/captcha'); },
     saveCaptchaSetting: function (on) {

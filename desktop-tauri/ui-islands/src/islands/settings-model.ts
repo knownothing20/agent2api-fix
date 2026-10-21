@@ -119,6 +119,14 @@ export type SettingsBridge = {
   getStorage(): Promise<unknown>
   getCaptchaSetting(): Promise<{ captchaEnabled?: boolean } | null | undefined>
   saveCaptchaSetting(on: boolean): Promise<{ captchaEnabled?: boolean } | null | undefined>
+  getPanelLoginRequired(): Promise<{
+    required?: boolean
+    adminRegistered?: boolean
+  } | null | undefined>
+  savePanelLoginRequired(on: boolean): Promise<{
+    required?: boolean
+    adminRegistered?: boolean
+  } | null | undefined>
   getSchedulingSetting(): Promise<{
     schedulingMode?: string
     schedulingWaitSeconds?: number
@@ -696,6 +704,7 @@ export const NOTES = {
   storage: '数据统一保存在配置目录下的 agent2api.db；如需更换位置，请设置环境变量 AGENT2API_PROXY_HOME 后重启程序。',
   captcha: '开启后，登录页在浏览器后台自动完成验证（对真人无感），而脚本每次尝试都要先算一道题 —— 暴力破解与抢注的成本显著上升。仅影响面板的登录 / 注册，与 API 客户端的 API Key 无关。',
   schedulingMode: '会话粘性始终生效：客户端带 x-session-id 时，同一条会话的每一轮都落在同一个账号上（不会中途换号）。这里只决定粘性命中之后怎么挑账号 —— 「积分优先」按账号的重置日与剩余额度排（重置日早的先消耗），「空闲优先」按当前在途请求数排（谁空着谁先用），「只保会话粘性」则回到账号优先级。保存后对下一次选路立即生效，不用重启。',
+  panelLoginRequired: '开启时，打开面板需要输入管理员账号密码（登录后 30 天内自动续期，换设备 / 清 cookie 才需要重输）。关闭后打开面板即可直接进入 —— 任何能访问这个端口的人都能改账号、看网关 Key、花积分，只在确定端口没有对外暴露时才关。网关 /v1/* 的 API Key 校验不受影响。',
   panelLogin: '当前浏览器以管理员身份登录着本面板。「退出登录」会撤销这台设备的登录会话（30 天内的自动续期一并失效），需要重新输入账号密码；其他已登录的设备不受影响。',
   exportDanger: '导出文件内含 accessToken / refreshToken / apiKey 等凭证与自定义提供商定义，可直接用于登录。请妥善保管，不要外传或上传到公共位置。',
 } as const

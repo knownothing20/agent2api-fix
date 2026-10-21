@@ -87,6 +87,7 @@ export type BusyScope =
   | 'sanitize'
   | 'prompt'
   | 'captcha'
+  | 'panelLoginRequired'
   | 'scheduling'
   | 'export'
   | 'import'
@@ -224,6 +225,11 @@ export type SettingsSnapshot = {
   storage: StorageState
   captcha: { available: boolean; enabled: boolean }
   /**
+   * 面板密码登录开关：`required=false` ⇒ 打开面板即可直接进入（不弹账号密码）。
+   * `available=false` = 还没读到（开关禁用，按 required=true 渲染）。
+   */
+  panelLoginRequired: { available: boolean; required: boolean }
+  /**
    * 多账号调度（会话粘性固定生效）：`mode` = 粘性之后的第二级排序，
    * `waitSeconds` = 满员时等一个槽位最多等几秒（null = 还没读到后端值）
    */
@@ -287,6 +293,8 @@ const INITIAL: SettingsSnapshot = {
     debug: null,
   },
   captcha: { available: true, enabled: false },
+  // 未读到之前按「需要登录」渲染 —— 安全开关的默认方向必须是保守的那一侧
+  panelLoginRequired: { available: false, required: true },
   // 默认与后端一致（creditFirst = 积分优先、等待 30 秒）：后端认不出这两个键时也是它们
   scheduling: { available: true, mode: 'creditFirst', waitSeconds: 30 },
   ioFailure: null,
@@ -1207,6 +1215,35 @@ async function loadCaptcha(): Promise<void> {
   }
 }
 
+/* ─── 面板密码登录（关掉 = 打开面板就能进，2026-10-21）── */
+
+async function loadPanelLoginRequired(): Promise<void> {
+  try {
+    const state = await shared().workbuddyDesktop?.getPanelLoginRequired()
+    // 只有明确 `required === false` 才算免密：读不到 / 字段缺失一律按「要登录」
+    publish({ panelLoginRequired: { available: true, required: state?.required !== false } })
+  } catch (error) {
+    publish({ panelLoginRequired: { available: false, required: true } })
+    console.warn('读取面板密码登录设置失败:', errorMessage(error))
+  }
+}
+
+export async function savePanelLoginRequired(next: boolean): Promise<void> {
+  if (busyScope) { repaint(); return }
+  beginBusy('panelLoginRequired')
+  publish({ panelLoginRequired: { ...snapshot.panelLoginRequired, required: next } })
+  try {
+    const state = await shared().workbuddyDesktop?.savePanelLoginRequired(next)
+    publish({ panelLoginRequired: { available: true, required: state?.required !== false } })
+    toast(next ? '✅ 面板需要账号密码登录' : '⚠️ 面板已免密：打开即可进入')
+  } catch (error) {
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+    await loadPanelLoginRequired()
+  } finally {
+    endBusy()
+  }
+}
+
 export async function saveCaptcha(next: boolean): Promise<void> {
   if (busyScope) { repaint(); return }
   beginBusy('captcha')
@@ -1811,6 +1848,7 @@ export async function load(): Promise<void> {
     loadPrompt(),
     loadStorage(),
     loadCaptcha(),
+    loadPanelLoginRequired(),
     loadScheduling(),
     // 软件更新面板是另一个岛（update-panel.tsx），切进设置页时让它自己刷新一次
     shared().wbUpdatePanel?.load?.(),
