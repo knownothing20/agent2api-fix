@@ -71,6 +71,17 @@ const POLL_MS = 1000
  */
 const PROJECT_REPO = 'knownothing20/agent2api-fix'
 
+/**
+ * 上游参考仓库 —— **只展示，不参与任何检查或下载**。
+ *
+ * 2026-10-10 那次精简把这一栏删掉了（提交 3113923）：当时「最新版本」显示的是
+ * 上游的号、「当前版本」是本仓库的号，并排放着会让人以为「我这套系统有新版本」。
+ * 但完全不给出处也不方便 —— 对比上游（查它的新功能、找某个 bug 的上游修法）
+ * 是常态操作。所以这里加回来，并在界面上写明「仅供对比」：读数仍然只来自
+ * 本仓库（`PROJECT_REPO`），这一行只是一条外链。
+ */
+const REFERENCE_REPO = 'aimod-cc/agent2api'
+
 /** 徽章语义色记号（app.js 的 renderTopbarStatus 优先读 data-tone，见其 mirror 注释） */
 type BadgeTone = '' | 'ok' | 'warn' | 'bad'
 
@@ -625,6 +636,8 @@ function UpdatePanel() {
 
   // 两个仓库地址都固定取常量（理由见文件头 PROJECT_REPO 的说明）
   const projectUrl = `https://github.com/${PROJECT_REPO}`
+  // 上游参考：仅展示的外链，读数不走它（见 REFERENCE_REPO 的说明）
+  const referenceUrl = `https://github.com/${REFERENCE_REPO}`
   const updatedLabel = formatDateTime(snap.info?.publishedAt)
   const latestLabel = snap.info?.latestVersion
     ? `${snap.info.latestVersion}${snap.info.prerelease ? '（预发布）' : ''}`
@@ -652,8 +665,8 @@ function UpdatePanel() {
         </div>
       </div>
       <div className='panel-body'>
-        {/* 三样信息：仓库地址（本项目）、版本（当前 / 最新）、最近更新。
-            读数固定四行，不折叠也不做卡片嵌套 —— 一眼看完就是本页的全部内容 */}
+        {/* 四样信息：仓库地址（本项目 / 上游参考）、版本（当前 / 最新）、最近更新。
+            读数固定五行，不折叠也不做卡片嵌套 —— 一眼看完就是本页的全部内容 */}
         <div className='update-facts' id='update-facts'>
           <div className='update-fact'>
             <span className='k'>本项目仓库</span>
@@ -661,6 +674,18 @@ function UpdatePanel() {
               <a id='update-author-link' href={projectUrl} data-external={projectUrl} target='_blank' rel='noopener'>
                 {PROJECT_REPO}
               </a>
+            </span>
+          </div>
+          {/* 上游参考：**只展示**。读数（当前 / 最新版本、最近更新）全部来自上面那个
+              本仓库 —— 这一行不参与检查，界面上也写明了，避免再出现「以为别人的
+              系统有更新」那种误读（见 REFERENCE_REPO 的说明）。 */}
+          <div className='update-fact'>
+            <span className='k'>上游参考</span>
+            <span className='v'>
+              <a id='update-reference-link' href={referenceUrl} data-external={referenceUrl} target='_blank' rel='noopener'>
+                {REFERENCE_REPO}
+              </a>
+              <span className='detail ml-2'>仅供对比，不参与更新检查</span>
             </span>
           </div>
           <div className='update-fact'>

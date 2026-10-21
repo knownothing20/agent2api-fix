@@ -168,6 +168,19 @@ impl RequestStats {
             let outcome = db.with(|conn| -> rusqlite::Result<()> {
                 conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
                 conn.execute_batch("VACUUM;")?;
+                // VACUUM 之后**必须再截一次零**（2026-10-21，上游 issue #297 同一形状）。
+                //
+                // WAL 模式下 VACUUM 是「整库重建」：新写出的页全部落进 `-wal`，
+                // 主库文件反而缩了 —— 少了尾部这次 `TRUNCATE`，空间只是从主库
+                // 搬到 WAL，用户看到的「总占用」不降反升（这正是那个 issue 的
+                // 现象：点了压缩，磁盘反而更大）。
+                //
+                // 前置那次与后置这次各管一段：前置把存量 WAL 并回主库、让 VACUUM
+                // 面对一个干净的主文件；后置把 VACUUM 的产物收回去并截成 0 字节。
+                // 与 `RequestStats::flush` 用的是同一条语句（`TRUNCATE` 会尽力而为，
+                // 有读锁挡着时 SQLite 保留 WAL 而不报错，所以失败只意味着「这次没
+                // 收敛」，数据仍然完好）。
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
                 Ok(())
             });
             let ok = matches!(outcome, Some(Ok(())));
