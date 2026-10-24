@@ -214,7 +214,12 @@ pub async fn dispatch(
     // ① 精确命中 `/api/accounts`
     if rest.is_none() {
         match method.as_str() {
-            "GET" => return ok_json(state.store().list_accounts()),
+            "GET" => {
+                // 补「最近一次请求结果」—— 状态列据此显示异常，而不是只看开关
+                let mut snapshot = state.store().list_accounts();
+                state.store().attach_last_results(&mut snapshot);
+                return ok_json(snapshot);
+            }
             "POST" => return add_account(&state, body).await,
             // Node 版对 `/api/accounts` 上的其它方法同样走 404 信封
             _ => {

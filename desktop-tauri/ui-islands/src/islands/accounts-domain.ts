@@ -670,6 +670,16 @@ export function accountTags(account: AccountRecord): AccountTag[] {
           + '该提供商下的模型也不会出现在模型列表里。去账号「设置」里补上 Key，或勾选「该上游无需鉴权」',
       }
       : null,
+    // 最近一次请求失败（2026-10-24）：状态列的「正常」原来只看启用开关，
+    // 账号坏了照样显示绿色 —— 这里用后端的 lastStatus/lastError 补上真相。
+    // 只认 30 分钟内的失败：更早的失败可能已经修好（重贴过凭证），别一直挂着红。
+    account.lastError && account.lastAt && Date.now() - account.lastAt < 30 * 60_000
+      ? {
+        text: '异常',
+        kind: 'bad' as const,
+        title: `最近一次请求失败（${new Date(account.lastAt).toLocaleTimeString()}）：${account.lastError}`,
+      }
+      : null,
     // 代理配了解析不出来时明确标出：转发会回退直连，属于需要留意的情况
     account.proxy?.error
       ? { text: '代理异常', kind: 'bad' as const, title: `${account.proxy.error}（转发时会回退直连）` }

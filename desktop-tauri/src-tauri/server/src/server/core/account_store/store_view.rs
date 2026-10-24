@@ -156,6 +156,60 @@ impl AccountStore {
         self.snapshot(&state)
     }
 
+    /// 给账号列表补「最近一次请求结果」（2026-10-24，用户指出「状态是假的」）。
+    ///
+    /// ── 为什么需要它 ────────────────────────────────────────────
+    /// 列表原来的「状态」列只读 `enabled`（启用开关）—— **它跟账号能不能用毫无
+    /// 关系**。实测：OrcaTerm 账号 token 已失效、每次请求都 502，界面照样一片
+    /// 绿色「正常」，用户只能从对话报错里自己发现。
+    ///
+    /// 这里把 `requests` 表里每个账号**最近一条**的 `status` / `error` / `ts`
+    /// 补进公开形态，界面据此挂「异常」徽章（见前端 `accountTags`）。
+    ///
+    /// ── 只看最近 24 小时 ────────────────────────────────────────
+    /// 更早的失败不代表现在坏了（token 可能已重贴、额度可能已恢复）；
+    /// 同时避免对可能几万行的 `requests` 表做全量扫描。
+    pub fn attach_last_results(&self, snapshot: &mut Value) {
+        let guard = self.guard();
+        let cutoff = crate::server::logging::now_ms() - 24 * 60 * 60 * 1000;
+        let rows: Vec<(String, i64, String, i64)> = match self.with_conn(&guard, |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT account_id, status, coalesce(error, ''), ts FROM requests \
+                 WHERE ts > ?1 AND account_id <> '' ORDER BY ts DESC",
+            )?;
+            let iter = stmt.query_map([cutoff], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            iter.collect::<rusqlite::Result<Vec<_>>>()
+        }) {
+            Ok(list) => list,
+            // 查不到（表未建 / DB 未打开）就不补 —— 这是展示增强，不该拖垮列表接口
+            Err(_) => return,
+        };
+        // 已按 ts 降序：每个账号第一次出现的即最近一条
+        let mut latest: std::collections::HashMap<String, (i64, String, i64)> =
+            std::collections::HashMap::new();
+        for (account_id, status, error, ts) in rows {
+            latest.entry(account_id).or_insert((status, error, ts));
+        }
+        let Some(list) = snapshot.get_mut("accounts").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for account in list {
+            let Some(id) = account.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some((status, error, ts)) = latest.get(id) else {
+                continue;
+            };
+            if let Some(object) = account.as_object_mut() {
+                object.insert("lastStatus".to_string(), Value::from(*status));
+                object.insert("lastError".to_string(), Value::from(error.clone()));
+                object.insert("lastAt".to_string(), Value::from(*ts));
+            }
+        }
+    }
+
     /// 已持锁时的列表快照（CRUD 内部要在同一次锁里连做「写入 + 取快照」）
     pub(crate) fn snapshot(&self, state: &AccountState) -> Value {
         // 逐家派生队首：provider 取值的来源就是账号数据里出现过的家

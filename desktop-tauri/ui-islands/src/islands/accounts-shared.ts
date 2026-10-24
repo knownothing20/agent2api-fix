@@ -69,6 +69,17 @@ export type AccountRecord = {
    * 缺失（旧版后端）按「有凭证」处理，宁可少标一枚徽章也不要误报。
    */
   hasCredentials?: boolean
+  /**
+   * 最近一次请求结果（后端 `attach_last_results` 注入，2026-10-24）。
+   *
+   * 背景：状态列原来只读 `enabled`（开关），**账号坏了也显示「正常」** ——
+   * 实测 OrcaTerm 账号 token 失效、每次 502，界面仍一片绿，只能从对话报错里发现。
+   * 现在按「最近一次请求」判断：失败则挂红色「异常」徽章并带原因。
+   * 缺失（旧版后端 / 24 小时内无请求）按正常处理。
+   */
+  lastStatus?: number | null
+  lastError?: string | null
+  lastAt?: number | null
   edition?: string
   editionLabel?: string
   chatSupported?: boolean
