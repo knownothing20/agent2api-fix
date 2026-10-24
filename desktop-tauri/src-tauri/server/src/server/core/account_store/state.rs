@@ -414,7 +414,25 @@ impl StoredAccount {
     /// 看不懂的上游 401（见 [`Self::no_auth`]）。
     pub fn has_credentials(&self) -> bool {
         self.has_token() || self.is_desktop() || self.has_api_key() || self.has_jwt()
-            || self.no_auth()
+            || self.no_auth() || self.has_skey()
+    }
+
+    /// 记录里是否有**非空**的 `skey`（OrcaTerm **控制台态**的登录密钥）。
+    ///
+    /// ── 为什么必须算进「有凭证」（2026-10-24 实测故障）──────────────
+    /// 控制台态账号的 `accessToken` 是**空串**（凭证在 `skey` / `rawCookie`
+    /// 里），于是 `has_credentials()` 判 false ⇒ `accounts_for_provider`
+    /// 把这条账号过滤掉 ⇒ `provider_available` 为 false ⇒
+    /// **模型清单里整家消失**（界面上看不到 OrcaTerm 的任何模型，
+    /// 路由也永远选不到它 —— 而对话本身其实能通）。
+    ///
+    /// 与 `has_jwt` 同一口径：**不判 provider**，只看这个键有没有值；
+    /// 其他家不写 `skey`，判定天然不受影响。
+    pub fn has_skey(&self) -> bool {
+        self.fields
+            .get("skey")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
     }
 
     /// 记录是否**显式声明「该上游无需鉴权」**（自定义账号的 `noAuth: true`）。
