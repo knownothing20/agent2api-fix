@@ -677,7 +677,7 @@ export function accountTags(account: AccountRecord): AccountTag[] {
     // 账号闲置超过窗口后徽章会消失，看起来像“自己好了”，但一次请求立刻又失败。
     // 判据就一条：**最近一次请求是不是失败**。只要之后成功一次，lastError 被
     // 新记录覆盖、徽章自动消失 —— 不需要靠时间猜。
-    account.lastError
+    account.lastError && account.lastAt && Date.now() - account.lastAt < 4 * 60 * 60_000
       ? {
         text: '异常',
         kind: 'bad' as const,

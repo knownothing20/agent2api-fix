@@ -171,7 +171,10 @@ impl AccountStore {
     /// 同时避免对可能几万行的 `requests` 表做全量扫描。
     pub fn attach_last_results(&self, snapshot: &mut Value) {
         let guard = self.guard();
-        let cutoff = crate::server::logging::now_ms() - 24 * 60 * 60 * 1000;
+        // 4 小时窗口：24 小时会把「22 小时前被内容审核拒过一次」这种陈年旧账
+        // 一直挂成红色（实测 CodeArts 某账号），看起来像现在坏了。4 小时覆盖
+        // 两次 OrcaTerm token 周期，够判断「最近是否真的在失败」。
+        let cutoff = crate::server::logging::now_ms() - 4 * 60 * 60 * 1000;
         let rows: Vec<(String, i64, String, i64)> = match self.with_conn(&guard, |conn| {
             let mut stmt = conn.prepare(
                 "SELECT account_id, status, coalesce(error, ''), ts FROM requests \
