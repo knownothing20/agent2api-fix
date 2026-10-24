@@ -90,6 +90,21 @@ impl OrcatermCredentials {
 /// 与首尾空白（前端用户可能整行复制 `Authorization: Bearer …` 或 Cookie 片段）。
 pub fn normalize_token(raw: &str) -> String {
     let mut token = raw.trim().to_string();
+    // ── 整段 Cookie（2026-10-24 加）──────────────────────────────
+    // 用户从 DevTools 里复制 `document.cookie` 得到的是
+    // `uin=…; skey=…; ot_session=eyJ…; userId=…` 这种整串 —— 让他自己在一长串里
+    // 挑出 `ot_session` 那一段，少复制一个字符 JWT 就废了。这里直接按分号切、
+    // 取出 `ot_session` 的值。判据用「含分号」：JWT 本身是 base64url 三段点分，
+    // 不可能出现分号，所以不会误伤裸 token。
+    if token.contains(';') {
+        for part in token.split(';') {
+            let part = part.trim();
+            if let Some(rest) = part.strip_prefix("ot_session=") {
+                token = rest.trim().to_string();
+                break;
+            }
+        }
+    }
     if let Some(rest) = token.strip_prefix("ot_session=") {
         token = rest.trim().to_string();
     }

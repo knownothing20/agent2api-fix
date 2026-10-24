@@ -557,10 +557,10 @@ const ORCATERM: ProviderConfig = {
   desktopWindowsOnly: true,
   desktopNote: '读取本机 OrcaTerm 桌面客户端的登录态（%APPDATA%\\com.orcaterm-desktop.app\\data.bin，明文 JSON，无需解密）',
   manualTitle: '填写凭证',
-  manualNoteHtml: '粘贴 OrcaTerm 的 <code>ot_session</code>（OAuth JWT，约 2 小时时效）。'
+  manualNoteHtml: '粘贴 OrcaTerm 的登录态（OAuth JWT，约 2 小时时效）。'
     + '取得方式：打开 <code>orcaterm.cloud.tencent.com/terminal</code> 登录后，在开发者工具 Console 里执行 '
-    + '<code>document.cookie</code>，复制 <code>ot_session=</code> 那一段；也可以把桌面客户端的 '
-    + '<code>data.bin</code> 整段粘进来。'
+    + '<code>document.cookie</code>，<b>整段直接复制粘贴即可</b>（会自动取出 <code>ot_session</code>）；'
+    + '也可以把桌面客户端的 <code>data.bin</code> 整段粘进来。'
     + '<br>添加时网关会打一次 <code>GetUserInfo</code> 做真实校验；<b>续期由网关接管</b>'
     + '（上游有 <code>OAuthRefreshToken</code> 接口），不需要你每两小时重贴。',
   fields: [
