@@ -368,6 +368,66 @@ impl LoginService {
     /// 任务句柄登记进表后等着 `submit_login_callback` 来收尾（或等 `cancel`）。
     ///
     /// 返回 `Err(原因)` 表示这家不支持网页登录（调用方据此报 400，文案原样透出）。
+    /// OrcaTerm 网页登录收尾：壳侧交回 `ot_session`（OAuth JWT）。
+    ///
+    /// ── 为什么要先打一次 `GetUserInfo` ──────────────────────────
+    /// 上游对过期/被撤销的令牌一律回 HTTP 200 + 业务码，落一个必然 401 的账号
+    /// 比当场报错更糟（用户会以为加成功了、然后在对话里撞墙）。`complete_login`
+    /// 内部就做了这次校验，失败即 Err。
+    ///
+    /// ── 幂等 ──────────────────────────────────────────────────
+    /// 壳侧的 Cookie 检测是「每拍扫一次」，同一个登录态可能被送两次 ——
+    /// 第二次直接返回空串（不是错误），与上游同口径。
+    pub async fn finish_orcaterm_login(
+        &self,
+        state: &str,
+        token: &str,
+    ) -> Result<String, GatewayError> {
+        let state = state.trim();
+        if state.is_empty() {
+            return Err(GatewayError::with_status(400, "缺少 state，无法确认这次回调归属"));
+        }
+        let Some(handle) = self.tasks.get(state) else {
+            return Err(GatewayError::with_status(
+                404,
+                "登录任务不存在或已过期，请重新发起网页登录",
+            ));
+        };
+        let task = handle.snapshot();
+        if task.canceled {
+            return Err(GatewayError::with_status(400, "登录已取消，请重新发起"));
+        }
+        if task.done {
+            // 幂等：同一个登录态被送来两次（Cookie 检测每拍触发）不是错误
+            return Ok(String::new());
+        }
+        if task.provider != crate::server::core::providers::kind_id(ProviderKind::OrcaTerm) {
+            return Err(GatewayError::with_status(
+                400,
+                "该登录任务不属于 OrcaTerm，请重新发起",
+            ));
+        }
+        let credentials =
+            crate::server::core::providers::orcaterm::login::complete_login(token).await?;
+        let account = self
+            .store
+            .add_orcaterm_account(&credentials, None, "web")
+            .map_err(|error| GatewayError::with_status(error.status_code, error.message))?;
+        let account_id = account
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let label = account
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("OrcaTerm 账号")
+            .to_string();
+        finish_task(&handle, &json!({ "account": account, "edition": task.edition }));
+        logging::log("[Login]", &format!("✅ OrcaTerm 网页登录成功: {label}"));
+        Ok(account_id)
+    }
+
     pub fn start_web_login(&self, kind: ProviderKind) -> Result<LoginTaskHandle, String> {
         let label = crate::server::core::providers::meta(kind).label;
         let adapter = adapter_for(kind);

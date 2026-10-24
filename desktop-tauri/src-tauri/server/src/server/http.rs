@@ -316,6 +316,13 @@ pub fn panel_router(state: ServerState) -> Router {
           // 见 api::session::login_callback 的说明）。与其他 login/* 一样在
           // protected 组 —— 它写账号库，必须过 API Key。
         .route("/api/session/login/callback", post(api::session::login_callback))
+        // OrcaTerm 网页登录收尾：**壳侧进程**交回 ot_session（登录窗口是壳开的，
+        // Cookie 存储归它）。免鉴权由一次性 state 承担；Docker 形态没有壳侧，
+        // 这条走不到（前端卡片已写明只能粘贴凭证）。
+        .route(
+            "/api/session/login/orcaterm/complete",
+            post(api::session::login_orcaterm_complete),
+        )
         // AutoClaw 的手机号验证码登录（**不是**网页登录，见 api::session 模块头）：
         // 上游没有授权码 / 回调这条路，登录就是「发码 → 用码换 token」两次请求，
         // 因此不需要登录窗口与轮询。两条都挂 protected —— 它们都写账号库，
