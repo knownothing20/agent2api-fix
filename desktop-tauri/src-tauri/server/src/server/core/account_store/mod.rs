@@ -94,6 +94,7 @@ pub mod cline_accounts;
 pub mod codearts_accounts;
 pub mod custom_accounts;
 pub mod priority;
+pub mod orcaterm_accounts;
 pub mod qoder_accounts;
 pub mod raccoon_accounts;
 pub mod raccoon_import;

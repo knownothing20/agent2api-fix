@@ -116,6 +116,7 @@ pub mod content_block;
 /// 形态调用它 —— 挂在这里与其它子模块并列，便于对照「内置家走适配器、
 /// 自定义家走独立通道」的两条路径。
 pub mod custom;
+pub mod orcaterm;
 pub mod qoder;
 pub mod raccoon;
 pub mod refresh_flight;
@@ -283,6 +284,14 @@ pub enum ProviderKind {
     /// `core::auto_checkin` 的提供商清单不含本家。每日签到存在，但要单独授权
     /// 才会接（见 cpa-deploy/notes/agent2api-trae-port-plan.md 的 §8 决策 3）。
     Trae,
+    /// OrcaTerm（腾讯云遨驰终端桌面客户端的 AI 助手）。
+    ///
+    /// 适配实现在 `orcaterm/`：上游是「建会话 → SSE」两步时序，
+    /// `is_stateful()` 为 true；凭证是微信 OAuth 的 JWT（约 2h），
+    /// **有真续期接口**（`OAuthRefreshToken`，旧 token 换新）⇒
+    /// `supports_refresh` 为 true，与 KukuAI / CatPaw「无刷新接口」不同。
+    /// 模型清单是静态表（上游没有列模型的公开接口），`supports_model_refresh` 为 false。
+    OrcaTerm,
 }
 
 /// 一个提供商的静态元数据。
@@ -330,6 +339,7 @@ pub const PROVIDERS: &[ProviderMeta] = &[
     ProviderMeta { id: "zcode-intl", label: "ZCode 国际版" },
     ProviderMeta { id: "codearts", label: "CodeArts" },
     ProviderMeta { id: "trae", label: "Trae" },
+    ProviderMeta { id: "orcaterm", label: "OrcaTerm" },
 ];
 
 /// provider id 在注册表里的下标（未知 id → None）。
@@ -404,6 +414,7 @@ pub fn kind_from_id(id: &str) -> Option<ProviderKind> {
         "zcode-intl" => Some(ProviderKind::ZcodeIntl),
         "codearts" => Some(ProviderKind::CodeArts),
         "trae" => Some(ProviderKind::Trae),
+        "orcaterm" => Some(ProviderKind::OrcaTerm),
         // 走到这里 = 上面的注册表判定已放行、这个 match 却没有对应分支：
         // 只可能是有人给 `PROVIDERS` 加了条目忘了加这里。开发期喊出来；
         // release 返回 None（见上：宁可为「未知」，不可误认成别家）。
@@ -436,6 +447,7 @@ pub const fn kind_id(kind: ProviderKind) -> &'static str {
         ProviderKind::ZcodeIntl => "zcode-intl",
         ProviderKind::CodeArts => "codearts",
         ProviderKind::Trae => "trae",
+        ProviderKind::OrcaTerm => "orcaterm",
     }
 }
 
