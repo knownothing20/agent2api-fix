@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 
 use crate::server::core::account_store::priority::next_free_priority;
 use crate::server::core::account_store::sql;
-use crate::server::core::account_store::state::{mark_name_custom, StoredAccount};
+use crate::server::core::account_store::state::StoredAccount;
 use crate::server::core::account_store::store::{AccountStore, AccountStoreError};
 use crate::server::core::account_store::store_util::{token_tail_of, truncate_chars};
 use crate::server::core::providers::orcaterm::credentials::OrcatermCredentials;
@@ -112,7 +112,8 @@ impl AccountStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| truncate_chars(value, MAX_NAME_LENGTH));
-        let explicit = explicit_name.is_some();
+        // 本地分支没有 `nameCustom` 机制（上游后来才加）：备注名只按
+        // 「显式传入 > 旧记录 > 昵称 > 兜底」这条链取，不额外打标记。
         let record_name = explicit_name
             .or_else(|| {
                 existing
@@ -141,7 +142,6 @@ impl AccountStore {
         record.insert("id".to_string(), Value::String(id.clone()));
         record.insert("provider".to_string(), Value::String(orcaterm_id().to_string()));
         record.insert("name".to_string(), Value::String(record_name.clone()));
-        mark_name_custom(&mut record, explicit, existing.as_ref());
         record.insert("uid".to_string(), Value::String(credentials.user_id.clone()));
         record.insert("loginName".to_string(), Value::String(nickname));
         record.insert("accessToken".to_string(), Value::String(token.clone()));

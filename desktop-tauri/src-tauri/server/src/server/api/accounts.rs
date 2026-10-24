@@ -542,6 +542,51 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
         //
         // `importDesktop` 不提供：Trae 桌面端的登录态在它自己的加密存储里
         // （与 Accio / ZCode 同一处境），给了入口只会稳定失败。
+        // OrcaTerm（腾讯云遨驰终端桌面客户端）：**粘贴 accessToken**（OAuth JWT）
+        // → 本地归一化（剥 `Bearer ` / `ot_session=` 前缀；整段 data.bin JSON
+        // 直接粘也行）→ 打一次 `GetUserInfo` 做**真实校验**（顺带补 userId 与
+        // 昵称）→ 落账号（续期由网关接管，见 `orcaterm::credentials` 模块头）。
+        // `importDesktop: true` → 读桌面客户端登录态
+        // （`%APPDATA%\com.orcaterm-desktop.app\data.bin`，Tauri store 明文 JSON）。
+        // 校验失败（token 无效 / 文件不存在 / 网络不通）→ 400，不落空记录。
+        Some(crate::server::core::providers::ProviderKind::OrcaTerm) => {
+            let parsed = if import_desktop {
+                match crate::server::core::providers::orcaterm::credentials::read_desktop_credentials()
+                {
+                    Ok(credentials) => credentials,
+                    Err(reason) => return management_error(400, reason),
+                }
+            } else {
+                match crate::server::core::providers::orcaterm::credentials::credentials_from_payload(
+                    &payload,
+                ) {
+                    Ok(credentials) => credentials,
+                    Err(reason) => return management_error(400, reason),
+                }
+            };
+            let verified = match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
+                &parsed, None,
+            )
+            .await
+            {
+                Ok((user_id, nickname)) => {
+                    let mut credentials = parsed;
+                    if credentials.user_id.is_empty() {
+                        credentials.user_id = user_id;
+                    }
+                    if credentials.nickname.is_empty() {
+                        credentials.nickname = nickname;
+                    }
+                    credentials
+                }
+                Err(error) => return management_error(error.status_code, error.message),
+            };
+            store.add_orcaterm_account(
+                &verified,
+                import_name,
+                if import_desktop { "desktop" } else { "manual" },
+            )
+        }
         Some(crate::server::core::providers::ProviderKind::Trae) => {
             if import_desktop {
                 return management_error(
