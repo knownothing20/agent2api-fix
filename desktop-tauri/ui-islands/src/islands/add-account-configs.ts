@@ -535,6 +535,46 @@ const TRAE: ProviderConfig = {
   ],
 }
 
+/**
+ * OrcaTerm（腾讯云遨驰终端桌面客户端的 AI 助手）。
+ *
+ * ── 为什么网页端没有可用的「网页登录」────────────────────────
+ * 官方登录链路是「Web 控制台里微信扫码 → 控制台把令牌写进 `ot_session` Cookie」，
+ * 而读这枚 Cookie 需要**壳侧进程**（`POST /api/session/login/orcaterm/complete`）。
+ * 浏览器里读不到（Cookie 属控制台域名），所以 web 形态只能粘贴 accessToken，
+ * 或者（Windows 桌面端）导入本机登录态 `data.bin`。
+ *
+ * ── 凭证形态 ──────────────────────────────────────────────
+ * 一枚 OAuth JWT（约 2 小时时效）。粘贴时 `Bearer ` / `ot_session=` 前缀会被
+ * 后端自动剥掉；把整段 `data.bin` JSON 粘进来也能识别。**续期由网关接管**
+ * （上游有 `OAuthRefreshToken` 接口），不需要用户每两小时重贴一次。
+ */
+const ORCATERM: ProviderConfig = {
+  provider: 'orcaterm',
+  label: 'OrcaTerm',
+  // 桌面端（Windows）能直接读客户端的 data.bin；web 形态只能粘贴
+  desktop: true,
+  desktopWindowsOnly: true,
+  desktopNote: '读取本机 OrcaTerm 桌面客户端的登录态（%APPDATA%\\com.orcaterm-desktop.app\\data.bin，明文 JSON，无需解密）',
+  manualTitle: '填写凭证',
+  manualNoteHtml: '粘贴 OrcaTerm 的 <code>ot_session</code>（OAuth JWT，约 2 小时时效）。'
+    + '取得方式：打开 <code>orcaterm.cloud.tencent.com/terminal</code> 登录后，在开发者工具 Console 里执行 '
+    + '<code>document.cookie</code>，复制 <code>ot_session=</code> 那一段；也可以把桌面客户端的 '
+    + '<code>data.bin</code> 整段粘进来。'
+    + '<br>添加时网关会打一次 <code>GetUserInfo</code> 做真实校验；<b>续期由网关接管</b>'
+    + '（上游有 <code>OAuthRefreshToken</code> 接口），不需要你每两小时重贴。',
+  fields: [
+    { key: 'accessToken', label: 'ot_session / accessToken', rows: 4, placeholder: 'JWT（eyJ…），或整段 data.bin JSON' },
+    { key: 'name', label: '备注名', optional: true, placeholder: '可选，留空自动用昵称' },
+  ],
+  webLogin: {
+    button: '打开 OrcaTerm 控制台',
+    hint: '在官方控制台里微信扫码登录，完成后由桌面壳读回 ot_session。',
+    webUnavailable: '网页端无法自动收取登录态：OrcaTerm 的令牌写在控制台域名的 Cookie 里，只有桌面壳进程能读到。'
+      + '请用下方「填写凭证」粘贴 ot_session（浏览器开发者工具 → Console → document.cookie）。',
+  },
+}
+
 /** 内置家的表单块，顺序与旧 ADD_FORMS 一致（只影响 DOM 里的块顺序，不影响界面） */
 export const BUILTIN_CONFIGS: ProviderConfig[] = [
   RACCOON,
@@ -556,6 +596,9 @@ export const BUILTIN_CONFIGS: ProviderConfig[] = [
   CODEARTS,
   // Trae 只有 SOLO 那一家（没有地区分叉，理由见 TRAE 上方那段）
   TRAE,
+  // OrcaTerm（腾讯云遨驰终端）：凭证是一枚 2 小时的 OAuth JWT，
+  // 但上游有 OAuthRefreshToken 续期接口，所以贴一次就够（见 ORCATERM 上方那段）
+  ORCATERM,
 ]
 
 /** WorkBuddy 的块 id（结构特殊，单独一个组件） */
