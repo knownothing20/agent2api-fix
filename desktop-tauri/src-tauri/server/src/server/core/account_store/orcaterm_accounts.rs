@@ -122,11 +122,20 @@ impl AccountStore {
                     .filter(|value| !value.is_empty())
             })
             .or_else(|| {
-                if !nickname.is_empty() {
-                    Some(nickname.clone())
-                } else {
-                    None
+                if nickname.is_empty() {
+                    return None;
                 }
+                // ── 昵称默认带上账号 id 尾段（2026-10-24）──────────────
+                // 昵称会重名：两个登录入口（微信直接扫 / 腾讯云扫码）在同一台
+                // 机器上可以是同一个人的两个账号，昵称一模一样（实测都是
+                // 「大王遛小王」），列表里完全分不清 —— 而 id 才是判据。
+                // 这里只在**没有显式备注名、也没有旧记录名**时才走到，
+                // 所以用户手改过的名字不受影响。
+                let tail: String = {
+                    let chars: Vec<char> = id.chars().collect();
+                    chars[chars.len().saturating_sub(6)..].iter().collect()
+                };
+                Some(format!("{nickname}（{tail}）"))
             })
             .unwrap_or_else(|| format!("账号 {id}"));
         let priority = match existing.as_ref() {
