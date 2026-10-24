@@ -672,12 +672,16 @@ export function accountTags(account: AccountRecord): AccountTag[] {
       : null,
     // 最近一次请求失败（2026-10-24）：状态列的「正常」原来只看启用开关，
     // 账号坏了照样显示绿色 —— 这里用后端的 lastStatus/lastError 补上真相。
-    // 只认 30 分钟内的失败：更早的失败可能已经修好（重贴过凭证），别一直挂着红。
-    account.lastError && account.lastAt && Date.now() - account.lastAt < 30 * 60_000
+    //
+    // ── 不设时间窗口（先设过 30 分钟，实测不够）──────────────────
+    // 账号闲置超过窗口后徽章会消失，看起来像“自己好了”，但一次请求立刻又失败。
+    // 判据就一条：**最近一次请求是不是失败**。只要之后成功一次，lastError 被
+    // 新记录覆盖、徽章自动消失 —— 不需要靠时间猜。
+    account.lastError
       ? {
         text: '异常',
         kind: 'bad' as const,
-        title: `最近一次请求失败（${new Date(account.lastAt).toLocaleTimeString()}）：${account.lastError}`,
+        title: `最近一次请求失败${account.lastAt ? `（${new Date(account.lastAt).toLocaleString()}）` : ''}：${account.lastError}`,
       }
       : null,
     // 代理配了解析不出来时明确标出：转发会回退直连，属于需要留意的情况
