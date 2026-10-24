@@ -115,12 +115,12 @@ impl AccountStore {
         // 本地分支没有 `nameCustom` 机制（上游后来才加）：备注名只按
         // 「显式传入 > 旧记录 > 昵称 > 兜底」这条链取，不额外打标记。
         let record_name = explicit_name
-            .or_else(|| {
-                existing
-                    .as_ref()
-                    .map(StoredAccount::name)
-                    .filter(|value| !value.is_empty())
-            })
+            // ── 不再沿用旧记录名（2026-10-24 用户要求）────────────────
+            // 原链是「显式传入 > 旧记录 > 昵称 > 兜底」，于是同一个账号第二次
+            // 导入会保留上次的名字 —— 上次若是手动改的，新导入的就跟别的账号
+            // 格式不一致（用户原话：「你不要手动备注，下次我拉新的进来又不行
+            // 了」）。现在统一按下面的规则重新生成，每次导入格式一致；
+            // 只有调用方显式传了 name 才覆盖。
             .or_else(|| {
                 if nickname.is_empty() {
                     return None;
@@ -129,8 +129,6 @@ impl AccountStore {
                 // 昵称会重名：两个登录入口（微信直接扫 / 腾讯云扫码）在同一台
                 // 机器上可以是同一个人的两个账号，昵称一模一样（实测都是
                 // 「大王遛小王」），列表里完全分不清 —— 而 id 才是判据。
-                // 这里只在**没有显式备注名、也没有旧记录名**时才走到，
-                // 所以用户手改过的名字不受影响。
                 let tail: String = {
                     let chars: Vec<char> = id.chars().collect();
                     chars[chars.len().saturating_sub(6)..].iter().collect()
