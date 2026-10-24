@@ -145,6 +145,19 @@ impl AccountStore {
         record.insert("uid".to_string(), Value::String(credentials.user_id.clone()));
         record.insert("loginName".to_string(), Value::String(nickname));
         record.insert("accessToken".to_string(), Value::String(token.clone()));
+        // 控制台态（浏览器 uin/skey）：accessToken 为空，凭证落这两个字段。
+        // 只有有值才写入 —— 桌面态记录里不该多出两个空键（旧的快照合并逻辑
+        // 会把空串也当「有值」，反而覆盖掉重贴前的好数据）。
+        if let Some(skey) = credentials.skey.as_deref().filter(|value| !value.is_empty()) {
+            record.insert("skey".to_string(), Value::String(skey.to_string()));
+        }
+        if let Some(raw) = credentials
+            .raw_cookie
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            record.insert("rawCookie".to_string(), Value::String(raw.to_string()));
+        }
         record.insert("tokenTail".to_string(), Value::String(token_tail_of(&token)));
         record.insert(
             "tokenExpireAt".to_string(),

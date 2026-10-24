@@ -84,6 +84,36 @@ pub async fn post_json_value(
 
 /// 发起一次 SSE 流式 POST（对话流；**不设总超时**，长推理不被截断）。
 ///
+/// 一次 GET，返回已解析的 JSON（控制台态探活用；HEAD 语义的只读检查）。
+pub async fn get_json(
+    url: &str,
+    headers: &[(String, String)],
+    proxy: Option<&ResolvedProxy>,
+    timeout_ms: Option<u64>,
+) -> Result<Value, GatewayError> {
+    let client = egress::client_for(proxy);
+    let mut builder = client
+        .get(url)
+        .timeout(std::time::Duration::from_millis(
+            timeout_ms.unwrap_or(REQUEST_TIMEOUT_MS),
+        ));
+    for (name, value) in headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    let response = builder.send().await.map_err(|error| transport_error("GET", error))?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| transport_error("GET body", error))?;
+    if !status.is_success() {
+        return Err(GatewayError::with_status(
+            502,
+            format!("上游 GET 返回 {status}：{}", String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()),
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| {
+        GatewayError::with_status(502, "上游 GET 返回的不是 JSON")
+    })
+}
+
 /// 返回原始 `reqwest::Response`（调用方遍历 `bytes_stream()`）。调用方负责
 /// 读空闲兜底（编排层对出站流有统一处理，这里只做连接建立）。
 pub async fn sse_post(

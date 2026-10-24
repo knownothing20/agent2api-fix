@@ -564,22 +564,36 @@ pub async fn add_account(state: &ServerState, body: &Bytes) -> Response {
                     Err(reason) => return management_error(400, reason),
                 }
             };
-            let verified = match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
-                &parsed, None,
-            )
-            .await
-            {
-                Ok((user_id, nickname)) => {
-                    let mut credentials = parsed;
-                    if credentials.user_id.is_empty() {
-                        credentials.user_id = user_id;
-                    }
-                    if credentials.nickname.is_empty() {
-                        credentials.nickname = nickname;
-                    }
-                    credentials
+            // 两态探活：桌面态用 CGI 的 `GetUserInfo`（顺带补 userId/昵称）；
+            // 控制台态用 assistant 的只读列表接口 —— CGI 未必认 `uin/skey` cookie，
+            // 而 assistant 域才是对话真正要打的地方（探的就是马上要用的链路）。
+            let verified = if parsed.is_console() {
+                match crate::server::core::providers::orcaterm::credentials::probe_console(
+                    &parsed, None,
+                )
+                .await
+                {
+                    Ok(()) => parsed,
+                    Err(error) => return management_error(error.status_code, error.message),
                 }
-                Err(error) => return management_error(error.status_code, error.message),
+            } else {
+                match crate::server::core::providers::orcaterm::credentials::fetch_user_info(
+                    &parsed, None,
+                )
+                .await
+                {
+                    Ok((user_id, nickname)) => {
+                        let mut credentials = parsed;
+                        if credentials.user_id.is_empty() {
+                            credentials.user_id = user_id;
+                        }
+                        if credentials.nickname.is_empty() {
+                            credentials.nickname = nickname;
+                        }
+                        credentials
+                    }
+                    Err(error) => return management_error(error.status_code, error.message),
+                }
             };
             store.add_orcaterm_account(
                 &verified,

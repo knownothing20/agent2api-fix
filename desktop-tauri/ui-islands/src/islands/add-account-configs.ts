@@ -557,12 +557,13 @@ const ORCATERM: ProviderConfig = {
   desktopWindowsOnly: true,
   desktopNote: '读取本机 OrcaTerm 桌面客户端的登录态（%APPDATA%\\com.orcaterm-desktop.app\\data.bin，明文 JSON，无需解密）',
   manualTitle: '填写凭证',
-  manualNoteHtml: '粘贴 OrcaTerm 的登录态（OAuth JWT，约 2 小时时效）。'
-    + '取得方式：打开 <code>orcaterm.cloud.tencent.com/terminal</code> 登录后，在开发者工具 Console 里执行 '
-    + '<code>document.cookie</code>，<b>整段直接复制粘贴即可</b>（会自动取出 <code>ot_session</code>）；'
-    + '也可以把桌面客户端的 <code>data.bin</code> 整段粘进来。'
-    + '<br>添加时网关会打一次 <code>GetUserInfo</code> 做真实校验；<b>续期由网关接管</b>'
-    + '（上游有 <code>OAuthRefreshToken</code> 接口），不需要你每两小时重贴。',
+  manualNoteHtml: '两种登录态都认，<b>整段直接粘贴即可</b>（不用挑字段）：'
+    + '<br>① <b>浏览器</b>：打开 <code>orcaterm.cloud.tencent.com/terminal</code> 登录后，'
+    + 'Console 里执行 <code>document.cookie</code>，整段复制 —— 里面是 <code>uin</code> + <code>skey</code>；'
+    + '<br>② <b>桌面客户端</b>：把 <code>data.bin</code> 整段粘进来，或直接贴 <code>ot_session</code> 那串 JWT。'
+    + '<br>添加时网关会先探活（浏览器态打 assistant 只读接口，桌面态打 <code>GetUserInfo</code>），通过才落账号。'
+    + '<b>桌面态（ot_session）由网关自动续期</b>；浏览器态（uin/skey）用的是云账号登录态，'
+    + '失效后需要重新复制一次。',
   fields: [
     { key: 'accessToken', label: 'ot_session / accessToken', rows: 4, placeholder: 'JWT（eyJ…），或整段 data.bin JSON' },
     { key: 'name', label: '备注名', optional: true, placeholder: '可选，留空自动用昵称' },

@@ -47,8 +47,20 @@ const MAX_DATA_FILE_SIZE: u64 = 256 * 1024;
 /// 一条 OrcaTerm 登录态。
 #[derive(Clone, Debug)]
 pub struct OrcatermCredentials {
-    /// OAuth access token（HS256 JWT，Bearer 头本体）
+    /// OAuth access token（HS256 JWT，Bearer 头本体）。
+    ///
+    /// **控制台态**（浏览器 uin/skey）下为空串 —— 两种形态互斥，
+    /// 判据见 [`Self::is_console`]。
     pub access_token: String,
+    /// 控制台态：`skey`（腾讯云登录密钥，随登录态失效，数小时级）。
+    pub skey: Option<String>,
+    /// 控制台态：**原样重放的整段 Cookie**（`uin=…; skey=…; userId=…`）。
+    ///
+    /// 为什么存整串而不是只存 uin/skey：真实浏览器流量里还带着
+    /// `userAccountType` / `userAccountLoginMethod` / `refreshSession` 等，
+    /// 上游按整串校验（orcaterm2api 实测「保真重放」可用）；我们只解析出
+    /// 判据需要的那几个键，发送时把原串照发。
+    pub raw_cookie: Option<String>,
     /// JWT `exp`（秒；解析不出给 0 —— 按「判不出」处理，见 `is_expiring`）
     pub expires_at: i64,
     /// 数字用户 id（JWT `userId` / CGI 的 `uin` 参数；解析不出留空）
@@ -58,8 +70,44 @@ pub struct OrcatermCredentials {
 }
 
 impl OrcatermCredentials {
-    /// JWT 是否已过期或临期（`exp` 判不出 → false，宁可漏刷不凭猜测打上游）
+    /// 控制台态（浏览器 `uin`+`skey`，没有 JWT）。
+    ///
+    /// 两态互斥：有 `ot_session` 就走 Bearer（桌面态），没有才看 skey。
+    pub fn is_console(&self) -> bool {
+        self.access_token.is_empty()
+            && self
+                .skey
+                .as_deref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+    }
+
+    /// 控制台态要重放的 Cookie 串：优先原串，缺了才用 uin/skey 拼。
+    fn console_cookie(&self) -> String {
+        if let Some(raw) = self.raw_cookie.as_deref() {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        let mut parts = vec![
+            format!("uin={}", self.user_id),
+            format!("skey={}", self.skey.clone().unwrap_or_default()),
+        ];
+        if !self.user_id.is_empty() {
+            parts.push(format!("userId={}", self.user_id));
+        }
+        parts.join("; ")
+    }
+
+    /// JWT 是否已过期或临期（`exp` 判不出 → false，宁可漏刷不凭猜测打上游）。
+    ///
+    /// 控制台态恒 false：`skey` 不是 JWT、没有 `exp`，上游也没有续期接口
+    ///（失效形态是 `NEED_UIN_AND_SKEY` / `VERIFY_SKEY_UIN_FAILED`）。
     pub fn is_expiring(&self) -> bool {
+        if self.is_console() {
+            return false;
+        }
         if self.expires_at <= 0 {
             return false;
         }
@@ -69,7 +117,12 @@ impl OrcatermCredentials {
 
     /// 脱敏尾段（展示用；与各家 `tokenTail` 同一口径）
     pub fn token_tail(&self) -> String {
-        let token = self.access_token.trim();
+        // 控制台态没有 JWT，展示用 skey 尾（skey 也是密钥，同样只留 8 位）
+        let token = if self.is_console() {
+            self.skey.as_deref().unwrap_or("")
+        } else {
+            self.access_token.trim()
+        };
         if token.len() <= 8 {
             return String::new();
         }
@@ -153,32 +206,116 @@ fn claims_of(token: &str) -> (String, i64) {
 ///   1. **裸 token / 整行**（`Bearer …` / `ot_session=…` 自动剥）；
 ///   2. **data.bin 的 JSON 对象**（含 `oauth_access_token` 字段）；
 ///   3. **嵌套 `{accessToken: "…"}`**（与其它家粘贴表单同键名）。
-pub fn credentials_from_payload(payload: &Value) -> Result<OrcatermCredentials, String> {
-    let token = match payload {
-        Value::String(text) => normalize_token(text),
-        Value::Object(object) => {
-            let direct = ["accessToken", "token", "oauth_access_token"]
-                .iter()
-                .find_map(|key| object.get(*key).and_then(Value::as_str))
-                .map(normalize_token)
-                .unwrap_or_default();
-            if direct.is_empty() {
-                return Err("缺少 accessToken（粘贴 OrcaTerm 的 JWT，或整个 data.bin 的内容）".to_string());
-            }
-            direct
+/// 一段 Cookie 的解析结果（只取判据需要的键，原串单独留着用于重放）。
+struct ParsedCookie {
+    ot: Option<String>,
+    uin: Option<String>,
+    skey: Option<String>,
+    user_id: Option<String>,
+    raw: String,
+}
+
+/// 分号切分 `k=v`，按名取值；空白归一后保留原串（供控制台态保真重放）。
+fn parse_cookie(raw: &str) -> ParsedCookie {
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut parsed = ParsedCookie {
+        ot: None,
+        uin: None,
+        skey: None,
+        user_id: None,
+        raw: normalized.clone(),
+    };
+    for part in normalized.split(';') {
+        let Some((key, value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        match key {
+            "ot_session" => parsed.ot = Some(value.to_string()),
+            "uin" => parsed.uin = Some(value.to_string()),
+            "skey" => parsed.skey = Some(value.to_string()),
+            "userId" => parsed.user_id = Some(value.to_string()),
+            _ => {}
         }
+    }
+    parsed
+}
+
+/// 从 payload 解析凭证（添加账号的「粘贴」入口）。
+///
+/// 支持两种凭证形态（2026-10-24 起）：
+///   · **桌面态**：`ot_session` JWT（裸 token / `Bearer …` / 整段 Cookie 里的
+///     `ot_session=` / data.bin JSON）—— 走 `Authorization: Bearer`；
+///   · **控制台态**：浏览器 `document.cookie` 整串（含 `uin` + `skey`）——
+///     没有 `ot_session` 时走 cookie 重放（Web 版 Origin/Referer/Sec-Fetch）。
+///
+/// 判据顺序：先 `ot_session`，没有才看 `uin`+`skey`（与 orcaterm2api 的
+/// `Credential.Kind()` 同序）。两者都没有 → 报「不是有效凭证」。
+pub fn credentials_from_payload(payload: &Value) -> Result<OrcatermCredentials, String> {
+    let raw = match payload {
+        Value::String(text) => text.clone(),
+        Value::Object(object) => ["accessToken", "token", "oauth_access_token", "cookie"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_str))
+            .map(str::to_string)
+            .unwrap_or_default(),
         _ => String::new(),
     };
-    if token.split('.').count() != 3 {
-        return Err("这不是一个有效的 OrcaTerm accessToken（JWT 应为三段点分）".to_string());
+    let raw = raw.trim().to_string();
+    if raw.is_empty() {
+        return Err(
+            "缺少凭证：粘贴 OrcaTerm 的 accessToken（JWT），或浏览器里的整段 document.cookie"
+                .to_string(),
+        );
     }
-    let (user_id, expires_at) = claims_of(&token);
-    Ok(OrcatermCredentials {
-        access_token: token,
-        expires_at,
-        user_id,
-        nickname: String::new(),
-    })
+    let parsed = parse_cookie(&raw);
+
+    // ① 桌面态：ot_session（或裸 JWT）
+    let token = parsed.ot.clone().or_else(|| {
+        // 裸 token：不含 `=`、三段点分
+        if !raw.contains('=') && raw.split('.').count() == 3 {
+            Some(normalize_token(&raw))
+        } else {
+            None
+        }
+    });
+    if let Some(token) = token {
+        if token.split('.').count() != 3 {
+            return Err("这不是一个有效的 OrcaTerm accessToken（JWT 应为三段点分）".to_string());
+        }
+        let (user_id, expires_at) = claims_of(&token);
+        return Ok(OrcatermCredentials {
+            access_token: token,
+            expires_at,
+            skey: None,
+            raw_cookie: None,
+            user_id,
+            nickname: String::new(),
+        });
+    }
+
+    // ② 控制台态：uin + skey（浏览器 document.cookie）
+    match (parsed.uin.clone(), parsed.skey.clone()) {
+        (Some(uin), Some(skey)) if !uin.is_empty() && !skey.is_empty() => Ok(OrcatermCredentials {
+            access_token: String::new(),
+            // 控制台态没有 exp：上游也没有续期接口，失效形态是 NEED_UIN_AND_SKEY
+            expires_at: 0,
+            skey: Some(skey),
+            raw_cookie: Some(parsed.raw.clone()),
+            // userId 优先；没有再退回 uin（CGI 的 uin 参数两者都认）
+            user_id: parsed
+                .user_id
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(uin),
+            nickname: String::new(),
+        }),
+        _ => Err(
+            "这段 Cookie 里既没有 ot_session（桌面态），也没有 uin + skey（控制台态）。\
+             请确认复制的是 orcaterm.cloud.tencent.com 页面里登录后的 document.cookie。"
+                .to_string(),
+        ),
+    }
 }
 
 // ─── 本机登录态（importDesktop）────────────────────────────────
@@ -232,7 +369,7 @@ pub fn read_desktop_credentials() -> Result<OrcatermCredentials, String> {
         .and_then(|identity| serde_json::from_str::<Value>(identity).ok())
         .and_then(|identity| identity.get("nickName").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_default();
-    Ok(OrcatermCredentials { access_token: token, expires_at, user_id, nickname })
+    Ok(OrcatermCredentials { access_token: token, expires_at, skey: None, raw_cookie: None, user_id, nickname })
 }
 
 /// 本机登录态的展示摘要（前端导入预检用）。
@@ -247,8 +384,33 @@ pub fn desktop_summary() -> Result<Value, String> {
 
 // ─── 上游请求头 ─────────────────────────────────────────────
 
+/// Web 版真实 UA（控制台态用；与桌面态刻意不同 —— orcaterm2api 实测：
+/// 「控制台票据 + 桌面 origin」是真实世界不存在的组合，会被上游识别）。
+const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+
+/// 控制台态的公共头（两处 `*_headers` 共用）：
+/// 不带 `Authorization`（浏览器流量没有），用 Web 版 Origin/Referer + Sec-Fetch 族。
+fn console_headers(credentials: &OrcatermCredentials) -> Vec<(String, String)> {
+    vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("Cookie".to_string(), credentials.console_cookie()),
+        ("User-Agent".to_string(), WEB_USER_AGENT.to_string()),
+        ("Origin".to_string(), "https://orcaterm.cloud.tencent.com".to_string()),
+        ("Referer".to_string(), "https://orcaterm.cloud.tencent.com/".to_string()),
+        ("Accept-Language".to_string(), "zh-CN,zh;q=0.9".to_string()),
+        ("Sec-Fetch-Site".to_string(), "same-site".to_string()),
+        ("Sec-Fetch-Mode".to_string(), "cors".to_string()),
+        ("Sec-Fetch-Dest".to_string(), "empty".to_string()),
+    ]
+}
+
 /// CGI 网关的请求头（`Authorization: Bearer`；`uin` 在 query 上，不在头里）。
 pub fn cgi_headers(credentials: &OrcatermCredentials) -> Vec<(String, String)> {
+    // 控制台态：浏览器 cookie 重放（CGI 也认登录态 cookie）
+    if credentials.is_console() {
+        return console_headers(credentials);
+    }
     vec![
         ("Authorization".to_string(), format!("Bearer {}", credentials.access_token)),
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -260,6 +422,17 @@ pub fn cgi_headers(credentials: &OrcatermCredentials) -> Vec<(String, String)> {
 
 /// assistant 网关的请求头（`X-Product: orcaterm` 是本家的产品标识）。
 pub fn lightai_headers(credentials: &OrcatermCredentials, seq_id: &str) -> Vec<(String, String)> {
+    // 控制台态：Web 版头集 + 本家产品标识（`X-Product` / `x-seqid` 两种形态都要）
+    if credentials.is_console() {
+        let mut headers = console_headers(credentials);
+        headers.push(("X-Product".to_string(), "orcaterm".to_string()));
+        headers.push(("x-seqid".to_string(), seq_id.to_string()));
+        headers.push((
+            "Accept".to_string(),
+            "text/event-stream, application/json".to_string(),
+        ));
+        return headers;
+    }
     vec![
         ("Authorization".to_string(), format!("Bearer {}", credentials.access_token)),
         ("X-Product".to_string(), "orcaterm".to_string()),
@@ -289,6 +462,44 @@ pub async fn cgi_action(
         .and_then(|data| data.get("Response"))
         .cloned()
         .unwrap_or(Value::Null))
+}
+
+/// 控制台态探活：`GET {LIGHTAI}/assistant/conversation/list?offset=0&limit=1`。
+///
+/// ── 为什么不用 CGI 的 `GetUserInfo` ──────────────────────────
+/// CGI 认的是 JWT（Bearer）或云账号 cookie，控制台态的 `uin/skey` 是否被它
+/// 接受**没有依据**；而 assistant 域是对话真正要打的地方，用它的只读列表接口
+/// 探活，等于「验证的就是马上要用的那条链路」（orcaterm2api 的 `Probe` 同做法）。
+///
+/// 失败形态：HTTP 非 2xx、或流内 `code` 非 0（`NEED_UIN_AND_SKEY` /
+/// `VERIFY_SKEY_UIN_FAILED` = 登录态失效）。
+pub async fn probe_console(
+    credentials: &OrcatermCredentials,
+    proxy: Option<&crate::server::core::proxies::ResolvedProxy>,
+) -> Result<(), GatewayError> {
+    let url = format!("{LIGHTAI_BASE}/assistant/conversation/list?offset=0&limit=1");
+    let headers = lightai_headers(credentials, "probe-console");
+    let value = super::http::get_json(&url, &headers, proxy, None).await?;
+    // 成功是数字 0；失败是字符串（如 "10050000"）—— 两种都按宽松口径读
+    let code = value.get("code").or_else(|| value.get("Code"));
+    let ok = match code {
+        None => true,
+        Some(Value::Number(number)) => number.as_i64().unwrap_or(0) == 0,
+        Some(Value::String(text)) => text.trim().is_empty() || text.trim() == "0",
+        Some(_) => false,
+    };
+    if !ok {
+        let message = value
+            .get("message")
+            .or_else(|| value.get("msg"))
+            .and_then(Value::as_str)
+            .unwrap_or("登录态无效");
+        return Err(GatewayError::with_status(
+            401,
+            format!("OrcaTerm 控制台登录态被上游拒绝（{message}）：请重新复制 document.cookie"),
+        ));
+    }
+    Ok(())
 }
 
 /// `GetUserInfo`（探活 + 补身份）。返回 `(userId, nickname)`；上游业务错误
@@ -348,6 +559,11 @@ pub async fn refresh(
     account_id: &str,
     force: bool,
 ) -> Result<OrcatermCredentials, GatewayError> {
+    // 控制台态（uin/skey）：上游没有续期接口，原样返回。
+    // 这里**不能报错** —— 调用方（chat::run_chat）拿到 Err 会直接中断请求。
+    if credentials.is_console() {
+        return Ok(credentials.clone());
+    }
     if !force && !credentials.is_expiring() {
         return Ok(credentials.clone());
     }
@@ -405,6 +621,8 @@ async fn call_refresh_api(
     Ok(OrcatermCredentials {
         access_token: token,
         expires_at,
+        skey: None,
+        raw_cookie: None,
         user_id: if user_id.is_empty() { credentials.user_id.clone() } else { user_id },
         nickname: credentials.nickname.clone(),
     })
@@ -431,9 +649,39 @@ pub fn snapshot_for(
         record.get("accessToken").and_then(Value::as_str).unwrap_or(""),
     );
     if token.is_empty() {
+        // ── 控制台态（uin/skey）────────────────────────────────
+        // 记录里 accessToken 为空、但有 skey ⇒ 上次粘贴的是浏览器 cookie。
+        // 原串优先（保真重放），没有就用 uin + skey 拼（`console_cookie` 兜底）。
+        let skey = record
+            .get("skey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let Some(skey) = skey {
+            return Ok(OrcatermCredentials {
+                access_token: String::new(),
+                expires_at: 0,
+                skey: Some(skey),
+                raw_cookie: record
+                    .get("rawCookie")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                user_id: record
+                    .get("uid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                nickname: record
+                    .get("loginName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
         return Err(GatewayError::with_status(
             401,
-            "OrcaTerm 账号缺少 accessToken：请重新导入或重新粘贴该账号",
+            "OrcaTerm 账号缺少凭证：请重新粘贴 accessToken 或整段 document.cookie",
         ));
     }
     let (jwt_user_id, jwt_exp) = claims_of(&token);
