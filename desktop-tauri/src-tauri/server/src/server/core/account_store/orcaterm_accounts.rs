@@ -163,6 +163,18 @@ impl AccountStore {
             "tokenExpireAt".to_string(),
             Value::from(credentials.expires_at * 1000),
         );
+        // ── 公开视图认的键是 `expiresAt`（2026-10-24 修）──────────
+        // 其他家（CodeArts / Trae …）都写 `expiresAt`，账号列表的「有效期」列
+        // 就只读它（`store_view::public_account` → `fields.get("expiresAt")`）。
+        // OrcaTerm 沿用上游命名写了 `tokenExpireAt`，于是那一列永远是「—」。
+        // 两个都写：`tokenExpireAt` 是本家内部读的（`snapshot_for`），
+        // `expiresAt` 是通用视图读的。
+        if credentials.expires_at > 0 {
+            record.insert(
+                "expiresAt".to_string(),
+                Value::from(credentials.expires_at * 1000),
+            );
+        }
         record.insert("source".to_string(), Value::String(source.to_string()));
         record.insert("priority".to_string(), Value::from(priority));
         record.insert(
@@ -215,6 +227,10 @@ impl AccountStore {
             Value::String(token_tail_of(token)),
         );
         fields.insert("tokenExpireAt".to_string(), Value::from(expires_at * 1000));
+        // 与 `add_orcaterm_account` 同一口径：续期后「有效期」列也要跟着变
+        if expires_at > 0 {
+            fields.insert("expiresAt".to_string(), Value::from(expires_at * 1000));
+        }
         fields.insert("updatedAt".to_string(), Value::from(logging::now_ms()));
         let saved = StoredAccount::from_map(fields);
         if let Ok(()) = self.with_conn(&_guard, |conn| sql::put(conn, &saved)) {
