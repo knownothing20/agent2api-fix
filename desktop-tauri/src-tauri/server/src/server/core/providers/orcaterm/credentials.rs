@@ -477,7 +477,7 @@ pub async fn probe_console(
     credentials: &OrcatermCredentials,
     proxy: Option<&crate::server::core::proxies::ResolvedProxy>,
 ) -> Result<(), GatewayError> {
-    let url = format!("{LIGHTAI_BASE}/assistant/conversation/list?offset=0&limit=1");
+    let url = format!("{}/assistant/conversation/list?offset=0&limit=1", super::LIGHTAI_BASE);
     let headers = lightai_headers(credentials, "probe-console");
     let value = super::http::get_json(&url, &headers, proxy, None).await?;
     // 成功是数字 0；失败是字符串（如 "10050000"）—— 两种都按宽松口径读
@@ -687,6 +687,9 @@ pub fn snapshot_for(
     let (jwt_user_id, jwt_exp) = claims_of(&token);
     Ok(OrcatermCredentials {
         access_token: token,
+        // 桌面态：不存在 skey / 原串（控制台态在上面那个分支里返回）
+        skey: None,
+        raw_cookie: None,
         expires_at: record
             .get("tokenExpireAt")
             .and_then(Value::as_i64)
