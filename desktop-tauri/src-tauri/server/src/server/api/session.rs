@@ -48,7 +48,11 @@ pub async fn get_session(State(state): State<ServerState>) -> Response {
     let snapshot = config::current();
     // 账号快照取一次：`accounts` 字段与下面的 routedAccountId 读的是同一份数据，
     // 分两次取会各读一遍盘，还可能出现「两次读之间账号被改」的撕裂
-    let accounts = state.store().list_accounts();
+    // 账号列表 + 「最近一次请求结果」（2026-10-24）：前端读的是**这个接口**的
+    // accounts（`shared().wbApp.getState()` → `GET /api/session`），不是
+    // `/api/accounts` —— 只在后者补字段，界面永远拿不到，状态列还是只显示开关。
+    let mut accounts = state.store().list_accounts();
+    state.store().attach_last_results(&mut accounts);
     // 在途请求计数：★ 的推算口径要与真实选路一致 —— 转发选路会跳过已达并发
     // 上限的账号（`routing::pick_account_by_priority` 的并发过滤），★ 也要剔除
     // 它们，否则界面上标的「下一个请求会先用谁」在实际都忙时是错的。取快照的
