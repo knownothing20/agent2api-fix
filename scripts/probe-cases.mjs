@@ -78,6 +78,15 @@ function toolCallsOf(body) {
   return Array.isArray(calls) ? calls : []
 }
 
+/** `JSON.parse` 的不抛异常包装：解析失败返回 null（用于 arguments 校验）。 */
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
 /**
  * 取思考文本。
  *
@@ -156,12 +165,30 @@ export const CASES = {
         if (!last.ok) return { status: 'fail', error: last.error }
         const matched = toolCallsOf(last.body).find(call => call?.function?.name === 'get_weather')
         if (matched) {
+          // arguments 必须是合法 JSON 对象：OpenAI 规范里它是字符串形式的
+          // JSON，agent 客户端（Claude Code / Codex 等）拿到后会自己
+          // `JSON.parse` —— 截断串 / 空串在客户端那边必炸，而「半成品适配器」
+          // 最容易漏的恰恰是这里，所以必须在这里拦下，不能只看 name。
+          // 上游已给预解析对象（非字符串）的形态也算过。
+          const rawArgs = matched.function?.arguments
+          const parsedArgs = typeof rawArgs === 'string' ? safeJsonParse(rawArgs) : rawArgs ?? null
+          if (parsedArgs === null || typeof parsedArgs !== 'object') {
+            return {
+              status: 'fail',
+              error: 'tool_calls 的 arguments 不是合法 JSON 对象 —— agent 客户端解析时会崩',
+              evidence: {
+                finishReason: firstChoice(last.body)?.finish_reason,
+                arguments: String(rawArgs ?? '').slice(0, 200),
+                callId: matched.id ?? '',
+              },
+            }
+          }
           return {
             status: 'pass',
             evidence: {
               finishReason: firstChoice(last.body)?.finish_reason,
               name: matched.function?.name,
-              arguments: String(matched.function?.arguments ?? '').slice(0, 200),
+              arguments: String(rawArgs).slice(0, 200),
               callId: matched.id ?? '',
             },
           }
@@ -323,6 +350,19 @@ export const CASES = {
       const reply = contentOf(result.body)
       if (!reply.trim()) {
         return { status: 'fail', error: '图片请求没有返回正文' }
+      }
+      // 宽匹配颜色答案：图片是 64×64 纯红方块，视觉模型正常会说「红 / 红色 /
+      // red / Red」。两个都不沾，大概率是上游无视了图片内容在瞎答 —— 记 fail
+      // 暴露它（本用例是可选项，不阻断验收，人可查 evidence 里的 reply 复核）。
+      if (!/红|red/i.test(reply)) {
+        return {
+          status: 'fail',
+          error: '回复里没有提到「红 / red」—— 上游可能无视了图片内容',
+          evidence: {
+            reply: reply.slice(0, 120),
+            catalogDeclares: catalog?.supports_images ?? null,
+          },
+        }
       }
       return {
         status: 'pass',
