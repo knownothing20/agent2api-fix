@@ -165,7 +165,9 @@ export function StatusCell({ account }: { account: AccountRecord }) {
       {tags.length ? (
         <div className='status-tags'>
           {tags.map(tag => (
-            <Badge key={tag.text} shape='tag' variant={tag.kind === 'bad' ? 'destructive' : 'secondary'}
+            // 限流（429）走黄色 warning 档：瞬时速率问题，与红色 destructive 的
+            // 「账号真坏了」不是一个严重级（见 accountTags 的 429 分流注释）
+            <Badge key={tag.text} shape='tag' variant={tag.kind === 'bad' ? 'destructive' : tag.kind === 'warn' ? 'warning' : 'secondary'}
               title={tag.title}>{tag.text}</Badge>
           ))}
         </div>

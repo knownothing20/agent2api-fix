@@ -640,7 +640,7 @@ export function editionSuffix(account: AccountRecord | null | undefined): string
 }
 
 /** 健康标签（结构化；原来由 accountTags 直接拼 HTML，现在交给 React 渲染成 Badge） */
-export type AccountTag = { text: string; kind: 'plain' | 'bad'; title: string }
+export type AccountTag = { text: string; kind: 'plain' | 'warn' | 'bad'; title: string }
 
 /**
  * 状态标签集合：这一区只表达**健康状态**。
@@ -677,12 +677,24 @@ export function accountTags(account: AccountRecord): AccountTag[] {
     // 账号闲置超过窗口后徽章会消失，看起来像“自己好了”，但一次请求立刻又失败。
     // 判据就一条：**最近一次请求是不是失败**。只要之后成功一次，lastError 被
     // 新记录覆盖、徽章自动消失 —— 不需要靠时间猜。
+    //
+    // ── 429（限流）单独分流（2026-10-25）────────────────────────
+    // 429 是瞬时限流（上游账号级 RPM 撞满），网关会冷却切换、下次成功即自愈 ——
+    // 与「token 失效每次必炸」不是一个严重级。实测 CodeArts 某账号单次 429
+    // 也被挂成红色「异常」，看起来像账号坏了。现在按 lastStatus 分色：
+    // 429 → 黄「限流」，其余 → 红「异常」。
     account.lastError && account.lastAt && Date.now() - account.lastAt < 4 * 60 * 60_000
-      ? {
-        text: '异常',
-        kind: 'bad' as const,
-        title: `最近一次请求失败${account.lastAt ? `（${new Date(account.lastAt).toLocaleString()}）` : ''}：${account.lastError}`,
-      }
+      ? account.lastStatus === 429
+        ? {
+          text: '限流',
+          kind: 'warn' as const,
+          title: `最近一次请求被上游限流${account.lastAt ? `（${new Date(account.lastAt).toLocaleString()}）` : ''}：${account.lastError}\n这是瞬时速率限制，网关已暂时绕开该账号；下次成功请求后本标记自动消失`,
+        }
+        : {
+          text: '异常',
+          kind: 'bad' as const,
+          title: `最近一次请求失败${account.lastAt ? `（${new Date(account.lastAt).toLocaleString()}）` : ''}：${account.lastError}`,
+        }
       : null,
     // 代理配了解析不出来时明确标出：转发会回退直连，属于需要留意的情况
     account.proxy?.error
