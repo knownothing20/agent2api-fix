@@ -762,6 +762,11 @@ export function AccountCell({ account, namesHidden }: { account: AccountRecord; 
     // 邮箱顶掉了名字的位置，名字（昵称 / 备注名）改从这里看；隐藏账号名开关打开时
     // 连这里也不给 —— 否则悬停一下就能绕过打码，那个开关就白开了
     emailAsName && name !== email && !namesHidden ? `账号名 ${name}` : '',
+    // 上游原始名：备注名改过之后，悬停仍能认出这条记录原本是谁（2026-10-30，
+    // 用户反馈 hid_xxx 认不出是哪个账号）。与显示名相同（没改过备注名）时不重复。
+    account.user_name && account.user_name !== name && !namesHidden
+      ? `上游账号 ${account.user_name}` : '',
+    account.domain_id ? `租户 ${account.domain_id}` : '',
     isDesktopAccount(account) ? '桌面端实时登录态（凭证每次从客户端登录态文件读取）' : '',
     account.tokenTail ? `Token 尾号 ${account.tokenTail}` : '',
     account.updatedAt ? `更新于 ${formatTime(account.updatedAt)}` : '',

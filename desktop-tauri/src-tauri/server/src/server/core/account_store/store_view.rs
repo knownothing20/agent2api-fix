@@ -47,6 +47,15 @@ impl AccountStore {
         if let Some(value) = fields.get("name") {
             public.insert("name".to_string(), value.clone());
         }
+        // 上游身份字段（有键才透）：tooltip 用 user_name 区分「备注名」与
+        // 「上游原始名」（备注名改过之后仍能认出这条记录是谁），domain_id
+        // 与华为云控制台的租户对账。均非敏感 —— user_name 与 name 同源，
+        // domain_id 本就是界面上 userId 的租户维度，不含凭据。
+        for key in ["user_name", "domain_id"] {
+            if let Some(value) = fields.get(key) {
+                public.insert(key.to_string(), value.clone());
+            }
+        }
         public.insert(
             "uid".to_string(),
             value_or(fields.get("uid"), Value::String(String::new())),

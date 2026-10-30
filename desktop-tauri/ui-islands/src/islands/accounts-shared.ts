@@ -52,6 +52,11 @@ export type AccountRecord = {
   name?: string
   nickname?: string
   email?: string
+  /** 上游原始账号名（CodeArts 的 hid_xxx / hw_xxx）：备注名改过之后，
+   *  悬停提示里仍要能看出这条记录原本是谁 */
+  user_name?: string
+  /** 上游租户 / 域 ID（CodeArts 特有）：与华为云控制台的账号归属对账用 */
+  domain_id?: string
   priority?: number
   enabled?: boolean
   /** 凭证完整性（后端逐家给出；缺省视为可用）：false = 登录态缺失 / 凭证不全。
