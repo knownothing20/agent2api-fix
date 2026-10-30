@@ -274,7 +274,7 @@
   line-height: 16px;
   white-space: nowrap;
 }
-.cap-badge.on { border-color: var(--primary-bd); background: var(--primary-soft); color: var(--primary-fg); font-weight: 600; }
+.cap-badge.on { border-color: var(--ui-success-bd); background: var(--ui-success-soft); color: var(--ui-success); font-weight: 600; }
 .cap-badge.off { border-color: var(--border); color: var(--text-3); }
 .cap-badge.unset { border-style: dashed; border-color: var(--border-strong); color: var(--text-3); opacity: .8; }
 
