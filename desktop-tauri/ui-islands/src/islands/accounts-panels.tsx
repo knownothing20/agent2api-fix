@@ -42,6 +42,8 @@ import {
   cn,
 } from '@ui'
 import { formatTime, poolItemLabel, POOL_VALUE_PREFIX, shared, type AccountRecord, type UsageEntry } from './accounts-shared'
+import { describeError, toast } from './add-account-bridge'
+import { configOf } from './add-account-configs'
 import {
   accountTags, activeLimits, checkedInToday, checkinDoneTitle, claimDoneTitle, claimedToday,
   displayNameOf, editionSuffix, formatResetText, identifierOf, isDesktopAccount, isEnabled,
@@ -220,7 +222,7 @@ export function ExpiryCell({ account }: { account: AccountRecord }) {
   const expiresAt = Number(features.edition ? account.expiresAt : account[features.expiry]) || 0
   if (!expiresAt) return <span className='muted' title='记录里没有过期时间'>—</span>
   const left = expiresAt - Date.now()
-  if (left <= 0) return <Badge variant='destructive' shape='tag' title='凭证已过期，转发时会先刷新'>已过期</Badge>
+  if (left <= 0) return <ExpiredCell account={account} />
   const text = left < 3600e3 ? `${Math.max(1, Math.round(left / 60e3))} 分钟后`
     : left < 48 * 3600e3 ? `${(left / 3600e3).toFixed(1)} 小时后`
       : `${Math.floor(left / 24 / 3600e3)} 天后`
@@ -228,6 +230,58 @@ export function ExpiryCell({ account }: { account: AccountRecord }) {
   // 直接拼会留下一个空的「（）」
   const full = formatTime(expiresAt)
   return <span title={full ? `${text}过期（${full}）` : `${text}过期`}>{text}</span>
+}
+
+/**
+ * 凭证已过期时的单元格：红徽章 + （该家支持网页登录时）「重新登录」按钮。
+ *
+ * ── 为什么需要它（2026-10-30，实测 CodeArts hw52400462）────────
+ * refresh_token 被上游作废（STS5.1806：一次性令牌，用户在别处重新登录会顶掉
+ * 旧的）之后，自动刷新永远失败 —— 每半小时一条失败日志，账号页永远红色
+ * 「已过期」。唯一出路是重新走一遍网页授权，但界面此前只有「添加账号」
+ * 对话框能发起登录，过期账号没有直接入口。
+ *
+ * ── 为什么直接调 startLogin 就是「换凭证」而不是「新增账号」────────
+ * 后端落账口是 upsert 语义（CodeArts 见 `add_codearts_account` 的
+ * same_identity 命中就地更新；其余 webLogin 家同构）：同一上游身份登录
+ * 完成后新凭证写回**原记录** —— id、名称、优先级全保留。所以这里不需要
+ * 传账号 id，登录完成即等价于「给这个账号换了新凭证」。
+ */
+function ExpiredCell({ account }: { account: AccountRecord }) {
+  const provider = providerOf(account)
+  const canRelogin = Boolean(configOf(provider)?.webLogin)
+  const [busy, setBusy] = React.useState(false)
+
+  async function relogin(): Promise<void> {
+    const desktop = shared().workbuddyDesktop
+    if (!desktop?.startLogin || busy) return
+    setBusy(true)
+    try {
+      // edition/mode 传空：网页端 shim 把 edition 兜成 'cn'；CodeArts 的
+      // login/start 只按 provider 分支，不读这两个值。
+      const result = await desktop.startLogin('', '', provider) as { canceled?: boolean } | null
+      if (result && result.canceled) return
+      await shared().wbApp?.refresh?.()
+      toast('✅ 重新登录成功，凭证已写回该账号')
+    } catch (error) {
+      toast(`重新登录失败：${describeError(error)}`, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Badge variant='destructive' shape='tag'
+        title='凭证已过期，转发时会先刷新；refresh_token 已失效时自动刷新救不回来，需重新登录'>已过期</Badge>
+      {canRelogin ? (
+        <Button variant='outline' size='xs' disabled={busy} onClick={() => void relogin()}
+          title='重新打开官方授权页；完成后新凭证写回本账号（id、名称、优先级不变，不会新增一条）'>
+          {busy ? '等待登录完成…' : '重新登录'}
+        </Button>
+      ) : null}
+    </>
+  )
 }
 
 /**

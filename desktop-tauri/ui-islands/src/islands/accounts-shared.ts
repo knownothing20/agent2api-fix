@@ -180,6 +180,15 @@ export type AccountsBridge = {
   refreshAccountToken(id: string): Promise<unknown>
   removeAccount(id: string): Promise<unknown>
   /**
+   * 发起一次网页登录（壳命令；网页端 shim 打 `/api/session/login/start`，
+   * 弹授权窗并等待回调，见 `web_shim.rs` 的 `runLoginFlow`）。
+   * 账号页「重新登录」按钮用它给 refresh_token 已失效的过期账号换新凭证：
+   * 后端落账是 upsert 语义（同一上游身份就地更新），登录完成即写回原账号。
+   * 声明成可选：完整签名归登录子系统（`add-account-bridge`），这里只补
+   * 账号页用到的这一个方法。
+   */
+  startLogin?(edition: string, mode: string, provider: string, socialRestore?: boolean): Promise<unknown>
+  /**
    * ZCode 活动套餐通道的**验证码令牌池**概况（见后端 `providers/zcode/captcha.rs`）。
    *
    * 活动套餐的推理端点每条请求都要一个当次铸的阿里云验证码令牌，令牌由界面后台
