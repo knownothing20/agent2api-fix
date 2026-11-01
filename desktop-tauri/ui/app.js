@@ -267,8 +267,7 @@ function renderTopbarStatus() {
     tasks: () => mirror('tasks-badge'),
     settings: () => (gatewayUp ? chip('网关运行中', 'ok', true) : chip('未就绪', 'bad', true))
       + (enabled ? chip(`${enabled} 个账号启用`) : ''),
-    overview: () => (gatewayUp ? chip('网关运行中', 'ok') : chip('未就绪', 'bad'))
-      + (session.loggedIn ? chip('已登录', 'ok') : chip('未登录', 'warn')),
+    overview: () => (gatewayUp ? chip('网关运行中', 'ok') : chip('未就绪', 'bad')),
   };
 
   box.innerHTML = views[currentPage]?.() ?? views.overview();

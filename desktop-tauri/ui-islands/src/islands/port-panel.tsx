@@ -418,10 +418,16 @@ function SidebarStatus({ container }: { container: HTMLElement }) {
 
   return (
     <>
-      <div className='status-line'>
-        <span className={dotClass} />
-        <span className='txt'>{text}</span>
-      </div>
+      {/* 正常运行时不渲染「网关运行中 · 127.0.0.1:3065」（2026-11-01 用户要求）：
+          远程面板下这个地址是**服务端视角**的监听地址，与用户实际访问的
+          192.168.x.x 不符，只会误导；运行正常时它本就没有信息量。
+          检查中 / 启动中 / 失败仍然显示 —— 那时它是唯一的状态说明。 */}
+      {ready === true ? null : (
+        <div className='status-line'>
+          <span className={dotClass} />
+          <span className='txt'>{text}</span>
+        </div>
+      )}
       {/* 出口：有端口冲突时才露出。两个按钮的显隐条件**不同**，不能一起判断：
             · 端口被别的进程占着 → 两个都给（结束进程能拿回端口，换端口是备选）
             · 端口被系统保留     → 只给「更换端口」（那里没有进程可杀，
