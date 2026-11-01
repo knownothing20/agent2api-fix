@@ -710,14 +710,24 @@ export function bindingsOf(model: ManageModel): Binding[] {
   }
   const idKey = String(model.id).toLowerCase()
   const defaults = unique.get(idKey)
+  /**
+   * 改名后的默认绑定（2026-11-01）：`/api/models/manage` 的默认条目 alias 是
+   * **当前对外名** —— 被改名后不再等于 `model.id`。此时它就是这条模型的唯一
+   * 默认 chip；前端**不能**再用 `model.id` 硬拼一条（那正是「改名后显示两个
+   * 默认 chip」的原因：旧名 chip 是前端拼的幻影，后端根本没有它）。
+   */
+  const renamedDefault = [...unique.values()].find(binding => binding.isDefault === true)
   unique.delete(idKey)
+  if (renamedDefault) unique.delete(String(renamedDefault.alias).toLowerCase())
   const rows: Binding[] = [{
-    alias: model.id,
+    alias: renamedDefault ? renamedDefault.alias : model.id,
     target: model.id,
     provider,
-    enabled: model.enabled !== false && defaults?.enabled !== false,
+    enabled: model.enabled !== false
+      && (renamedDefault ?? defaults)?.enabled !== false,
     isDefault: true,
   }]
+  if (!renamedDefault && defaults) rows.push(defaults)
   rows.push(...unique.values())
   return rows
 }

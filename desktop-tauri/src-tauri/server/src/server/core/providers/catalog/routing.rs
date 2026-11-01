@@ -42,10 +42,18 @@ pub(super) fn builtin_target(
     if let Some(renamed) = rules.renamed_target(provider, requested) {
         if let Some(id) = entry_id_in_manifest(manifest, &renamed) {
             if rules.default_enabled(provider, &id) {
-                return Some(WireTarget {
-                    reasoning: rules.binding(provider, &id, &id).and_then(|m| m.reasoning.clone()),
-                    model: id,
-                });
+                // 新名自己的开关：改名后默认 chip 的开/关写在 mappings 里
+                // （alias=新名），这里的 gate 让它生效（无条目 = 开）。
+                let gate = rules.binding(provider, &renamed, &id)
+                    .map(|mapping| mapping.enabled)
+                    .unwrap_or(true);
+                if gate {
+                    return Some(WireTarget {
+                        reasoning: rules.binding(provider, &renamed, &id)
+                            .and_then(|m| m.reasoning.clone()),
+                        model: id,
+                    });
+                }
             }
         }
     }

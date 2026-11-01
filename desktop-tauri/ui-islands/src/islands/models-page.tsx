@@ -961,6 +961,14 @@ function RenameDialog({ provider, id, current, onClose }: {
       await providers.customRequest('POST', '/api/models/name', {
         provider, id, name: trimmed,
       })
+      // 还原时顺手清掉「新名 → 本模型」的映射残留（改名期间若动过默认 chip 的
+      // 开关，mappings 里会有一条 alias=新名 的记录；不清的话还原后新名会变成
+      // 一个多出来的别名 chip）
+      if (restore && trimmed) {
+        await providers.customRequest('POST', '/api/models/mappings/remove', {
+          alias: trimmed, target: id, provider,
+        })
+      }
       await refreshAll()
       onClose()
       toast(restore
