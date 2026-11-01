@@ -22,7 +22,15 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
     let mut result = Vec::new();
     for (kind, manifest) in active {
         let provider = kind_id(*kind);
-        let mut names: Vec<String> = manifest.iter().map(model_id).collect();
+        // 默认绑定名套用改名覆盖（2026-11-01）：被改名的模型以**新名**出现在
+        // 广告清单里，原始 ID 不再输出（语义见 `NameOverride`）。别名是用户
+        // 自己起的名字，不套用 —— 改名与别名是两个独立入口。
+        let mut names: Vec<String> = manifest.iter()
+            .map(|item| {
+                let id = model_id(item);
+                rules.renamed_name(provider, &id).map(str::to_string).unwrap_or(id)
+            })
+            .collect();
         names.extend(rules.mappings.iter()
             .filter(|mapping| mapping.provider.as_deref().map_or(true, |owner| owner == provider))
             .map(|mapping| mapping.alias.clone()));
@@ -140,8 +148,11 @@ pub fn manage_view(store: &AccountStore) -> Value {
             if id.is_empty() { continue; }
             let default = rules.binding(provider, &id, &id);
             let enabled = rules.default_enabled(provider, &id);
+            // 默认 chip 的显示名 = 当前对外名（被改名时显示新名；行按上游 ID
+            // 组织、target 仍是上游 ID —— 改名只改「名字」，不改行与定位键）
+            let public_name = rules.renamed_name(provider, &id).unwrap_or(&id);
             mappings.push(json!({
-                "alias": id, "target": id, "provider": provider, "enabled": enabled,
+                "alias": public_name, "target": id, "provider": provider, "enabled": enabled,
                 "reasoning": default.and_then(|mapping| mapping.reasoning.clone()),
                 "isDefault": true, "dangling": false, "carried": true,
             }));

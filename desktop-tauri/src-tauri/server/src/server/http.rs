@@ -375,6 +375,7 @@ pub fn panel_router(state: ServerState) -> Router {
         .route("/api/models/capabilities", post(api::model_manage::set_capabilities))
         // 手填倍率（2026-10-10）：上游不给倍率的模型由用户自己填，与 capabilities 同级敏感
         .route("/api/models/rate", post(api::model_manage::set_rate))
+        .route("/api/models/name", post(api::model_manage::set_model_name))
         // ── 自定义提供商（用户自建上游端点：存储 + 管理）──
         // 与 /api/models/manage 同级敏感：写配置（customProviders 键）且「新建」
         // 会顺带写账号库，挂 protected。账号侧不经这里 —— 客户端走

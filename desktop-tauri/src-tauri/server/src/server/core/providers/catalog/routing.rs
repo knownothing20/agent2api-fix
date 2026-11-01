@@ -36,8 +36,24 @@ pub(super) fn builtin_target(
     requested: &str,
 ) -> Option<WireTarget> {
     let provider = kind_id(kind);
+    // 改名覆盖（2026-11-01）：对外名命中这家的一条 NameOverride → 直接解析到
+    // 对应上游 ID。放在最前：改名名与原始 ID / 别名同权，但它语义上是「替换」，
+    // 用户点名新名时不再回落到同名巧合上。
+    if let Some(renamed) = rules.renamed_target(provider, requested) {
+        if let Some(id) = entry_id_in_manifest(manifest, &renamed) {
+            if rules.default_enabled(provider, &id) {
+                return Some(WireTarget {
+                    reasoning: rules.binding(provider, &id, &id).and_then(|m| m.reasoning.clone()),
+                    model: id,
+                });
+            }
+        }
+    }
     if let Some(id) = entry_id_in_manifest(manifest, requested) {
-        if rules.default_enabled(provider, &id) {
+        // 被改名的模型不再以**原始 ID** 对外（清单里它叫新名）—— 原名让位，
+        // 否则「改」就退化成「多一个入口」。开关仍按 (provider, id) 判定，
+        // 语义不变：改名不动模型本体。
+        if rules.default_enabled(provider, &id) && rules.renamed_name(provider, &id).is_none() {
             return Some(WireTarget {
                 reasoning: rules.binding(provider, &id, &id).and_then(|m| m.reasoning.clone()),
                 model: id,

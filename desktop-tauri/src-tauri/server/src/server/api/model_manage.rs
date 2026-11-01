@@ -7,6 +7,7 @@
 //! - `POST /api/models/custom`          `{provider, id}` 登记一个上游目录里没有的模型
 //! - `POST /api/models/custom/remove`   `{provider, id}` 移除该登记
 //! - `POST /api/models/capabilities`    `{provider, id, capabilities}` 覆盖对下游声明的能力位
+//! - `POST /api/models/name`            `{provider, id, name}` 改对外名（真·改名；空/原名 = 还原）
 //!
 //! 写接口都返回最新的 `{models, mappings, reasoningLevels}`，前端就地重绘、不必再拉一次。
 //!
@@ -448,6 +449,86 @@ pub async fn set_rate(State(state): State<ServerState>, body: Bytes) -> Response
         &format!(
             "保存模型倍率 [{provider}] {id}: {}",
             if trimmed.is_empty() { "清除".to_string() } else { trimmed.to_string() }
+        ),
+    );
+    ok_json(catalog::manage_view(state.store()))
+}
+
+/// POST /api/models/name
+///
+/// 改 / 还原某条模型的**对外名**（真·改名）：`{provider, id, name}`。
+///
+/// ── 语义（2026-11-01，用户定）────────────────────────────────
+/// 改就是改：清单里该模型以新名出现，原始 ID 不再对外（不是停用、不进
+/// disabled；模型本体、开关、别名、倍率、能力覆盖全不变）。上游重名因此
+/// 与本地名解耦 —— 本地名唯一且由用户定，上游名保持不动。
+/// `name` 传空串 / 与原始 ID 相同 = **还原**。
+///
+/// ── 冲突校验（改了个名字结果撞上别人，是最常见的坏结局）──────
+///   · 新名不得与**当前广告清单里已有的名字**相同（大小写不敏感）；
+///     自己即将让出的原始 ID 不算撞（那等于还原）；
+///   · 不得与现有别名、其他已生效的改成名相同；
+///   · 已经是这个名字时幂等成功（不当作撞自己）。
+/// 名字当前被占用、但占用者稍后改走的情况不追 —— 用户按顺序操作（先把
+/// 占用者改名再改这个），规则简单可预期。
+pub async fn set_model_name(State(state): State<ServerState>, body: Bytes) -> Response {
+    let object = match body_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    let provider = text_field(&object, "provider");
+    let id = text_field(&object, "id");
+    if provider.is_empty() || id.is_empty() {
+        return errors::management_error(400, "缺少提供商或模型 id");
+    }
+    if crate::server::core::providers::kind_from_id(&provider).is_none() {
+        return errors::management_error(400, format!("未知的内置提供商: {provider}"));
+    }
+    let name = match object.get("name") {
+        None => return errors::management_error(400, "缺少 name 字段"),
+        Some(Value::String(text)) => text.clone(),
+        Some(_) => return errors::management_error(400, "name 必须是字符串"),
+    };
+    let trimmed = name.trim();
+    if trimmed.chars().count() > 128 {
+        return errors::management_error(400, "对外名过长（最多 128 个字符）");
+    }
+    let restore = trimmed.is_empty() || trimmed.eq_ignore_ascii_case(&id);
+    if !restore {
+        let rules = model_rules::current();
+        // 幂等：已经叫这个名字 → 直接成功（不当作「撞自己」）
+        if rules.renamed_name(&provider, &id).is_some_and(|current| current.eq_ignore_ascii_case(trimmed)) {
+            return ok_json(catalog::manage_view(state.store()));
+        }
+        // 撞广告名（当前清单里已有的名字；自己即将让出的原始 ID 除外）
+        let advertised = catalog::advertised_model_ids(state.store());
+        if let Some(clash) = advertised.iter().find(|advertised| {
+            advertised.eq_ignore_ascii_case(trimmed) && !advertised.eq_ignore_ascii_case(&id)
+        }) {
+            return errors::management_error(
+                400,
+                format!("对外名「{trimmed}」与清单里的「{clash}」冲突（大小写不敏感），请换一个"),
+            );
+        }
+        // 撞别名
+        if rules.has_alias(trimmed) {
+            return errors::management_error(400, format!("对外名「{trimmed}」与现有别名冲突，请换一个"));
+        }
+        // 撞其他改成名
+        if rules.names.iter().any(|entry| {
+            entry.name.eq_ignore_ascii_case(trimmed) && !entry.matches(&provider, &id)
+        }) {
+            return errors::management_error(400, format!("对外名「{trimmed}」与另一条改名冲突，请换一个"));
+        }
+    }
+    if let Err(error) = model_rules::set_model_name(&provider, &id, &name) {
+        return errors::management_error(500, error);
+    }
+    logging::log(
+        "[Models]",
+        &format!(
+            "模型改名 [{provider}] {id} → {}",
+            if trimmed.is_empty() { "(还原)".to_string() } else { trimmed.to_string() }
         ),
     );
     ok_json(catalog::manage_view(state.store()))

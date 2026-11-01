@@ -497,7 +497,15 @@ function ModelsPage() {
               toast「已复制」）；title 同时承担两件事 —— 提示可点、长名字被
               ellipsis 截断时悬停能看全 */}
           <span className='t' data-copy={alias} title={`点击复制：${alias}`}>{alias}</span>
-          {binding.isDefault ? <span className='binding-default'>默认</span> : null}
+          {binding.isDefault ? (
+            <>
+              <span className='binding-default'>默认</span>
+              {/* 真·改名（2026-11-01）：本地对外名由用户定、上游名保持不动。
+                  默认绑定的名字原本是上游 ID 自动投影（删不掉改不了），上游重名
+                  撞车时只能加别名绕 —— 现在直接改：一条记录，原名不再对外。 */}
+              <RenameEntry provider={providerId} id={model.id} current={alias} busy={busy} />
+            </>
+          ) : null}
           {levelBadge(alias, model.id, providerId, busy)}
           {binding.isDefault ? null : (
             // 16px 的删除小件（icon-2xs 档）：字号 / 行高照旧 CSS 的 `.alias .x` 给，
@@ -895,6 +903,120 @@ function pickUpstream(providerId: string, keep: string, locked: boolean): string
   // 丢掉它会让「设置思考等级」保存时把三元组换成另一个模型，等级存到错的地方而界面上看不出异常
   if (locked && wanted) return wanted
   return options[0]?.id || ''
+}
+
+/** ✎ 改名入口（默认 chip 旁）：一个按钮 + 受控弹窗。拆成组件是因为
+ *  chip 是行渲染回调（不是组件），useState 只能挂在真正的组件上。 */
+function RenameEntry({ provider, id, current, busy }: {
+  provider: string
+  id: string
+  current: string
+  busy: boolean
+}) {
+  const [open, setOpen] = React.useState(false)
+  return (
+    <>
+      <Button variant='ghost' size='icon-2xs' className='text-[12px] leading-none'
+        disabled={busy} title={`改名：把对外名「${current}」换成自己的名字（原名不再对外）`}
+        onClick={() => setOpen(true)}>✎</Button>
+      {open ? (
+        <RenameDialog provider={provider} id={id} current={current} onClose={() => setOpen(false)} />
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * 改名弹窗（2026-11-01，真·改名）：把某家某模型的**本地对外名**换掉。
+ *
+ * 与「加别名 + 停原名」的组合法刻意不同：调 POST /api/models/name 一条
+ * 记录搞定 —— 清单里该模型以新名出现，原始 ID 不再对外（不是停用，开关
+ * 与模型本体全不动）。后端做三重冲突校验（广告名 / 别名 / 其他改成名）。
+ *
+ * 输入为空或与原始 ID 相同 = **还原**（上游 ID 回归默认名）—— 输入框下面
+ * 直接说明这条，还原不需要藏着掖着。
+ */
+function RenameDialog({ provider, id, current, onClose }: {
+  provider: string
+  id: string
+  /** 当前的对外名（默认 = 上游 ID；被改名后 = 新名，便于接着改） */
+  current: string
+  onClose: () => void
+}) {
+  const [name, setName] = React.useState(current)
+  const [status, setStatus] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  const trimmed = name.trim()
+  const restore = !trimmed || trimmed === id
+
+  async function save(): Promise<void> {
+    if (saving) return
+    setSaving(true)
+    setStatus('保存中…')
+    try {
+      const providers = shared().wbProviders as unknown as {
+        customRequest?<T>(method: string, path: string, body?: unknown): Promise<T>
+      } | undefined
+      if (!providers?.customRequest) { setStatus('保存失败：接口不可用'); setSaving(false); return }
+      await providers.customRequest('POST', '/api/models/name', {
+        provider, id, name: trimmed,
+      })
+      await refreshAll()
+      onClose()
+      toast(restore
+        ? `✅ 已还原：对外名回到「${id}」`
+        : `✅ 已改名：${trimmed}（原名 ${id} 不再对外）`)
+    } catch (error) {
+      setStatus(`保存失败：${errorMessage(error)}`)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(next, eventDetails) => {
+      if (next) return
+      if (saving) { eventDetails.cancel(); return }
+      onClose()
+    }}>
+      <DialogContent className='max-w-md'>
+        <DialogHeader>
+          <DialogTitle>改对外名</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <div className='flex flex-col gap-2.5'>
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor='rename-input'>新的对外名（下游请求时用）</Label>
+              <Input id='rename-input' maxLength={128} autoFocus autoComplete='off'
+                value={name} placeholder={id}
+                onChange={event => setName(event.currentTarget.value)}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  void save()
+                }} />
+            </div>
+            <div className='rounded-md border border-border bg-surface-inset px-3 py-2.5 font-mono text-[12px] text-subtle'>
+              下游请求 <b className='text-primary-fg'>{trimmed || '<还原为上游 ID>'}</b> → 转发{' '}
+              <b className='text-primary-fg'>{id}</b>
+            </div>
+            <div className='text-[12px] leading-relaxed text-subtle'>
+              上游模型、开关、别名、倍率全不变。输入为空 = 还原成上游 ID
+              「{id}」。别家渠道的同名模型不受影响 —— 想避免撞名就给它也起个
+              独特的本地名。
+            </div>
+            {status ? <div className='text-[12px] text-destructive'>{status}</div> : null}
+            <div className='flex justify-end gap-2'>
+              <Button variant='ghost' onClick={onClose} disabled={saving}>取消</Button>
+              <Button disabled={saving || (!trimmed || trimmed === current) && !restore}
+                onClick={() => void save()}>
+                {saving ? '保存中…' : restore ? '还原' : '改名'}
+              </Button>
+            </div>
+          </div>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 /**

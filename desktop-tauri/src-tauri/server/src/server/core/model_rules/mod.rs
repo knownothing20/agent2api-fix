@@ -253,6 +253,37 @@ impl RateOverride {
     }
 }
 
+/// 一条「对外名覆盖」（2026-11-01，用户要求的真·改名）：把某家某模型的
+/// 本地对外名换掉。与 `rates` / `capabilities` 同一形态（provider + id + 一个
+/// 值），清空即整条移除。
+///
+/// ── 语义（与「别名 + 停用」的组合法刻意不同）─────────────────
+/// **改就是改**：清单里该模型以新名出现，原始 ID 不再对外（不是停用、
+/// 不进 `disabled`，模型本体与开关、倍率、能力覆盖全不受影响）。上游重名
+/// 因此与本地名解耦 —— 本地名唯一且由用户定，上游名保持不动。
+///
+/// 反查（请求名 → 上游 ID）收在 [`ModelRules::renamed_target`]，清单生成
+/// 套用收在 `catalog::view`，二者是仅有的两个消费点。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameOverride {
+    pub provider: String,
+    pub id: String,
+    /// 新的对外名（非空；空串条目在读取时被丢弃，等于没改）
+    pub name: String,
+}
+
+impl NameOverride {
+    /// 是否命中 `(provider, id)`（都忽略大小写，与 `RateOverride::matches` 同口径）。
+    pub fn matches(&self, provider: &str, id: &str) -> bool {
+        self.provider.eq_ignore_ascii_case(provider) && self.id.eq_ignore_ascii_case(id)
+    }
+
+    /// 落盘的 JSON 形态：`{provider, id, name}`。
+    pub fn to_value(&self) -> Value {
+        json!({ "provider": self.provider, "id": self.id, "name": self.name })
+    }
+}
+
 impl CapabilityOverride {
     /// 是否命中 `(provider, id)`（都忽略大小写，与 `CustomModel::matches` 同口径）。
     ///
@@ -314,6 +345,8 @@ pub struct ModelRules {
     pub capabilities: Vec<CapabilityOverride>,
     /// 手填倍率（对「上游不给倍率」的模型的补充，见 `RateOverride`）
     pub rates: Vec<RateOverride>,
+    /// 对外名覆盖（真·改名，见 `NameOverride` 的语义说明）
+    pub names: Vec<NameOverride>,
     pub seeded: Vec<String>,
 }
 
@@ -422,6 +455,31 @@ fn rates_from(value: Option<&Value>) -> Vec<RateOverride> {
         .unwrap_or_default()
 }
 
+/// `names` 数组的还原（形态与 `rates_from` 同构；空串条目丢弃 = 没改过）。
+fn names_from(value: Option<&Value>) -> Vec<NameOverride> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let provider = item.get("provider").and_then(Value::as_str)?.trim();
+                    let id = item.get("id").and_then(Value::as_str)?.trim();
+                    let name = item.get("name").and_then(Value::as_str)?.trim();
+                    if provider.is_empty() || id.is_empty() || name.is_empty() {
+                        return None;
+                    }
+                    Some(NameOverride {
+                        provider: provider.to_string(),
+                        id: id.to_string(),
+                        name: name.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn capabilities_from(value: Option<&Value>) -> Vec<CapabilityOverride> {
     value
         .and_then(Value::as_array)
@@ -510,6 +568,7 @@ impl ModelRules {
             custom: custom_from(object.get("custom")),
             capabilities: capabilities_from(object.get("capabilities")),
             rates: rates_from(object.get("rates")),
+            names: names_from(object.get("names")),
             seeded: object
                 .get("seeded")
                 .and_then(Value::as_array)
@@ -540,6 +599,7 @@ impl ModelRules {
             // 任何一次写规则都会把那个键的数据整份抹掉。
             "capabilities": self.capabilities.iter().map(CapabilityOverride::to_value).collect::<Vec<_>>(),
             "rates": self.rates.iter().map(RateOverride::to_value).collect::<Vec<_>>(),
+            "names": self.names.iter().map(NameOverride::to_value).collect::<Vec<_>>(),
             "seeded": self.seeded,
         })
     }
@@ -592,6 +652,32 @@ impl ModelRules {
     /// 该对外名是否已存在任何映射条目（种子防抢占判断用）。
     pub fn has_alias(&self, alias: &str) -> bool {
         self.mappings.iter().any(|m| m.alias.eq_ignore_ascii_case(alias))
+    }
+
+    /// 某家某模型当前的对外名覆盖（没有则 `None`）。
+    ///
+    /// 消费点：`catalog::view` 的清单生成（默认绑定的名字换成它）与管理页
+    /// 默认 chip 的展示名。
+    pub fn renamed_name(&self, provider: &str, id: &str) -> Option<&str> {
+        self.names
+            .iter()
+            .find(|entry| entry.matches(provider, id))
+            .map(|entry| entry.name.as_str())
+    }
+
+    /// 请求名反解：`provider` 这家是否有模型被改名为 `name`，有则返回它的
+    /// **上游 ID**（清单里可能大小写不同，由调用方再对 manifest 校正）。
+    ///
+    /// 消费点：`catalog::routing::builtin_target` 的入口（对外名 → 上游模型的
+    /// 解析收口）。只做精确匹配 —— 改名名与别名、原始 ID 同权，不做展示名回退。
+    pub fn renamed_target(&self, provider: &str, name: &str) -> Option<String> {
+        self.names
+            .iter()
+            .find(|entry| {
+                entry.provider.eq_ignore_ascii_case(provider)
+                    && entry.name.eq_ignore_ascii_case(name)
+            })
+            .map(|entry| entry.id.clone())
     }
 
     /// 某条映射的对外名：target 归属 `provider`（None = 旧版全局条目）。
@@ -1015,6 +1101,36 @@ pub fn set_rate(provider: &str, id: &str, rate: &str) -> Result<ModelRules, Stri
     }
     if !save(&rules) {
         return Err("倍率保存失败".to_string());
+    }
+    Ok(rules)
+}
+
+/// 设置 / 还原某家某模型的对外名（真·改名的唯一写入口）。
+///
+/// `name` 为空或与原始 ID 相同 = **还原**（移除覆盖，上游 ID 回归默认名）。
+/// 新名与原 ID 的等价比较忽略大小写 —— 与清单去重同口径。
+///
+/// **不做冲突校验**：新名是否撞了别的广告名 / 别名要查清单与映射（本模块
+/// 不知道那些），那道闸在 API 层（`api::model_manage::set_model_name`）。
+pub fn set_model_name(provider: &str, id: &str, name: &str) -> Result<ModelRules, String> {
+    let mut rules = current();
+    let index = rules.names.iter().position(|entry| entry.matches(provider, id));
+    let trimmed = name.trim();
+    let restore = trimmed.is_empty() || trimmed.eq_ignore_ascii_case(id);
+    match index {
+        Some(index) if restore => {
+            rules.names.remove(index);
+        }
+        Some(index) => rules.names[index].name = trimmed.to_string(),
+        None if restore => return Ok(rules),
+        None => rules.names.push(NameOverride {
+            provider: provider.to_string(),
+            id: id.to_string(),
+            name: trimmed.to_string(),
+        }),
+    }
+    if !save(&rules) {
+        return Err("对外名保存失败".to_string());
     }
     Ok(rules)
 }
