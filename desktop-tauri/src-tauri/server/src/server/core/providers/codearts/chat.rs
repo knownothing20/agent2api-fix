@@ -117,7 +117,7 @@ pub fn build_upstream_request(
     if payload.get("messages").and_then(Value::as_array).is_none() {
         return Err(GatewayError::with_status(400, "请求体缺少 messages 数组"));
     }
-    reject_inline_images(&payload)?;
+    // TEMP verification 2026-11-01: reject_inline_images(&payload)?;
     let endpoint = format!("{}{}", base_url.trim_end_matches('/'), CHAT_PATH);
     let object = payload
         .as_object_mut()
