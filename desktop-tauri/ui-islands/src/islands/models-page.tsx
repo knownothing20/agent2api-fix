@@ -497,18 +497,7 @@ function ModelsPage() {
               toast「已复制」）；title 同时承担两件事 —— 提示可点、长名字被
               ellipsis 截断时悬停能看全 */}
           <span className='t' data-copy={alias} title={`点击复制：${alias}`}>{alias}</span>
-          {binding.isDefault ? (
-            <>
-              <span className='binding-default'>默认</span>
-              {/* 改名（2026-11-01，用户要求）：默认绑定用的就是上游 ID，本地对外名
-                  本应随意取 —— 原来只能额外加一条别名（默认那条删不掉也改不了）。
-                  这里给一个改名入口：保存新名 + 停用原始 ID，效果等价于「本地名换掉」。
-                  上游重名不吃亏：别家的同名模型留在自己的家，本地名由用户定。 */}
-              <Button variant='ghost' size='icon-2xs' className='text-[12px] leading-none'
-                disabled={busy} title={`改名：把对外名「${alias}」换成自己的名字（原名会停用）`}
-                onClick={() => openMapping({ target: model.id, provider: providerId, retireDefault: true })}>✎</Button>
-            </>
-          ) : null}
+          {binding.isDefault ? <span className='binding-default'>默认</span> : null}
           {levelBadge(alias, model.id, providerId, busy)}
           {binding.isDefault ? null : (
             // 16px 的删除小件（icon-2xs 档）：字号 / 行高照旧 CSS 的 `.alias .x` 给，
@@ -989,20 +978,13 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
       // 在这个弹窗里看到的就是他要的结果 —— 传 undefined（= 不改）会让「从 high 改成不覆盖」
       // 这一步静默无效
       accept(await writeBinding(provider, wanted, target, { reasoning: level }))
-      // 改名模式（从默认 chip 的 ✎ 进来）：把原始 ID 停用，否则清单里会同时
-      // 出现「原名」和「新名」两条 —— 用户要的是换掉本地对外名，不是多一个入口。
-      // 停用只影响广告与路由（管理页这一行还在，随时可恢复），模型本体不受损。
-      const retired = Boolean(context.retireDefault) && !same(wanted, target)
-      if (retired) await writeModelState(provider, target, false)
       setSaving(false)
       onClose()
       const suffix = level ? ` · 思考等级 ${level}` : ''
       // 展示名走注册表 / 自定义目录：直接印 provider id 时，自定义家会显示成一串
       // custom-3f2a91b04c7e，用户认不出是哪一家
       const label = shared().wbProviders?.labelOf?.(provider) || provider
-      toast(retired
-        ? `✅ 已改名：${wanted}（原名 ${target} 已停用，可随时在开关里恢复）`
-        : editing ? `✅ 已更新 ${wanted} 的思考等级` : `✅ 已添加映射 ${wanted} → ${target}（${label}）${suffix}`)
+      toast(editing ? `✅ 已更新 ${wanted} 的思考等级` : `✅ 已添加映射 ${wanted} → ${target}（${label}）${suffix}`)
     } catch (error) {
       setStatus(`保存失败：${errorMessage(error)}`)
       setSaving(false)
@@ -1072,12 +1054,6 @@ function MappingDialog({ context, onClose }: { context: MappingContext; onClose:
             <b className='text-primary-fg'>{upstream || '<上游模型>'}</b>（{providerLabel}）
             {level ? <> · 思考等级 <b className='text-primary-fg'>{level}</b></> : null}
           </div>
-          {context.retireDefault ? (
-            <div className='text-[12px] leading-relaxed text-subtle'>
-              这是<b>改名</b>：保存后新的对外名生效，原始名「{context.target}」<b>停用</b>
-              （上游模型不变，随时可在左侧开关恢复）。本站所有渠道的同名模型互不影响。
-            </div>
-          ) : null}
           <div className='flex flex-col gap-1.5'>
             <div className='flex items-center gap-[7px]'>
               <Label htmlFor='mapping-reasoning'>思考等级</Label>

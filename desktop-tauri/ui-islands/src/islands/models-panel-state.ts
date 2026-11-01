@@ -41,14 +41,7 @@ type ColSettingsSpec = {
 type ProviderOption = { id: string; label: string }
 type UpstreamOption = { id: string; label: string; off: boolean }
 /** 映射弹窗的上下文：行内「＋映射」给 `{target, provider}`，点 chip 上的等级标再带上 `alias` */
-/**
- * 映射弹窗的上下文。
- *
- * `retireDefault`（2026-11-01）：从「默认」chip 的改名入口进来时为 true ——
- * 保存后额外把原始 ID 停用，等价于「把本地对外名换掉」（上游重名与本地的
- * 名字从此解耦：本地名随意取，上游名保持不动）。
- */
-export type MappingContext = { alias?: string; target: string; provider: string; retireDefault?: boolean }
+export type MappingContext = { alias?: string; target: string; provider: string }
 /** 添加模型弹窗的上下文：选中自定义家时这家是锁定的（见 openCustomModel） */
 export type CustomModelContext = { provider: string; locked: boolean }
 /**
