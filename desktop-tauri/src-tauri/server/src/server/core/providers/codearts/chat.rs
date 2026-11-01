@@ -117,6 +117,7 @@ pub fn build_upstream_request(
     if payload.get("messages").and_then(Value::as_array).is_none() {
         return Err(GatewayError::with_status(400, "请求体缺少 messages 数组"));
     }
+    reject_inline_images(&payload)?;
     let endpoint = format!("{}{}", base_url.trim_end_matches('/'), CHAT_PATH);
     let object = payload
         .as_object_mut()
@@ -197,6 +198,39 @@ impl Aggregated {
         }
         body
     }
+}
+
+/// 视觉输入的协议限制（2026-11-01 实测）：
+///
+/// ModelArts 的 `input_type=url` 只接受 **http(s) 地址**；把 base64 内联图片
+/// （`data:` URI）透传过去会被上游拒绝，报
+/// `InferHub.ModelArts.81029.400: input_type=url 时，不支持的协议：data`。
+///
+/// 网关没有公网图床可转换，所以**提前拦下并给可执行的建议** —— 让用户看到
+/// 上游那串流水号没有任何意义（还以为是网关坏了）。
+fn reject_inline_images(payload: &Value) -> Result<(), GatewayError> {
+    let Some(messages) = payload.get("messages").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for message in messages {
+        let Some(parts) = message.get("content").and_then(Value::as_array) else { continue };
+        for part in parts {
+            let url = part
+                .get("image_url")
+                .and_then(|image| image.get("url"))
+                .or_else(|| part.get("url"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if url.trim_start().to_ascii_lowercase().starts_with("data:") {
+                return Err(GatewayError::with_status(
+                    400,
+                    "CodeArts 的视觉接口只接受 http(s) 图片地址，不支持 base64 内联图片（data: URI）。\
+                     请把图片传到可访问的链接再发（或用 Qoder / Trae 的视觉模型，那两家接受内联图片）。",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 把一整段上游 SSE 体折叠成一条回答；同时把流内错误信封挖出来。
