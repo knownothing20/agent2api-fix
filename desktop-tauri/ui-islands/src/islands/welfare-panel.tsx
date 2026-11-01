@@ -135,6 +135,7 @@ function limitsToDrafts(limits: WelfareLimits | null): Record<WelfareLimitKey, s
 const WELFARE_TABS = [
   { id: 'codearts', label: '码道', available: true },
   { id: 'trae', label: 'Trae', available: true },
+  { id: 'qoder', label: 'Qoder', available: true },
 ] as const
 
 type WelfareTabId = (typeof WELFARE_TABS)[number]['id']
@@ -640,8 +641,10 @@ function WelfarePage(): React.ReactElement {
           title='领取历史'
         />
         </>
-      ) : (
+      ) : tab === 'trae' ? (
         <TraeCheckinPanel />
+      ) : (
+        <QoderCheckinPanel />
       )}
     </div>
   )
@@ -846,6 +849,212 @@ function TraeCheckinPanel(): React.ReactElement {
         provider='trae'
         providerLabel='Trae'
       />
+    </section>
+  )
+}
+
+/* ─── Qoder 每日签到（2026-11-01，用户要求「增加一个 qoder 的签到设置」）── */
+
+/** `GET /api/auto-checkin` 的形态（只列本面板用到的字段） */
+type AutoCheckinState = {
+  enabled?: boolean
+  time?: string
+  /** 参与自动签到的家（`qoder` 在名单里 = 这个 tab 的账号会被自动签到） */
+  providers?: string[]
+  lastResult?: {
+    at?: number
+    date?: string
+    reason?: string
+    succeeded?: number
+    skipped?: number
+    failedCount?: number
+  }
+}
+
+/** `POST /api/accounts/checkin {id}` 的单账号结果（与 `billing::checkin` 同口径） */
+type CheckinClaim = {
+  success?: boolean
+  alreadyCompleted?: boolean
+  msg?: string
+}
+
+type CheckinRow = { id?: string; name?: string; claim?: CheckinClaim; error?: unknown }
+
+/**
+ * Qoder 签到卡片。
+ *
+ * ── 只有中国版有 ────────────────────────────────────────────
+ * Qoder 每日权益以「活动（campaign）」形式下发（每天 10:00 刷新窗口），
+ * 中国版才有；国际版没有签到计划（后端 `supports_checkin` 已按地区排除）。
+ * 每次 100 credits、30 天有效，落在余额面板「资源包」那一行。
+ *
+ * ── 为什么没有「只读状态」接口 ──────────────────────────────
+ * 「今天领没领」只有上游的 `claimStatus` 知道。为只读查询再开一条上游往返
+ * 不划算 —— 手动签到本身是幂等的（已领返回「今日已领取」），点一下按钮就是
+ * 最准确的状态查询，也不会重复扣什么。
+ *
+ * ── 自动签到 ────────────────────────────────────────────────
+ * 走**全局自动签到**（`/api/auto-checkin`）：Qoder 中国版在可签名单里，
+ * 触发时刻全平台一个。默认 10:05 —— Qoder 的活动窗口每天 10:00 才刷新，
+ * 卡在这之后才领得到「当天那份」。这里的开关/时间与定时任务页是同一份配置。
+ *
+ * ── 手动签到 ────────────────────────────────────────────────
+ * `POST /api/accounts/checkin {id}` 与自动签到共用后端 `checkin::run_checkin`
+ * —— 另开一条手动路径迟早出现「手动能签、自动不能」的分叉。
+ */
+function QoderCheckinPanel(): React.ReactElement {
+  const [accounts, setAccounts] = React.useState<Account[]>([])
+  const [state, setState] = React.useState<AutoCheckinState | null>(null)
+  const [timeDraft, setTimeDraft] = React.useState('10:05')
+  const [busy, setBusy] = React.useState(false)
+  const [running, setRunning] = React.useState('')
+  const [results, setResults] = React.useState<Record<string, string>>({})
+  const [note, setNote] = React.useState('')
+
+  const load = React.useCallback(async () => {
+    try {
+      const snapshot = await manage<{ accounts?: Account[] }>('GET', '/api/accounts')
+      setAccounts((snapshot?.accounts || []).filter(item => item.provider === 'qoder'))
+      const auto = await manage<AutoCheckinState>('GET', '/api/auto-checkin')
+      setState(auto)
+      setTimeDraft(auto?.time || '10:05')
+    } catch (error) {
+      setNote(`读取失败：${describeError(error)}`)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void load()
+  }, [load])
+
+  async function saveAuto(patch: Record<string, unknown>): Promise<void> {
+    setBusy(true)
+    try {
+      const next = await manage<AutoCheckinState>('POST', '/api/auto-checkin', patch)
+      setState(next)
+      setNote('已保存')
+    } catch (error) {
+      setNote(`保存失败：${describeError(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveTime(): Promise<void> {
+    const text = timeDraft.trim()
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(text)) {
+      setNote('签到时刻要填 HH:MM（00:00-23:59）。建议 10:05 之后 —— Qoder 的活动每天 10:00 才刷新')
+      return
+    }
+    await saveAuto({ time: text })
+    setNote(`已保存：每天 ${text} 自动签到`)
+  }
+
+  /** 逐账号签到（单个失败不影响其余；结果落在各自行上） */
+  async function checkin(account: Account): Promise<void> {
+    if (running) return
+    setRunning(account.id)
+    try {
+      const payload = await manage<{ results?: CheckinRow[] }>(
+        'POST',
+        '/api/accounts/checkin',
+        { id: account.id },
+      )
+      const row = (payload?.results || [])[0]
+      const claim = row?.claim
+      const text = row?.error
+        ? `失败：${String(row.error).slice(0, 80)}`
+        : claim?.alreadyCompleted
+          ? '今日已领取'
+          : claim?.success
+            ? `领取成功${claim.msg ? `（${claim.msg}）` : ''}`
+            : (claim?.msg || '未领取')
+      setResults(prev => ({ ...prev, [account.id]: text }))
+    } catch (error) {
+      setResults(prev => ({ ...prev, [account.id]: `失败：${describeError(error)}` }))
+    } finally {
+      setRunning('')
+    }
+  }
+
+  const autoOn = state?.enabled === true
+  const qoderInList = (state?.providers || []).includes('qoder')
+
+  return (
+    <section className='panel'>
+      <h2>Qoder 每日签到</h2>
+      <p className='detail'>
+        每天 10:00 刷新活动窗口，签到领 <b>100 credits</b>（30 天有效，进余额面板的「资源包」）。
+        只有<b>中国版</b>有这个活动；国际版没有签到计划。签到是幂等的 —— 已领过再点只会返回「今日已领取」。
+      </p>
+
+      {/* ── 自动签到（全局配置，与定时任务页同一份）── */}
+      <div className='mt-3 rounded-md border border-border bg-surface-inset px-3 py-2.5'>
+        <div className='flex flex-wrap items-center gap-2 text-[13px]'>
+          <Switch
+            checked={autoOn}
+            disabled={busy}
+            aria-label='自动签到开关'
+            onCheckedChange={next => void saveAuto({ enabled: next })}
+          />
+          <span className='font-medium'>自动签到</span>
+          <span className='text-subtle'>
+            {autoOn
+              ? `每天 ${state?.time || '10:05'} 执行`
+              : '已关闭 —— 打开后每天到点自动领（启动时当天没签会自动补）'}
+          </span>
+        </div>
+        <div className='mt-2 flex flex-wrap items-center gap-2 text-[13px]'>
+          <span className='w-[92px] shrink-0'>触发时刻</span>
+          <Input
+            className='max-w-[110px]'
+            value={timeDraft}
+            disabled={busy}
+            onChange={event => setTimeDraft(event.target.value)}
+            placeholder='10:05'
+          />
+          <Button variant='outline' disabled={busy} onClick={() => void saveTime()}>
+            保存
+          </Button>
+          <span className='text-subtle'>建议 10:05 之后（活动 10:00 刷新）</span>
+        </div>
+        <div className='mt-2 text-[13px] text-subtle'>
+          {qoderInList
+            ? '✅ Qoder 中国版在自动签到的家名单里（勾选在「定时任务」页维护）'
+            : '⚠️ Qoder 不在自动签到的家名单里 —— 请到「定时任务」页把它勾上'}
+          {state?.lastResult?.at ? (
+            <>
+              {' '}· 上次（{agoText(state.lastResult.at)}）：成功 {state.lastResult.succeeded ?? 0}
+              {state.lastResult.skipped ? `，跳过 ${state.lastResult.skipped}` : ''}
+              {state.lastResult.failedCount ? `，失败 ${state.lastResult.failedCount}` : ''}
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ── 账号列表 ── */}
+      <h3 className='mt-4'>账号</h3>
+      {accounts.length === 0 ? (
+        <p className='detail'>还没有 Qoder 账号 —— 到「账号」页添加（网页登录）后再回来。</p>
+      ) : (
+        <div className='flex flex-col gap-1.5'>
+          {accounts.map(account => (
+            <div key={account.id}
+              className='flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-[13px]'>
+              <span className='font-medium'>{account.name || account.id}</span>
+              {account.enabled === false ? <span className='text-subtle'>（已停用）</span> : null}
+              <Button variant='outline' size='sm' disabled={Boolean(running)}
+                onClick={() => void checkin(account)}>
+                {running === account.id ? '签到中…' : '签到'}
+              </Button>
+              {results[account.id] ? (
+                <span className='text-subtle'>{results[account.id]}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {note ? <p className='detail mt-2'>{note}</p> : null}
     </section>
   )
 }
