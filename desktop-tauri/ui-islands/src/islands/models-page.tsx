@@ -958,15 +958,35 @@ function RenameDialog({ provider, id, current, onClose }: {
         customRequest?<T>(method: string, path: string, body?: unknown): Promise<T>
       } | undefined
       if (!providers?.customRequest) { setStatus('保存失败：接口不可用'); setSaving(false); return }
-      await providers.customRequest('POST', '/api/models/name', {
-        provider, id, name: trimmed,
-      })
-      // 还原时顺手清掉「新名 → 本模型」的映射残留（改名期间若动过默认 chip 的
-      // 开关，mappings 里会有一条 alias=新名 的记录；不清的话还原后新名会变成
-      // 一个多出来的别名 chip）
-      if (restore && trimmed) {
-        await providers.customRequest('POST', '/api/models/mappings/remove', {
-          alias: trimmed, target: id, provider,
+      if (restore) {
+        // 还原：names 还原（对外名回到上游 ID）+ 清掉「改名期间的对外名」的
+        // mappings 残留（改名后动过开关会留下一条 alias=旧新名 的记录）。
+        // 两个坑（2026-11-01 实测）：
+        //   · 残留的 alias 是**改名期间的名字**（current），不是正在输入的名字；
+        //     current === id（从未改名）时没有残留，也别去调 remove —— alias==target
+        //     会撞「默认绑定不能删」的护栏，把已经成功的还原显示成失败；
+        //   · 残留不存在时 remove 是 no-op，失败吞掉即可 —— 装饰性清理不该
+        //     阻塞还原本身。
+        await providers.customRequest('POST', '/api/models/name', { provider, id, name: '' })
+        if (current && current !== id) {
+          try {
+            await providers.customRequest('POST', '/api/models/mappings/remove', {
+              alias: current, target: id, provider,
+            })
+          } catch { /* 无残留，忽略 */ }
+        }
+      } else {
+        // 改名成新名：先清掉「当前对外名」的 mappings 残留（若有，腾出旧名），
+        // 再设置新名。同样 no-op 安全。
+        if (current && current !== id) {
+          try {
+            await providers.customRequest('POST', '/api/models/mappings/remove', {
+              alias: current, target: id, provider,
+            })
+          } catch { /* 无残留，忽略 */ }
+        }
+        await providers.customRequest('POST', '/api/models/name', {
+          provider, id, name: trimmed,
         })
       }
       await refreshAll()
