@@ -212,7 +212,9 @@ impl AccountStore {
         let available = record.has_token() && credential.as_ref().is_some_and(|value| value.valid());
         let can_refresh = credential.as_ref().is_some_and(Credential::can_refresh);
         let mut public = serde_json::Map::new();
-        for key in ["id", "provider", "name", "userId", "source", "tokenTail", "expiresAt"] {
+        // authExpiresAt：refresh token 的授权到期线（毫秒，0/null = 未知）——
+        // 是时间戳不是凭证材料，账号页「授权 N 天后到期」读的就是它。
+        for key in ["id", "provider", "name", "userId", "source", "tokenTail", "expiresAt", "authExpiresAt"] {
             public.insert(key.to_string(), record.get(key).cloned().unwrap_or(Value::Null));
         }
         public.insert("edition".to_string(), Value::Null);
