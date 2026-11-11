@@ -118,6 +118,11 @@ pub async fn refresh_credential(
     fresh.user_id = first_non_empty(&[&fresh.user_id, &existing.user_id]);
     fresh.user_name = first_non_empty(&[&fresh.user_name, &existing.user_name]);
     fresh.login_type = first_non_empty(&[&fresh.login_type, &existing.login_type, "WEB"]);
+    // 授权到期线同理：新 token 声明了 exp 就用新的（token_request 里已填）；
+    // 没声明（非 JWT）则继承旧值 —— 「续期不凭空延长授权线」，有新声明才动。
+    if fresh.auth_expires_at == 0 {
+        fresh.auth_expires_at = existing.auth_expires_at;
+    }
     Ok(fresh)
 }
 
@@ -203,6 +208,13 @@ async fn token_request(
         login_type: "WEB".to_string(),
         ..Credential::default()
     };
+    // 授权到期线：refresh token 的 JWT 里声明了 exp（首登与续期都走这里）。
+    // 轮换出的新 token 声明了就跟着走 —— 那是上游亲口说的到期时刻；
+    // 解析不出（非 JWT / 无 exp）由 refresh_credential 兜底继承旧值。
+    let declared_exp = refresh_exp_ms(&credential.refresh_token);
+    if declared_exp > 0 {
+        credential.auth_expires_at = declared_exp;
+    }
     // 身份优先从 refresh token 的 JWT 载荷里解 —— 比多打一次 caller-identity 便宜；
     // 解不出来再问身份端点（续期响应本来就不带身份，所以这条兜底很常用）
     match identity_from_refresh_token(&credential.refresh_token) {
@@ -249,6 +261,23 @@ impl TokenResponse {
     fn valid(&self) -> bool {
         !self.access_key_id.is_empty() && !self.secret_access_key.is_empty()
     }
+}
+
+/// refresh token（JWT）的 `exp` claim → 毫秒 epoch（解析不出返回 0）。
+///
+/// **不验签**：这里只是读它声明的时间用于面板展示，真伪由使用时的成败裁决。
+/// 实测 claim 形态：`exp`/`iat` 是秒级 Unix 时间（还带 `counter`/`family_id`，
+/// 即轮换族）。这条线就是「授权会话到期、须重新登录」的展示依据。
+fn refresh_exp_ms(refresh_token: &str) -> i64 {
+    let Some(payload) = refresh_token.split('.').nth(1) else { return 0 };
+    let Some(decoded) = decode_base64url(payload) else { return 0 };
+    let Ok(claims) = serde_json::from_slice::<Value>(&decoded) else { return 0 };
+    claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds * 1000)
+        .unwrap_or(0)
 }
 
 /// 从 refresh token 的 JWT 载荷里取身份：`user_profile` 段又是一个 base64url 的

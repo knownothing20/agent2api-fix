@@ -107,6 +107,12 @@ export type AccountRecord = {
   tokenTail?: string
   tokenExpiresAt?: number
   expiresAt?: number
+  /**
+   * 授权会话到期时刻（毫秒；CodeArts 专有，其余家没有）—— refresh token
+   * 的 JWT 里声明的那条线（实测约 23 天），到期后须**重新登录**，与
+   * `expiresAt`（临时凭证，约 2 小时、自动续）是两码事。0/缺省 = 未知。
+   */
+  authExpiresAt?: number
   source?: string
   proxy?: ProxyConfig | null
   rateLimits?: Record<string, RateLimitInfo>

@@ -220,7 +220,38 @@ export function LimitsCell({ account, open }: { account: AccountRecord; open: bo
 export function ExpiryCell({ account }: { account: AccountRecord }) {
   const features = providerFeatures(providerOf(account))
   const expiresAt = Number(features.edition ? account.expiresAt : account[features.expiry]) || 0
-  if (!expiresAt) return <span className='muted' title='记录里没有过期时间'>—</span>
+  // 授权线（2026-11-11）：CodeArts 的 refresh token 里声明的到期时刻 —— 到点
+  // 必须重新登录（临时凭证那条 expiresAt 会自动续，不代表「不用管」）。
+  // 剩 1 天变「明天需重新登录」预警；已过线由账号整体状态兜底。
+  const authExpiresAt = Number(account.authExpiresAt) || 0
+  const authLeft = authExpiresAt - Date.now()
+  const authLine = (() => {
+    if (!authExpiresAt) return null
+    const full = formatTime(authExpiresAt)
+    if (authLeft <= 0) return null
+    if (authLeft <= 24 * 3600e3) {
+      return (
+        <Badge variant='warning' shape='tag'
+          title={`授权会话明天到期（${full || '时间未知'}），到点须重新登录；今天顺手点一次可避免断供`}>
+          明天需重新登录
+        </Badge>
+      )
+    }
+    const days = Math.floor(authLeft / 24 / 3600e3)
+    return (
+      <span className='muted'
+        title={`授权会话至 ${full || '未知'}（剩 ${days} 天）；到点须重新登录，凭证续期救不了它`}>
+        授权 {days} 天后到期
+      </span>
+    )
+  })()
+  if (!expiresAt) {
+    return (
+      <span className='muted' title='记录里没有过期时间'>
+        —{authLine ? <>{'　'}{authLine}</> : null}
+      </span>
+    )
+  }
   const left = expiresAt - Date.now()
   if (left <= 0) return <ExpiredCell account={account} />
   const text = left < 3600e3 ? `${Math.max(1, Math.round(left / 60e3))} 分钟后`
@@ -229,7 +260,13 @@ export function ExpiryCell({ account }: { account: AccountRecord }) {
   // 完整时间点只在解析得出时补进 title：formatTime 对非法时间戳返回空串，
   // 直接拼会留下一个空的「（）」
   const full = formatTime(expiresAt)
-  return <span title={full ? `${text}过期（${full}）` : `${text}过期`}>{text}</span>
+  return (
+    <span className='flex flex-col items-start gap-0.5 leading-tight'
+      title={full ? `${text}过期（${full}）` : `${text}过期`}>
+      <span>{text}</span>
+      {authLine}
+    </span>
+  )
 }
 
 /**

@@ -89,6 +89,15 @@ pub struct Credential {
     pub login_type: String,
     #[serde(default)]
     pub refresh_token: String,
+    /// refresh token（JWT）声明的授权到期时刻（毫秒 epoch；0 = 未知）。
+    ///
+    /// 与 `expires_at`（临时 AK/SK 的有效期，约 2 小时、自动续）是**两条线**：
+    /// 这条才是「授权会话到点、必须重新登录」的那条（实测 token 里声明的
+    /// 有效期约 23 天；此前观察到的失效在第 7 天 —— 两个口径谁准由 11-18
+    /// 的实测裁决，面板按 token 声明值展示，偏差到时候校准）。
+    /// 到期前 1 天前端给出预警，不再让用户被「突然变红」突袭。
+    #[serde(default)]
+    pub auth_expires_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_context: Option<OAuthContext>,
 }
@@ -236,6 +245,12 @@ impl Credential {
         record.insert(
             "expiresAt".to_string(),
             self.expires_at_ms().map(Value::from).unwrap_or(Value::Null),
+        );
+        // 授权到期线（通用键名同款习惯）：前端账号页读这个显示「授权至 X」，
+        // 与「凭证有效期」（上面的 expiresAt，约 2 小时自动续）分开。
+        record.insert(
+            "authExpiresAt".to_string(),
+            if self.auth_expires_at > 0 { Value::from(self.auth_expires_at) } else { Value::Null },
         );
         Value::Object(record)
     }
