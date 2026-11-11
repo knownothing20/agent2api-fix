@@ -699,6 +699,8 @@ pub(crate) fn parse_ticket_credential(text: &str) -> Result<Credential, GatewayE
         login_type: first_non_empty(&[&read(&value, "login_type"), "WEB"]),
         // 故意留空：这条通道不给 refresh token，账号到期后必须重新登录（见 `poll_ticket`）
         refresh_token: String::new(),
+        // ticket 通道没有 refresh token，授权线自然未知（0）
+        auth_expires_at: 0,
         oauth_context: None,
     };
     if !credential.valid() || credential.security_token.trim().is_empty() {
