@@ -734,6 +734,11 @@ fn entries_of(catalog: &Catalog) -> Vec<Value> {
             entry.insert("benefit".to_string(), Value::Bool(model.source.needs_benefit_header()));
             if model.context_length > 0 {
                 entry.insert("contextWindow".to_string(), Value::from(model.context_length));
+                // 兼容键（2026-11-11）：模型管理页的能力位与 `/v1/models` 的
+                // `input_modalities` 消费方认的是 **`maxInputTokens`**（Trae 那套
+                // 字段名）。CodeArts 上游只给 `contextWindow`，此前不映射 →
+                // 管理页上下文列全是「—」，明明上游声明了 1M（1,048,576）。
+                entry.insert("maxInputTokens".to_string(), Value::from(model.context_length));
             }
             if model.max_output_tokens > 0 {
                 entry.insert("maxOutputTokens".to_string(), Value::from(model.max_output_tokens));
