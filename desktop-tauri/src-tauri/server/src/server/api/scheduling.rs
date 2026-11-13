@@ -27,9 +27,9 @@ use crate::server::errors;
 use crate::server::http::{ok_json, parse_body};
 use crate::server::ServerState;
 
-/// 三个合法档位，报错文案里直接用（与 `ConversationOrder::parse` 同源，
+/// 四个合法档位，报错文案里直接用（与 `ConversationOrder::parse` 同源，
 /// 多一处手写清单就会多一处漂移的地方）。
-const ALLOWED_MODES: &str = "stickyOnly / creditFirst / idleFirst";
+const ALLOWED_MODES: &str = "stickyOnly / creditFirst / idleFirst / balanceFirst";
 
 /// GET /api/scheduling
 pub async fn get_scheduling(State(_state): State<ServerState>) -> Response {

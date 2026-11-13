@@ -577,6 +577,11 @@ export const SCHEDULING_MODES: SchedulingModeOption[] = [
     toastLabel: '积分优先',
   },
   {
+    value: 'balanceFirst',
+    optionLabel: '余额优先：积分多的先用（均衡消耗，不看重置日）',
+    toastLabel: '余额优先',
+  },
+  {
     value: 'idleFirst',
     optionLabel: '空闲优先：在途请求少的先用',
     toastLabel: '空闲优先',

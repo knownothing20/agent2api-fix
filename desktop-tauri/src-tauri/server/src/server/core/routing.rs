@@ -322,6 +322,16 @@ pub enum ConversationOrder {
     CreditFirst,
     /// 粘性 → 在途少 → 到期早 → 积分多 → 优先级
     IdleFirst,
+    /// 粘性 → **积分多 → 在途少 → 优先级**（2026-11-13 用户要求）。
+    ///
+    /// 与 `CreditFirst` 的差别只有一处：**不看账号的到期/重置日**。
+    /// 为什么需要它：CodeArts 这类「积分按逐笔 30 天滚动到期」的家，
+    /// 账号级重置日（`resetDate`）并不是积分的真实失效时间 —— 拿它当
+    /// 「快过期的先烧」的依据是错的尺子（用户实测：重置日 11-29 的两个号
+    /// 被一直使用，12-05 的两个号 13,600 分一分没动）。按「谁剩得多先用」
+    /// 排，本质是**均衡消耗**：余额多的吃流量 → 被拉到和其余号齐平 →
+    /// 每个号都不至于囤到作废。
+    BalanceFirst,
 }
 
 impl ConversationOrder {
@@ -331,6 +341,7 @@ impl ConversationOrder {
             Self::StickyOnly => "stickyOnly",
             Self::CreditFirst => "creditFirst",
             Self::IdleFirst => "idleFirst",
+            Self::BalanceFirst => "balanceFirst",
         }
     }
 
@@ -341,6 +352,7 @@ impl ConversationOrder {
             "stickyOnly" => Some(Self::StickyOnly),
             "creditFirst" => Some(Self::CreditFirst),
             "idleFirst" => Some(Self::IdleFirst),
+            "balanceFirst" => Some(Self::BalanceFirst),
             _ => None,
         }
     }
@@ -398,6 +410,8 @@ fn conversation_sort_key(
         ConversationOrder::StickyOnly => (priority, added, 0, 0, 0),
         ConversationOrder::CreditFirst => (expiry, credits, busy, priority, added),
         ConversationOrder::IdleFirst => (busy, expiry, credits, priority, added),
+        // 余额优先：不看 expiry，积分多的先烧 —— 四个号被自然拉平分摊
+        ConversationOrder::BalanceFirst => (credits, busy, priority, added, 0),
     }
 }
 
@@ -848,6 +862,29 @@ mod conversation_scheduling_tests {
             Some("a".to_string()),
             pick_with(&accounts, &counts, &credit, ConversationOrder::CreditFirst),
             "creditFirst：a 到期更早，哪怕它更忙"
+        );
+    }
+
+    #[test]
+    fn balance_first_ignores_expiry_and_prefers_the_richer_account() {
+        // 用户实测场景（2026-11-13）：a 重置日 11-29 但余额 12844，
+        // b 重置日 12-05 但余额 13600。creditFirst 一直用 a（到期早），
+        // 结果是 b 的 13,600 分一分没动 —— 这正是用户不满的点。
+        // balanceFirst 应反过来：谁剩得多先烧谁（均衡消耗）。
+        let accounts = vec![account("a", 100), account("b", 101)];
+        let credit = credit_of(&[
+            ("a", Some("2026-11-29"), Some(12844.0)),
+            ("b", Some("2026-12-05"), Some(13600.0)),
+        ]);
+        assert_eq!(
+            Some("b".to_string()),
+            pick_with(&accounts, &HashMap::new(), &credit, ConversationOrder::BalanceFirst),
+            "balanceFirst：b 余额更多 → 先烧它，不看重置日"
+        );
+        assert_eq!(
+            Some("a".to_string()),
+            pick_with(&accounts, &HashMap::new(), &credit, ConversationOrder::CreditFirst),
+            "creditFirst：a 重置日更早 → 仍按到期日优先（默认档行为不变）"
         );
     }
 
