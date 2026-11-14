@@ -243,6 +243,96 @@ pub async fn query_all(store: &AccountStore, id: Option<&str>) -> Result<Value, 
 /// 快照的持久化键（`kv` 的保留键，见 `task_state`）。
 const SNAPSHOT_KEY: &str = "usageQuerySnapshot";
 
+/// 每日积分基线（`kv` 键）：`{ "YYYY-MM-DD": { "<账号id>": 累计已用积分 } }`。
+///
+/// 只服务于「今日用量」这个展示：`credit_used` 是上游给的**累计已用**，
+/// 拿它与「最近一个更早日期的记录」做差即当日真实消耗 —— 比按 token 估算准，
+/// 也不需要任何新接口。保留 7 天（跨周末/长假回来也能算出差值）。
+const DAILY_CREDITS_KEY: &str = "usageDailyCredits";
+
+/// 从一条 usage 结果里取「累计已用积分」。
+///
+/// 优先用套餐积分那一行（`usageTotalPackageCredit`）—— 它是总账；没有就取
+/// 各 credit 行的 `credit_used` 之和。两处都读不到返回 None（该家不报积分）。
+fn cumulative_credit_used(usage: &Value) -> Option<f64> {
+    let meters = usage
+        .get("raw")
+        .and_then(|raw| raw.get("statistics"))
+        .and_then(|st| st.get("meters"))
+        .and_then(Value::as_array)?;
+    let total = meters
+        .iter()
+        .find(|m| m.get("name").and_then(Value::as_str) == Some("usageTotalPackageCredit"))
+        .and_then(|m| m.get("credit_used"))
+        .and_then(Value::as_f64);
+    if total.is_some() {
+        return total;
+    }
+    let mut sum = 0.0;
+    let mut found = false;
+    for meter in meters {
+        if let Some(value) = meter.get("credit_used").and_then(Value::as_f64) {
+            sum += value;
+            found = true;
+        }
+    }
+    found.then_some(sum)
+}
+
+/// 给查询结果注入 `usage.todayUsed`（今日消耗 = 今日累计 − 最近一个更早日期的累计）。
+///
+/// 副作用：把「今天的累计值」写进基线（同一天多次查询会覆盖，取最新值）。
+/// 账号在期间重置过（差值为负）时不写 todayUsed —— 那是「重置」不是「用了负数」，
+/// 基线照常更新为今天的值。
+fn inject_today_usage(results: &mut [Value]) {
+    let mut history: serde_json::Map<String, Value> = task_state::read(DAILY_CREDITS_KEY)
+        .ok()
+        .and_then(|state| state.value)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    for row in results.iter_mut() {
+        if row.get("usage").map_or(true, Value::is_null) {
+            continue;
+        }
+        let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
+        let Some(used) = row.get("usage").and_then(cumulative_credit_used) else { continue };
+        // 找「最近一个更早日期」的累计值（字符串日期可直接字典序比较）
+        let previous = history
+            .iter()
+            .filter(|(day, _)| day.as_str() < today.as_str())
+            .filter_map(|(day, accounts)| {
+                accounts.get(&id).and_then(Value::as_f64).map(|value| (day.clone(), value))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, value)| value);
+        if let Some(before) = previous {
+            let delta = used - before;
+            // 负值 = 账号期间重置过（credit_used 归零），不当作「今日消耗」
+            if delta >= 0.0 && delta.is_finite() {
+                if let Some(usage) = row.get_mut("usage").and_then(Value::as_object_mut) {
+                    usage.insert("todayUsed".to_string(), json_number(delta));
+                }
+            }
+        }
+        // 今天的基线用最新读数覆盖
+        let entry = history.entry(today.clone()).or_insert_with(|| json!({}));
+        if let Some(accounts) = entry.as_object_mut() {
+            accounts.insert(id, json_number(used));
+        }
+    }
+
+    // 只保留最近 7 天：更早基线的价值是「跨天对比」，再多只会让 kv 越积越大
+    let mut days: Vec<String> = history.keys().cloned().collect();
+    days.sort();
+    while days.len() > 7 {
+        let oldest = days.remove(0);
+        history.remove(&oldest);
+    }
+    let _ = task_state::store_value(DAILY_CREDITS_KEY, Value::Object(history));
+}
+
 /// 进程内副本：快照是 20 秒一次的前端轮询读点，不必每次都读库。
 /// 未命中时从库里读回（重启后界面仍能看到上次结果与它的查询时刻）。
 static SNAPSHOT: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
@@ -270,6 +360,11 @@ fn note_external_run() {
 /// 快照落盘（`usageQuerySnapshot`）：重启后界面先展示上次结果与查询时刻，
 /// 而不是一片空白 —— 它同时是「重启后不必马上再查一遍」的另一半依据。
 pub fn store_snapshot(report: Value) -> (usize, usize) {
+    let mut report = report;
+    // 先注入「今日用量」再落快照 —— 展示与持久化看到同一份数字
+    if let Some(results) = report.get_mut("results").and_then(Value::as_array_mut) {
+        inject_today_usage(results);
+    }
     let results = report
         .get("results")
         .and_then(Value::as_array)

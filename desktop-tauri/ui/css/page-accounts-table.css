@@ -576,6 +576,23 @@
   white-space: nowrap;
 }
 
+/* 今日用量（第二行小字）：与主行同宽省略，颜色压淡一档 ——
+   它是「参考读数」，不该和「可用额度」抢注意力。 */
+.usage-sum .usage-sum-main {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-sum .usage-today {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .usage-sum.ok { color: var(--ok); font-weight: 600; }
 .usage-sum.bad { color: var(--danger); }
 .usage-sum.muted { color: var(--text-3); }

@@ -749,7 +749,17 @@ export function UsageCell({ account }: { account: AccountRecord }) {
         title={`${summary.title}（点击看积分明细）`}
         onClick={() => setDetailOpen(true)}
       >
-        {summary.text}
+        <span className='usage-sum-main'>{summary.text}</span>
+        {/* 今日用量（2026-11-14 用户要求）：后端每次余额查询把「累计已用」与
+            上一个有记录日期的值做差，塞进 usage.todayUsed —— 是上游亲口报的
+            累计值差分，不是按 token 估算。可用来心算「哪些积分已经用掉」。
+            不显示 0：查询间隔内没消耗时那行「今日 -0」只会是噪声。 */}
+        {typeof (entry as { todayUsed?: unknown } | null)?.todayUsed === 'number'
+          && Number((entry as { todayUsed?: number }).todayUsed) > 0 ? (
+          <span className='usage-today'>
+            今日 -{numberText((entry as { todayUsed?: number }).todayUsed)}
+          </span>
+        ) : null}
         {detailOpen ? (
           <BalanceDetailDialog account={account} entry={entry} onClose={() => setDetailOpen(false)} />
         ) : null}
