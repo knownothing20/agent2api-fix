@@ -140,6 +140,20 @@ const PAGE_LABELS = {
   settings: '设置',
 };
 
+const PAGE_DESCRIPTIONS = {
+  overview: '请求用量、模型分布与缓存效率',
+  accounts: '管理登录态、转发优先级与账号额度',
+  gateway: '配置模型目录、映射与转发能力',
+  proxies: '管理网络出口与连通性',
+  keys: '管理客户端访问凭据与权限',
+  docs: '查看接口地址与客户端接入方式',
+  logs: '查看服务运行事件与诊断信息',
+  tasks: '管理自动维护与刷新任务',
+  welfare: '查看并领取账号可用福利',
+  requests: '追踪每次请求的状态、重试与用量',
+  settings: '调整网关、存储与界面偏好',
+};
+
 /** 当前页（子模块据此判断是否需要重新加载） */
 let currentPage = 'overview';
 
@@ -154,6 +168,8 @@ function showPage(name, { persist = true } = {}) {
   });
   const crumb = $('crumb-page');
   if (crumb) crumb.textContent = PAGE_LABELS[page] || page;
+  const description = $('crumb-description');
+  if (description) description.textContent = PAGE_DESCRIPTIONS[page] || '';
   if (persist) localStorage.setItem(PAGE_KEY, page);
   // 列的设置面板常驻 body（.panel 是 overflow:hidden，留在原处会被裁掉，
   // 见 table-col-settings.js），不随宿主页面的 display:none 一起消失 ——

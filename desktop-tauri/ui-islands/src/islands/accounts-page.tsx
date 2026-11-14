@@ -61,12 +61,12 @@ import {
 } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
-import { checkinableAccounts, isDesktopAccount, isEnabled, supportsUsage } from './accounts-domain'
+import { checkinableAccounts, isDesktopAccount, isEnabled, isRateLimited, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths, tableMinWidth } from './accounts-columns'
 import {
   allAccounts, checkinAll, clearLimits, clearSelection, ensureProxyPoolOptions,
   getStore, installAccountsApi, normalizeFilter, openBatchDialog, panelOpen, providerSummaryList,
-  queryAllUsage, rowContext, seats, segmentCounts, setAllPicked, setProviderFilter, setSegmentFilter,
+  queryAllUsage, connectionsOf, rowContext, seats, segmentCounts, setAllPicked, setProviderFilter, setSegmentFilter,
   snapshot, startConnectionsPolling, subscribe, togglePick, visibleList,
 } from './accounts-data'
 import {
@@ -257,70 +257,96 @@ function AccountsPage() {
 
   return (
     <>
+      <div className='account-overview' aria-label='账号运行摘要'>
+        <div className='account-stat'>
+          <span className='account-stat-label'>账号总数</span>
+          <strong>{loaded ? all.length : '—'}</strong>
+          <span>{summaries.filter(item => item.count > 0).length} 家提供商</span>
+        </div>
+        <div className='account-stat ok'>
+          <span className='account-stat-label'>参与转发</span>
+          <strong>{loaded ? all.filter(isEnabled).length : '—'}</strong>
+          <span>已启用的登录态</span>
+        </div>
+        <div className={cn('account-stat', loaded && all.some(account => isEnabled(account) && isRateLimited(account)) && 'warn')}>
+          <span className='account-stat-label'>当前限流</span>
+          <strong>{loaded ? all.filter(account => isEnabled(account) && isRateLimited(account)).length : '—'}</strong>
+          <span>仅统计启用账号</span>
+        </div>
+        <div className='account-stat'>
+          <span className='account-stat-label'>进行中连接</span>
+          <strong>{loaded ? all.reduce((total, account) => total + connectionsOf(account.id), 0) : '—'}</strong>
+          <span>实时请求，不是会话数</span>
+        </div>
+      </div>
       <section className='panel account-table'>
-        <div className='toolbar'>
-          {/* 提供商维度用下拉而不是分段按钮：家数是**动态**的（后端注册表加一家就多一项），
-              分段按钮会随家数增长把工具条挤成一团；选项里带账号数，于是「哪家有账号、
-              各有多少」不用切页就能看到 */}
-          <div className='group' data-provider-group='1'>
-            <span className='label'>提供商</span>
-            <Select value={store.filter.provider} onValueChange={value => setProviderFilter(String(value))}>
-              <SelectTrigger className='max-w-[200px] min-w-[130px]' aria-label='按提供商筛选账号'>
-                <SelectValue>
-                  {providerOptions.find(item => item.value === store.filter.provider)?.label || '全部'}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {providerOptions.map(item => (
-                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className='divider' data-provider-divider='1' />
+        <div className='account-tools'>
+          <div className='toolbar account-filters' aria-label='账号筛选'>
+            {/* 提供商维度用下拉而不是分段按钮：家数是**动态**的（后端注册表加一家就多一项），
+                分段按钮会随家数增长把工具条挤成一团；选项里带账号数，于是「哪家有账号、
+                各有多少」不用切页就能看到 */}
+            <div className='group' data-provider-group='1'>
+              <span className='label'>提供商</span>
+              <Select value={store.filter.provider} onValueChange={value => setProviderFilter(String(value))}>
+                <SelectTrigger className='max-w-[200px] min-w-[130px]' aria-label='按提供商筛选账号'>
+                  <SelectValue>
+                    {providerOptions.find(item => item.value === store.filter.provider)?.label || '全部'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {providerOptions.map(item => (
+                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className='divider' data-provider-divider='1' />
 
-          <div className='group'>
-            <span className='label'>状态</span>
-            {/* 两个筛选维度是**受控**的（取值与计数都以 store 为准），限流组在状态筛成
-                「禁用」时置灰 —— 已禁用账号既不算正常也不算已限流 */}
-            <SegmentedControl options={[
-              { value: 'all', label: '全部', count: counts.enabledAll ?? 0 },
-              { value: 'enabled', label: '启用', count: counts.enabled ?? 0 },
-              { value: 'disabled', label: '禁用', count: counts.disabled ?? 0 },
-            ]} value={store.filter.enabled} onValueChange={value => setSegmentFilter('enabled', value)}
-              aria-label='启用状态' />
+            <div className='group'>
+              <span className='label'>状态</span>
+              {/* 两个筛选维度是**受控**的（取值与计数都以 store 为准），限流组在状态筛成
+                  「禁用」时置灰 —— 已禁用账号既不算正常也不算已限流 */}
+              <SegmentedControl options={[
+                { value: 'all', label: '全部', count: counts.enabledAll ?? 0 },
+                { value: 'enabled', label: '启用', count: counts.enabled ?? 0 },
+                { value: 'disabled', label: '禁用', count: counts.disabled ?? 0 },
+              ]} value={store.filter.enabled} onValueChange={value => setSegmentFilter('enabled', value)}
+                aria-label='启用状态' />
+            </div>
+
+            <div className='group'>
+              <span className='label'>限额</span>
+              <SegmentedControl options={[
+                { value: 'all', label: '全部', count: counts.limitAll ?? 0 },
+                { value: 'normal', label: '正常', count: counts.normal ?? 0, disabled: store.filter.enabled === 'disabled' },
+                { value: 'limited', label: '已限流', count: counts.limited ?? 0, disabled: store.filter.enabled === 'disabled' },
+              ]} value={store.filter.limit} onValueChange={value => setSegmentFilter('limit', value)}
+                aria-label='限额状态' />
+            </div>
           </div>
 
-          <div className='group'>
-            <span className='label'>限额</span>
-            <SegmentedControl options={[
-              { value: 'all', label: '全部', count: counts.limitAll ?? 0 },
-              { value: 'normal', label: '正常', count: counts.normal ?? 0, disabled: store.filter.enabled === 'disabled' },
-              { value: 'limited', label: '已限流', count: counts.limited ?? 0, disabled: store.filter.enabled === 'disabled' },
-            ]} value={store.filter.limit} onValueChange={value => setSegmentFilter('limit', value)}
-              aria-label='限额状态' />
-          </div>
-
-          <div className='actions'>
-            {/* 「添加账号」的打开逻辑归 add-account.js（它按同一个 id 绑了监听），这里再挂
-                一次 onClick 是**冗余保险**：万一那个脚本的绑定因加载顺序没接上，按钮仍可用
-                （openModal / resetAddStep 都是幂等的，重复调用无副作用） */}
-            <Button id='btn-add-account-2' variant='default' title='登录 / 导入一个新账号'
-              onClick={() => {
-                shared().wbAddAccountModal?.open?.()
-                shared().wbAccountAddForms?.syncAddProvider?.()
-              }}>添加账号</Button>
-            <Button id='btn-query-usage' variant='outline'
-              disabled={store.usageBusy || !all.some(supportsUsage)}
-              title='查询全部账号的余额（含已禁用账号 —— 禁用只表示不参与转发）'
-              onClick={() => void queryAllUsage()}>{store.usageBusy ? '查询中…' : '查询余额'}</Button>
-            <Button id='btn-checkin-all' variant='outline'
-              disabled={store.checkinBusy || !checkinableAccounts(all).length}
-              title='为全部可签到的账号串行签到'
-              onClick={() => void checkinAll()}>{store.checkinBusy ? '签到中…' : '全部签到'}</Button>
-            <Button id='btn-credits-expiry' variant='outline'
-              title='一屏看全部账号的余额与临期（哪些分快作废）'
-              onClick={() => setExpiryOpen(true)}>积分到期</Button>
+          <div className='toolbar account-maintenance'>
+            <div className='actions account-maintenance-actions'>
+              {/* 「添加账号」的打开逻辑归 add-account.js（它按同一个 id 绑了监听），这里再挂
+                  一次 onClick 是**冗余保险**：万一那个脚本的绑定因加载顺序没接上，按钮仍可用
+                  （openModal / resetAddStep 都是幂等的，重复调用无副作用） */}
+              <Button id='btn-add-account-2' variant='default' title='登录 / 导入一个新账号'
+                onClick={() => {
+                  shared().wbAddAccountModal?.open?.()
+                  shared().wbAccountAddForms?.syncAddProvider?.()
+                }}>添加账号</Button>
+              <Button id='btn-query-usage' variant='outline'
+                disabled={store.usageBusy || !all.some(supportsUsage)}
+                title='查询全部账号的余额（含已禁用账号 —— 禁用只表示不参与转发）'
+                onClick={() => void queryAllUsage()}>{store.usageBusy ? '查询中…' : '查询余额'}</Button>
+              <Button id='btn-checkin-all' variant='outline'
+                disabled={store.checkinBusy || !checkinableAccounts(all).length}
+                title='为全部可签到的账号串行签到'
+                onClick={() => void checkinAll()}>{store.checkinBusy ? '签到中…' : '全部签到'}</Button>
+              <Button id='btn-credits-expiry' variant='outline'
+                title='一屏看全部账号的余额与临期（哪些分快作废）'
+                onClick={() => setExpiryOpen(true)}>积分到期</Button>
+            </div>
           </div>
         </div>
 

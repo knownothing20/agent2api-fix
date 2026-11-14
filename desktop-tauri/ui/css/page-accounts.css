@@ -70,6 +70,59 @@
      横向滚动条槽仍由 scrollbar-gutter 常驻预留，背景不引起列宽跳动。 */
   background: var(--table-bg);
 }
+/* 摘要读数都来自账号 store；加载期间显示占位，不把未知当成零。 */
+.account-overview {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.account-stat {
+  position: relative;
+  min-width: 0;
+  padding: 14px 16px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.account-stat::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary);
+}
+
+.account-stat.ok::before { background: var(--ok); }
+.account-stat.warn::before { background: var(--warn); }
+.account-stat-label { display: block; color: var(--text-2); font-size: 12px; font-weight: 500; }
+.account-stat strong { display: block; margin: 2px 0 1px; font-size: 24px; line-height: 1.3; font-weight: 650; font-variant-numeric: tabular-nums; }
+.account-stat > span:last-child { display: block; overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.account-stat.ok strong { color: var(--ok); }
+.account-stat.warn strong { color: var(--warn); }
+
+.account-tools {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.account-tools .toolbar { padding: 0; border-bottom: 0; }
+.account-filters { flex: 1 1 580px; }
+.account-maintenance { flex: 0 1 auto; margin-left: auto; }
+.account-tools .account-maintenance-actions { flex: 0 0 auto; margin-left: 0; }
+.account-toolbar-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
+
 /* ─── 批量栏 ───
    夹在工具条与列表之间的一条状态带：通栏铺满面板，四角交给面板自身的圆角裁切。
    底色与面板同色（--surface），只用一条 --hairline 与上下分开 ——
@@ -88,6 +141,8 @@
 
 .batch-bar.active { background: var(--primary-soft); border-bottom-color: var(--primary-bd); }
 
+.provider-summary { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; }
+
 .batch-select-all { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; white-space: nowrap; }
 .batch-select-all input { width: 14px; height: 14px; margin: 0; accent-color: var(--primary); cursor: pointer; }
 .batch-select-all span { white-space: nowrap; }
@@ -100,10 +155,18 @@
 .batch-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
 
 .batch-actions button {
-  height: 25px;
+  height: 28px;
   padding: 0 9px;
   border-radius: var(--r-sm);
   font-size: 11.5px;
+}
+
+@media (max-width: 1100px) {
+  .account-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .account-stat { padding: 10px 14px; }
+  .account-stat strong { font-size: 21px; }
+  .account-filters .group { flex-wrap: wrap; }
+  .account-maintenance .actions { margin-left: 0; }
 }
 
 /* ─── 页脚 ───

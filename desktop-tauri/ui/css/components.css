@@ -15,7 +15,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 30px;
+  height: 32px;
   padding: 0 12px;
   border: 1px solid var(--control-border);
   border-radius: var(--r-md);
@@ -349,6 +349,7 @@ input[type="number"] { max-width: 130px; }
 /* 窄窗口（≤1120px）：三段筛选与主操作同行会挤，让操作独占一行靠右 */
 @media (max-width: 1120px) {
   .toolbar .actions { flex-basis: 100%; margin-left: 0; }
+  .toolbar .account-maintenance-actions { flex-basis: auto; }
 }
 /* ─── 进度条 ─── */
 .progress {

@@ -49,24 +49,23 @@
   --sidebar-fg: oklch(0.43287 0.01676 258.37);
   --sidebar-muted: oklch(0.51200 0.02088 261.29);
   --nav-hover: oklch(0.145 0 0 / 5%);
-  --nav-selected-bg: oklch(0.275 0 0);
-  --nav-selected-border: oklch(0.195 0 0);
-  --nav-selected-fg: oklch(0.99 0 0);
-  --nav-count-bg: oklch(0.42 0 0);
+  --nav-selected-bg: var(--primary-soft);
+  --nav-selected-border: transparent;
+  --nav-selected-fg: var(--primary-fg);
+  --nav-count-bg: var(--primary-bd);
 
   /* 文本三档 */
   --text: oklch(0.145 0 0);
   --text-2: oklch(0.37 0 0);
   --text-3: oklch(0.49 0 0);
 
-  /* 品牌 */
-  /* v3（2026-10-10）：主色改「近黑」—— 主按钮 / 选中态走中性深色，彩色只留给语义。
-     彩色渐变既不沉稳也显廉价；近黑主按钮是 Linear / Vercel 那类产品的通行做法。 */
-  --primary: oklch(0.275 0 0);
-  --primary-hover: oklch(0.195 0 0);
-  --primary-soft: color-mix(in srgb, var(--primary) 7%, white);
-  --primary-bd: color-mix(in srgb, var(--primary) 18%, white);
-  --primary-fg: oklch(0.275 0 0);
+  /* 品牌：与应用图标同一色系；蓝色只表达主操作、焦点与选中，
+     成功 / 警告 / 失败仍独立使用语义色。 */
+  --primary: oklch(0.56 0.19 254);
+  --primary-hover: oklch(0.49 0.18 254);
+  --primary-soft: color-mix(in srgb, var(--primary) 8%, white);
+  --primary-bd: color-mix(in srgb, var(--primary) 22%, white);
+  --primary-fg: oklch(0.48 0.17 254);
 
   /* 语义色 */
   --ok: oklch(0.52 0.12 155);
@@ -108,13 +107,13 @@
   --ring: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
 
   /* 尺寸 */
-  --sidebar-w: 216px;
-  --topbar-h: 50px;
+  --sidebar-w: 232px;
+  --topbar-h: 68px;
   /* 自定义标题栏高度（桌面端）：主窗口去掉了系统装饰（src-tauri 建窗处
      decorations(false)），界面自绘 32px 标题条补上三键与拖动区（titlebar.js）。
      网页端不创建标题栏，该变量只在 body.has-titlebar 的规则里被引用。 */
   --titlebar-h: 32px;
-  --pad: 20px;
+  --pad: 24px;
   /* 内容区最大宽度（不含侧边栏）。用 vw 而不是 %：
      % 相对的是「已排除侧边栏和内边距」的可用宽度，那样任何窗口下都会被限制成 80%，
      内容永远占不满；vw 相对整个窗口，于是窗口 ≤1280px 时内容占满、
@@ -125,7 +124,7 @@
      这个变量只描述内容区的限宽，全站所有页面一律用它，不存在按页面的覆盖
      （账号页曾自带一条 max-width: 1400px，已删：它比那张表自身的下限还窄，
      只换来「横滚条常驻 + 比别的页窄一截」，见 page-accounts.css）。 */
-  --content-max: 80vw;
+  --content-max: 1600px;
   --sb-w: 11px;          /* 滚动条宽度：表头对齐要靠它补偿 */
 }
 
@@ -158,20 +157,20 @@
   --sidebar-fg: oklch(0.79794 0.01342 266.68);
   --sidebar-muted: oklch(0.67832 0.01760 262.73);
   --nav-hover: oklch(1 0 0 / 6%);
-  --nav-selected-bg: oklch(0.955 0 0);
-  --nav-selected-border: oklch(0.99 0 0);
-  --nav-selected-fg: oklch(0.22 0 0);
-  --nav-count-bg: oklch(0.62 0 0);
+  --nav-selected-bg: var(--primary-soft);
+  --nav-selected-border: transparent;
+  --nav-selected-fg: var(--primary-fg);
+  --nav-count-bg: var(--primary-bd);
 
   --text: oklch(0.965 0 0);
   --text-2: oklch(0.85 0 0);
   --text-3: oklch(0.78 0 0);
 
-  --primary: oklch(0.955 0 0);
-  --primary-hover: oklch(0.90 0 0);
-  --primary-soft: oklch(0.955 0 0 / 12%);
-  --primary-bd: oklch(0.955 0 0 / 30%);
-  --primary-fg: oklch(0.955 0 0);
+  --primary: oklch(0.69 0.16 254);
+  --primary-hover: oklch(0.75 0.14 254);
+  --primary-soft: oklch(0.69 0.16 254 / 14%);
+  --primary-bd: oklch(0.69 0.16 254 / 32%);
+  --primary-fg: oklch(0.80 0.11 254);
 
   --ok: oklch(0.696 0.17 162.48);
   --ok-soft: oklch(0.696 0.17 162.48 / 14%);
@@ -197,7 +196,7 @@
   --shadow-2: 0 1px 2px oklch(0 0 0 / 34%), 0 6px 16px -6px oklch(0 0 0 / 55%), 0 16px 36px -16px oklch(0 0 0 / 55%);
   --shadow-3: 0 2px 6px oklch(0 0 0 / 38%), 0 14px 32px -10px oklch(0 0 0 / 62%), 0 32px 64px -20px oklch(0 0 0 / 60%);
   --glow: var(--shadow-1);
-  --ring: 0 0 0 3px oklch(1 0 0 / 22%)
+  --ring: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent)
 }
 
 /* system 模式跟随系统深浅 */
@@ -230,20 +229,20 @@
     --sidebar-fg: oklch(0.79794 0.01342 266.68);
     --sidebar-muted: oklch(0.67832 0.01760 262.73);
     --nav-hover: oklch(1 0 0 / 6%);
-    --nav-selected-bg: oklch(0.955 0 0);
-    --nav-selected-border: oklch(0.99 0 0);
-    --nav-selected-fg: oklch(0.22 0 0);
-    --nav-count-bg: oklch(0.62 0 0);
+    --nav-selected-bg: var(--primary-soft);
+    --nav-selected-border: transparent;
+    --nav-selected-fg: var(--primary-fg);
+    --nav-count-bg: var(--primary-bd);
 
     --text: oklch(0.965 0 0);
     --text-2: oklch(0.85 0 0);
     --text-3: oklch(0.78 0 0);
 
-    --primary: oklch(0.955 0 0);
-    --primary-hover: oklch(0.90 0 0);
-    --primary-soft: oklch(0.955 0 0 / 12%);
-    --primary-bd: oklch(0.955 0 0 / 30%);
-    --primary-fg: oklch(0.955 0 0);
+    --primary: oklch(0.69 0.16 254);
+    --primary-hover: oklch(0.75 0.14 254);
+    --primary-soft: oklch(0.69 0.16 254 / 14%);
+    --primary-bd: oklch(0.69 0.16 254 / 32%);
+    --primary-fg: oklch(0.80 0.11 254);
 
     --ok: oklch(0.696 0.17 162.48);
     --ok-soft: oklch(0.696 0.17 162.48 / 14%);
@@ -269,7 +268,7 @@
     --shadow-2: 0 1px 2px oklch(0 0 0 / 34%), 0 6px 16px -6px oklch(0 0 0 / 55%), 0 16px 36px -16px oklch(0 0 0 / 55%);
     --shadow-3: 0 2px 6px oklch(0 0 0 / 38%), 0 14px 32px -10px oklch(0 0 0 / 62%), 0 32px 64px -20px oklch(0 0 0 / 60%);
     --glow: var(--shadow-1);
-    --ring: 0 0 0 3px oklch(1 0 0 / 22%)
+    --ring: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent)
   }
 }
 

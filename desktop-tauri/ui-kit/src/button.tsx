@@ -56,7 +56,7 @@ const buttonVariants = cva(
         link: 'border-transparent bg-transparent text-primary shadow-none underline-offset-4 hover:underline',
       },
       size: {
-        default: 'h-[30px] rounded-md px-3 text-[12.5px]',
+        default: 'h-8 rounded-md px-3 text-[12.5px]',
         /**
          * 药丸内的小件档（16px）：映射 chip 里的等级标与删除 ×。
          * 再往下的 24px（xs / icon-xs）塞进 22px 高的药丸里会把整行撑高，

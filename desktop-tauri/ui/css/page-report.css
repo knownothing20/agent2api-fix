@@ -86,6 +86,16 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 统计概览用大号读数建立层级；表单类 field 仍沿用通用小字样式。 */
+#report-overview.field-grid { grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 0; }
+#report-overview > .field { padding: 5px 14px 8px; border: 0; border-radius: var(--r-sm); background: transparent; }
+#report-overview > .field:first-child { padding-left: 0; }
+#report-overview > .field:last-child { border-right: 0; }
+#report-overview .field .label { margin-bottom: 6px; font-size: 12px; }
+#report-overview .field .value { font-size: 22px; line-height: 1.45; font-weight: 650; }
+#report-overview .field .value.mono { font-size: 16px; }
+#report-overview .field .value .sub { margin-top: 3px; font-size: 11px; line-height: 1.45; }
+
 /* ─── Top 账号 / Top 提供商：并排两张卡 ───
    两者回答同一个问题的两个粒度（哪一家在承载 / 哪个登录态在承载），放在一起才便于
    对照着看，所以各占一半宽度而不是各占一整行 —— 满宽时条要拉出一千多像素，
