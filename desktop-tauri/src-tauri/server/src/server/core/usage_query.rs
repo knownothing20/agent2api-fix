@@ -278,14 +278,26 @@ fn cumulative_credit_used(usage: &Value) -> Option<f64> {
         .and_then(Value::as_f64)
 }
 
-/// 给查询结果注入 `usage.todayUsed`（今日消耗 = 当前累计 − **当天第一次查询时的累计**）。
+/// 历史条目 → 「当天起点」。兼容旧格式：纯数字（旧版本只存了起点）。
+fn entry_start(entry: &Value) -> Option<f64> {
+    entry.as_f64().or_else(|| entry.get("start").and_then(Value::as_f64))
+}
+
+/// 历史条目 → 「当天最后一次读数」。旧格式的纯数字同时充当这个角色。
+fn entry_last(entry: &Value) -> Option<f64> {
+    entry.as_f64().or_else(|| entry.get("last").and_then(Value::as_f64))
+}
+
+/// 给查询结果注入 `usage.todayUsed`。
 ///
-/// 基线口径是「当天起点」而不是「昨天」：部署当天也要能立刻看到数字（昨天口径
-/// 要等到第二天才有对比）；每次查询后同一天内的查询会自动累加差值。
+/// 口径（2026-11-14 二次修订）：
+/// * **当天内**：起点 = 当天第一次查询时固化的 `start`；
+/// * **新的一天**：起点取「最近一个更早日期记录的 `last`」（昨天最后一次查询的
+///   累计值）→ 误差从「凌晨到当天首次查询」缩到「昨天最后一次查询 → 零点」，
+///   那段通常没有请求，基本等于真实今日用量。若没有历史，退回当前值（从零算）。
 ///
-/// 副作用：当天**第一次**记录某账号的基线（之后不覆盖，否则差值永远为 0）。
-/// 账号在当天重置过（当前值 < 起点）时，把起点更新为当前值，本轮不注入 ——
-/// 那是「重置」不是「用了负数」。
+/// 副作用：每天每个账号存 `{start, last}`，`last` 每轮覆盖（供下一天衔接）；
+/// 账号当天重置（当前 < 起点）时把起点与 last 都挪到当前值，本轮不注入。
 fn inject_today_usage(results: &mut [Value]) {
     let mut history: serde_json::Map<String, Value> = task_state::read_json(DAILY_CREDITS_KEY)
         .and_then(|value| value.as_object().cloned())
@@ -299,30 +311,37 @@ fn inject_today_usage(results: &mut [Value]) {
         let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
         let Some(used) = row.get("usage").and_then(cumulative_credit_used) else { continue };
 
+        // 更早日期里「最近那一天」的最后读数（跨天衔接的起点）
+        let previous_last = history
+            .iter()
+            .filter(|(day, _)| day.as_str() < today.as_str())
+            .filter_map(|(day, accounts)| {
+                accounts.get(&id).and_then(entry_last).map(|value| (day.clone(), value))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, value)| value);
+
         let entry = history.entry(today.clone()).or_insert_with(|| json!({}));
         let Some(accounts) = entry.as_object_mut() else { continue };
-        let start = match accounts.get(&id).and_then(Value::as_f64) {
+        let start = match accounts.get(&id).and_then(entry_start) {
+            // 当天已有起点：沿用（保证当天内累加）
             Some(value) => value,
-            None => {
-                // 当天第一次见面：这就是今天的起点
-                accounts.insert(id.clone(), json_number(used));
-                used
-            }
+            // 当天首次：优先接昨天的最后读数，没有就从当前值起算
+            None => previous_last.unwrap_or(used),
         };
         let delta = used - start;
         if delta >= 0.0 && delta.is_finite() {
             if let Some(usage) = row.get_mut("usage").and_then(Value::as_object_mut) {
-                // 取整（2026-11-14 用户要求）：积分只关心「用掉多少」的量级，
-                // 浮点尾巴（0.660000000000025 / 132.1500000000001）只会碍眼。
                 usage.insert("todayUsed".to_string(), json_number(delta.round()));
             }
+            accounts.insert(id.clone(), json!({ "start": start, "last": used }));
         } else {
-            // 起点比当前值还大 = 账号期间重置过，把起点挪到今天的新值
-            accounts.insert(id.clone(), json_number(used));
+            // 起点比当前值还大 = 账号期间重置过：起点与 last 都挪到今天的新值
+            accounts.insert(id.clone(), json!({ "start": used, "last": used }));
         }
     }
 
-    // 只保留最近 7 天：更早基线的价值是「跨天回看」，再多只会让 kv 越积越大
+    // 只保留最近 7 天：更早基线只用于跨天衔接，再多只会让 kv 越积越大
     let mut days: Vec<String> = history.keys().cloned().collect();
     days.sort();
     while days.len() > 7 {
