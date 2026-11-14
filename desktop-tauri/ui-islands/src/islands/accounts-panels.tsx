@@ -757,7 +757,7 @@ export function UsageCell({ account }: { account: AccountRecord }) {
         {typeof (entry as { todayUsed?: unknown } | null)?.todayUsed === 'number'
           && Number((entry as { todayUsed?: number }).todayUsed) > 0 ? (
           <span className='usage-today'>
-            今日 -{numberText((entry as { todayUsed?: number }).todayUsed)}
+            今日 -{numberText(Math.round(Number((entry as { todayUsed?: number }).todayUsed)))}
           </span>
         ) : null}
         {detailOpen ? (

@@ -264,23 +264,18 @@ fn cumulative_credit_used(usage: &Value) -> Option<f64> {
         .and_then(|raw| raw.get("statistics"))
         .and_then(|st| st.get("meters"))
         .and_then(Value::as_array)?;
-    let total = meters
+    // 只认套餐总账这一行。
+    //
+    // **不做 fallback 求和**（2026-11-14 踩坑）：meters 里 `usageBonusPackageCredit`
+    // 是套餐里「赠送」那部分的**重复读数**（它的 credit_used 与总账同一个数），
+    // 求和会把消耗算成两倍；某些时刻总账行缺失时还会拿别的行顶上，差值直接乱掉
+    // （用户看到过「今日 -12126」这种不可能的数）。读不到就返回 None ——
+    // 少显示一行，比显示一个错的数好。
+    meters
         .iter()
         .find(|m| m.get("name").and_then(Value::as_str) == Some("usageTotalPackageCredit"))
         .and_then(|m| m.get("credit_used"))
-        .and_then(Value::as_f64);
-    if total.is_some() {
-        return total;
-    }
-    let mut sum = 0.0;
-    let mut found = false;
-    for meter in meters {
-        if let Some(value) = meter.get("credit_used").and_then(Value::as_f64) {
-            sum += value;
-            found = true;
-        }
-    }
-    found.then_some(sum)
+        .and_then(Value::as_f64)
 }
 
 /// 给查询结果注入 `usage.todayUsed`（今日消耗 = 当前累计 − **当天第一次查询时的累计**）。
@@ -317,7 +312,9 @@ fn inject_today_usage(results: &mut [Value]) {
         let delta = used - start;
         if delta >= 0.0 && delta.is_finite() {
             if let Some(usage) = row.get_mut("usage").and_then(Value::as_object_mut) {
-                usage.insert("todayUsed".to_string(), json_number(delta));
+                // 取整（2026-11-14 用户要求）：积分只关心「用掉多少」的量级，
+                // 浮点尾巴（0.660000000000025 / 132.1500000000001）只会碍眼。
+                usage.insert("todayUsed".to_string(), json_number(delta.round()));
             }
         } else {
             // 起点比当前值还大 = 账号期间重置过，把起点挪到今天的新值
