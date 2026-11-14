@@ -235,7 +235,10 @@ pub async fn query_all(store: &AccountStore, id: Option<&str>) -> Result<Value, 
         .filter(|account| single.is_some() || supports_usage(account))
         .map(|account| query_usage_for(store, account))
         .collect();
-    let results = futures::future::join_all(futures).await;
+    let mut results = futures::future::join_all(futures).await;
+    // 在**查询源头**注入今日用量：手动查询（本函数直接返回）与定时快照
+    // （store_snapshot 落盘）看到的是同一份数字，不会一边有一边没有。
+    inject_today_usage(&mut results);
     Ok(json!({ "results": results, "skipped": skipped }))
 }
 
@@ -359,11 +362,8 @@ fn note_external_run() {
 /// 快照落盘（`usageQuerySnapshot`）：重启后界面先展示上次结果与查询时刻，
 /// 而不是一片空白 —— 它同时是「重启后不必马上再查一遍」的另一半依据。
 pub fn store_snapshot(report: Value) -> (usize, usize) {
-    let mut report = report;
-    // 先注入「今日用量」再落快照 —— 展示与持久化看到同一份数字
-    if let Some(results) = report.get_mut("results").and_then(Value::as_array_mut) {
-        inject_today_usage(results);
-    }
+    // 今日用量已在 `query_all` 的源头注入（手动查询与定时快照共用同一份结果），
+    // 这里不再重复注入 —— 重复调用会多写一遍基线（虽然幂等，但没必要）。
     let results = report
         .get("results")
         .and_then(Value::as_array)
