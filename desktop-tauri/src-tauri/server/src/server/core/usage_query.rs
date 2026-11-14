@@ -289,9 +289,7 @@ fn cumulative_credit_used(usage: &Value) -> Option<f64> {
 /// 账号在当天重置过（当前值 < 起点）时，把起点更新为当前值，本轮不注入 ——
 /// 那是「重置」不是「用了负数」。
 fn inject_today_usage(results: &mut [Value]) {
-    let mut history: serde_json::Map<String, Value> = task_state::read(DAILY_CREDITS_KEY)
-        .ok()
-        .and_then(|state| state.value)
+    let mut history: serde_json::Map<String, Value> = task_state::read_json(DAILY_CREDITS_KEY)
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -331,7 +329,7 @@ fn inject_today_usage(results: &mut [Value]) {
         let oldest = days.remove(0);
         history.remove(&oldest);
     }
-    let _ = task_state::store_value(DAILY_CREDITS_KEY, Value::Object(history));
+    let _ = task_state::write_json(DAILY_CREDITS_KEY, &Value::Object(history));
 }
 
 /// 进程内副本：快照是 20 秒一次的前端轮询读点，不必每次都读库。

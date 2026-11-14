@@ -190,6 +190,39 @@ pub fn store_value(key: &str, value: Value) -> Result<(), String> {
     change(key, |state| state.value = Some(value)).map(|_| ())
 }
 
+/// 通用 kv 读（**不属于定时任务**的自定义键，如 `usageDailyCredits`）。
+///
+/// `read` / `store_value` 那两个操作的是 `scheduledTasks` 里的条目 —— key 不在
+/// 计划任务清单里时它们不会创建条目，写进去等于没写（2026-11-14 用它们存
+/// 「每日积分基线」就踩了这个坑：基线一直读回空）。这一对函数直接读写 kv 表，
+/// 与 `proxy_pool` 同一条路径。读不到/解析失败都返回 None（展示类数据，
+/// 不该让一次坏行把整个页面拖垮）。
+pub fn read_json(key: &str) -> Option<Value> {
+    let db = DB.get().and_then(Option::as_ref)?;
+    db.with(|conn| {
+        conn.query_row("SELECT value FROM kv WHERE key = ?1", [key], |row| row.get::<_, String>(0))
+            .ok()
+    })
+    .flatten()
+    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+}
+
+/// 通用 kv 写（与 [`read_json`] 配套；存在即覆盖）。
+pub fn write_json(key: &str, value: &Value) -> Result<(), String> {
+    let db = database()?;
+    let text = serde_json::to_string(value).map_err(|error| format!("编码 {key} 失败: {error}"))?;
+    db.with(|conn| {
+        conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, text],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("保存 {key} 失败: {error}"))
+    })
+    .ok_or_else(|| "数据库不可用".to_string())?
+}
+
 /// 记录一次**外部发起**的真实请求（用户手动点的那一轮）：把定时排期顺延一个
 /// 间隔，避免「刚点完、到点或重启后又立刻再跑一遍」。
 ///
